@@ -15,6 +15,7 @@ from typing import Literal
 
 import cmk.ccc.debug
 from cmk.ccc.exceptions import MKGeneralException
+from cmk.ccc.hostaddress import HostAddress, HostName
 from cmk.ccc.store import lock_checkmk_configuration
 
 import cmk.utils.config_path
@@ -22,7 +23,6 @@ import cmk.utils.password_store
 import cmk.utils.paths
 from cmk.utils import config_warnings, ip_lookup
 from cmk.utils.config_path import VersionedConfigPath
-from cmk.utils.hostaddress import HostAddress, HostName
 from cmk.utils.labels import Labels
 from cmk.utils.licensing.handler import LicensingHandler
 from cmk.utils.licensing.helper import get_licensed_state_file_path
@@ -124,14 +124,13 @@ def duplicate_service_warning(
 
 # TODO: Just for documentation purposes for now.
 #
-# HostCheckCommand = NewType('HostCheckCommand',
-#                            Union[Literal["smart"],
-#                                  Literal["ping"],
-#                                  Literal["ok"],
-#                                  Literal["agent"],
-#                                  Tuple[Literal["service"], TextInput],
-#                                  Tuple[Literal["tcp"], Integer],
-#                                  Tuple[Literal["custom"], TextInput]])
+# HostCheckCommand = NewType(
+#     "HostCheckCommand",
+#     Literal["smart", "ping", "ok", "agent"]
+#     | tuple[Literal["service"], TextInput]
+#     | tuple[Literal["tcp"], Integer]
+#     | tuple[Literal["custom"], TextInput],
+# )
 
 
 def _cluster_ping_command(
@@ -322,6 +321,10 @@ def _bake_on_restart(
         from cmk.base.cee.bakery import (  # type: ignore[import-not-found, import-untyped, unused-ignore]
             agent_bakery,
         )
+        from cmk.base.cee.bakery.load_plugins import (  # type: ignore[import-not-found, import-untyped, unused-ignore]
+            load_core_plugins,
+            load_v1_plugins,
+        )
 
         from cmk.cee.bakery.type_defs import (  # type: ignore[import-not-found, import-untyped, unused-ignore]
             BakeRevisionMode,
@@ -339,6 +342,8 @@ def _bake_on_restart(
 
     agent_bakery.bake_agents(
         target_configs,
+        v1_bakery_plugins=load_v1_plugins(),
+        core_bakelets=load_core_plugins(),
         bake_revision_mode=(
             BakeRevisionMode.INACTIVE if config.apply_bake_revision else BakeRevisionMode.DISABLED
         ),

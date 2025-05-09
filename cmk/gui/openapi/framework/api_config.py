@@ -46,6 +46,7 @@ class APIConfig:
 
     RELEASED_VERSIONS_IN_ORDER = [
         APIVersion.V1,  # Legacy version (includes all marshmallow endpoints)
+        APIVersion.UNSTABLE,
     ]
 
     DEVELOPMENT_VERSIONS: Sequence[APIVersion] = []
@@ -89,3 +90,13 @@ class APIConfig:
                 versions.append(version)
 
         return versions
+
+    @classmethod
+    def get_previous_released_version(
+        cls, target_version: APIVersion, from_version: APIVersion | None = None
+    ) -> APIVersion:
+        """Get the previous released version for a given version"""
+        versions = cls.get_released_versions(from_version, target_version)
+        if len(versions) < 2:
+            raise ValueError("No previous version available for the given version range")
+        return versions[-2]

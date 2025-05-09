@@ -9,9 +9,11 @@ import ast
 import os
 import pickle
 import time
+from multiprocessing.pool import Pool
 from pathlib import Path
 from typing import TypedDict
 
+import psutil
 from redis import Redis
 
 from cmk.ccc import store
@@ -30,6 +32,10 @@ from cmk.bi.searcher import BISearcher
 from cmk.bi.trees import BICompiledAggregation, BICompiledRule, FrozenBIInfo
 from cmk.bi.type_defs import frozen_aggregations_dir
 
+_LOGGER = logger.getChild("web.bi.compilation")
+_MAX_MULTIPROCESSING_POOL_SIZE = 8
+_AVAILABLE_MEMORY_RATIO = 0.75
+
 
 class ConfigStatus(TypedDict):
     configfile_timestamp: float
@@ -45,7 +51,6 @@ class BICompiler:
         self._sites_callback = sites_callback
         self._bi_configuration_file = bi_configuration_file
 
-        self._logger = logger.getChild("web.bi.compilation")
         self._compiled_aggregations: dict[str, BICompiledAggregation] = {}
         self._path_compilation_lock = Path(get_cache_dir(), "compilation.LOCK")
         self._path_compilation_timestamp = Path(get_cache_dir(), "last_compilation")
@@ -192,17 +197,18 @@ class BICompiler:
             if aggr_id.endswith(".new") or aggr_id in self._compiled_aggregations:
                 continue
 
-            self._logger.debug("Loading cached aggregation results %s" % aggr_id)
-            self._compiled_aggregations[aggr_id] = BIAggregation.create_trees_from_schema(
-                store.load_object_from_pickle_file(path_object, default={})
-            )
+            _LOGGER.debug("Loading %s aggregation from cache.", aggr_id)
+            if not (data := store.load_object_from_pickle_file(path_object, default={})):
+                _LOGGER.warning("Unable to load compiled aggregation from: %s", path_object)
+                continue
+            self._compiled_aggregations[aggr_id] = BIAggregation.create_trees_from_schema(data)
 
         self._compiled_aggregations = self._manage_frozen_branches(self._compiled_aggregations)
 
     def _check_compilation_status(self) -> None:
         current_configstatus = self.compute_current_configstatus()
         if not self._compilation_required(current_configstatus):
-            self._logger.debug("No compilation required")
+            _LOGGER.debug("No compilation required.")
             return
 
         with store.locked(self._path_compilation_lock):
@@ -210,27 +216,21 @@ class BICompiler:
             # Another apache might have done the job
             current_configstatus = self.compute_current_configstatus()
             if not self._compilation_required(current_configstatus):
-                self._logger.debug("No compilation required. An other process already compiled it")
+                _LOGGER.debug("No compilation required. Another process already compiled it.")
                 return
 
             self.prepare_for_compilation(current_configstatus["online_sites"])
 
-            for aggregation in self._bi_packs.get_all_aggregations():
-                start = time.perf_counter()
-                self._compiled_aggregations[aggregation.id] = aggregation.compile(self.bi_searcher)
-                end = time.perf_counter()
-                self._logger.debug(f"Compilation of {aggregation.id} took {end - start:f}")
+            if aggregations := self._bi_packs.get_all_aggregations():
+                with self._get_multiprocessing_pool(len(aggregations)) as pool:
+                    compiled_aggregations = pool.imap_unordered(_process_compilation, aggregations)
+                    for compiled_aggregation in compiled_aggregations:
+                        self._compiled_aggregations[compiled_aggregation.id] = compiled_aggregation
+
             self._verify_aggregation_title_uniqueness(self._compiled_aggregations)
 
-            for aggr_id, compiled_aggr in self._compiled_aggregations.items():
-                start = time.perf_counter()
-                result = compiled_aggr.serialize()
-                end = time.perf_counter()
-                self._logger.debug(
-                    "Schema dump %s took config took %f (%d branches)"
-                    % (aggr_id, end - start, len(compiled_aggr.branches))
-                )
-                self._save_data(path_compiled_aggregations.joinpath(aggr_id), result)
+            for compiled_aggregation in self._compiled_aggregations.values():
+                self._store_compiled_aggregation(compiled_aggregation)
 
             self._compiled_aggregations = self._manage_frozen_branches(self._compiled_aggregations)
             self._generate_part_of_aggregation_lookup(self._compiled_aggregations)
@@ -240,6 +240,32 @@ class BICompiler:
         self._bi_structure_fetcher.cleanup_orphaned_files(known_sites)
         store.save_text_to_file(
             str(self._path_compilation_timestamp), str(current_configstatus["configfile_timestamp"])
+        )
+
+    def _get_multiprocessing_pool(self, aggregation_count: int) -> Pool:
+        # HACK: due to known constraints with multiprocessing in Python, this is a simple way to
+        # "inject" the BI searcher dependency to our separate processes. An alternative approach
+        # would be to move this object to a global variable. However, we prefer the attribute based
+        # approach on the process function as it better encapsulates the logic. The underlying issue
+        # has to do with the implicit pickling of all objects in process function which is slow and
+        # sometimes fails when the object isn't "pickleable".
+        def initializer(function) -> None:  # type: ignore[no-untyped-def]
+            function.searcher = self.bi_searcher
+
+        return Pool(
+            processes=_get_multiprocessing_pool_size(aggregation_count),
+            initializer=initializer,
+            initargs=(_process_compilation,),
+        )
+
+    def _store_compiled_aggregation(self, compiled_aggregation: BICompiledAggregation) -> None:
+        start = time.perf_counter()
+        compiled_aggregation_path = path_compiled_aggregations / compiled_aggregation.id
+        self._save_data(compiled_aggregation_path, compiled_aggregation.serialize())
+        end = time.perf_counter()
+        _LOGGER.debug(
+            "Schema dump of %s (%d branches) took: %fs"
+            % (compiled_aggregation.id, len(compiled_aggregation.branches), end - start)
         )
 
     def _cleanup_vanished_aggregations(self) -> None:
@@ -303,7 +329,7 @@ class BICompiler:
             if self._path_compilation_timestamp.exists():
                 compilation_timestamp = float(self._path_compilation_timestamp.read_text())
         except (FileNotFoundError, ValueError) as e:
-            self._logger.warning("Can not determine compilation timestamp %s" % str(e))
+            _LOGGER.warning("Unable to determine compilation timestamp. Error: %s", str(e))
         return compilation_timestamp
 
     def _site_status_changed(self, required_program_starts: set[SiteProgramStart]) -> bool:
@@ -414,3 +440,21 @@ class BICompiler:
             pipeline.delete(*obsolete_keys)
 
         pipeline.execute()
+
+
+def _get_multiprocessing_pool_size(aggregation_count: int) -> int:
+    current_process = psutil.Process(os.getpid())
+
+    available_memory = _AVAILABLE_MEMORY_RATIO * psutil.virtual_memory().available
+    current_process_memory = current_process.memory_info().rss
+    potential_pool_size = int(available_memory // current_process_memory)
+
+    return min(potential_pool_size, _MAX_MULTIPROCESSING_POOL_SIZE, aggregation_count)
+
+
+def _process_compilation(aggregation: BIAggregation) -> BICompiledAggregation:
+    start = time.perf_counter()
+    compiled_aggregation = aggregation.compile(_process_compilation.searcher)  # type: ignore[attr-defined]
+    end = time.perf_counter()
+    _LOGGER.debug("Compilation of %s took: %fs", aggregation.id, end - start)
+    return compiled_aggregation

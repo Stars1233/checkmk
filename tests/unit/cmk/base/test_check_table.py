@@ -11,7 +11,8 @@ import pytest
 # No stub file
 from tests.testlib.unit.base_configuration_scenario import Scenario
 
-from cmk.utils.hostaddress import HostName
+from cmk.ccc.hostaddress import HostName
+
 from cmk.utils.servicename import ServiceName
 from cmk.utils.tags import TagGroupID, TagID
 
@@ -180,7 +181,7 @@ def test_check_table_enforced_vs_discovered_precedence(
         timespecific_params = table[ServiceID(smart, item)].parameters
         p = timespecific_params.evaluate(lambda _: True)
         assert p is not None
-        assert not isinstance(p, (tuple, list, str, int))
+        assert not isinstance(p, tuple | list | str | int)
         return str(p["source"])
 
     assert _source_of_item(node_services, "node-item") == "enforced-on-node"

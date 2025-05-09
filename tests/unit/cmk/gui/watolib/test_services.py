@@ -9,12 +9,13 @@ from unittest.mock import call, MagicMock, patch
 import pytest
 from pytest_mock import MockerFixture
 
+from cmk.ccc.hostaddress import HostName
+from cmk.ccc.user import UserId
+
 from cmk.utils.everythingtype import EVERYTHING
-from cmk.utils.hostaddress import HostName
 from cmk.utils.labels import HostLabel
 from cmk.utils.sectionname import SectionName
 from cmk.utils.servicename import ServiceName
-from cmk.utils.user import UserId
 
 from cmk.automations.results import (
     DeleteHostsResult,
@@ -139,11 +140,13 @@ def fixture_sample_host(
 ) -> Generator[Host, None, None]:
     hostname = sample_host_name
     root_folder = folder_tree().root_folder()
-    root_folder.create_hosts([(hostname, {}, None)])
+    root_folder.create_hosts([(hostname, {}, None)], pprint_value=False)
     host = root_folder.host(hostname)
     assert host is not None
     yield host
-    root_folder.delete_hosts([hostname], automation=lambda *args, **kwargs: DeleteHostsResult())
+    root_folder.delete_hosts(
+        [hostname], automation=lambda *args, **kwargs: DeleteHostsResult(), pprint_value=False
+    )
 
 
 @pytest.mark.usefixtures("inline_background_jobs")
@@ -327,6 +330,7 @@ def test_perform_discovery_fix_all_with_previous_discovery_result(
         ),
         host=sample_host,
         raise_errors=True,
+        pprint_value=False,
     )
     sample_autochecks: Mapping[ServiceName, AutocheckEntry] = {
         "Temperature Zone 1": AutocheckEntry(CheckPluginName("lnx_thermal"), "Zone 1", {}, {}),
@@ -581,6 +585,7 @@ def test_perform_discovery_single_update(
         update_target="unchanged",
         host=sample_host,
         raise_errors=True,
+        pprint_value=False,
     )
     sample_autochecks: Mapping[ServiceName, AutocheckEntry] = {
         "Check_MK Agent": AutocheckEntry(CheckPluginName("checkmk_agent"), None, {}, {}),
@@ -788,6 +793,7 @@ def test_perform_discovery_action_update_services(
         update_target=None,
         host=sample_host,
         raise_errors=True,
+        pprint_value=False,
     )
     sample_autochecks: Mapping[ServiceName, AutocheckEntry] = {
         "Filesystem /opt/omd/sites/heute/tmp": AutocheckEntry(
@@ -896,6 +902,7 @@ def test_perform_discovery_action_update_host_labels(
         ),
         host=sample_host,
         raise_errors=True,
+        pprint_value=False,
     )
 
     mock_update_host_labels.assert_called_once_with(

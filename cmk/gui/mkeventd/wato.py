@@ -33,6 +33,7 @@ from livestatus import LocalConnection, MKLivestatusSocketError
 
 from cmk.ccc import store
 from cmk.ccc.exceptions import MKGeneralException
+from cmk.ccc.hostaddress import HostName
 from cmk.ccc.site import omd_site, SiteId
 from cmk.ccc.version import Edition, edition
 
@@ -40,7 +41,6 @@ import cmk.utils.log
 import cmk.utils.paths
 import cmk.utils.render
 import cmk.utils.translations
-from cmk.utils.hostaddress import HostName
 from cmk.utils.rulesets.definition import RuleGroup
 
 # It's OK to import centralized config load logic
@@ -286,10 +286,7 @@ def register(
     match_item_generator_registry.register(MatchItemEventConsole)
     match_item_generator_registry.register(MatchItemEventConsoleSettings)
 
-    # TODO: Make the decorator notification_parameter_registry.register take an instance instead of
-    #       a class. Then register an instance of the class NotificationParameterMKEventDaemon here
-    #       (as is done for the other registrations above).
-    notification_parameter_registry.register(NotificationParameterMKEventDaemon)
+    notification_parameter_registry.register(NotificationParameterMKEventDaemon())
 
     hooks.register_builtin("pre-activate-changes", mkeventd_update_notification_configuration)
 
@@ -1614,12 +1611,14 @@ class ABCEventConsoleMode(WatoMode, abc.ABC):
         )
         return True
 
-    def _add_change(self, what: str, message: str) -> None:
+    def _add_change(self, action_name: str, text: str) -> None:
         _changes.add_change(
-            what,
-            message,
+            action_name=action_name,
+            text=text,
+            user_id=user.id,
             domains=[self._config_domain],
             sites=_get_event_console_sync_sites(),
+            use_git=active_config.wato_use_git,
         )
 
     def _get_rule_pack_to_mkp_map(self) -> dict[str, Any]:
@@ -1831,7 +1830,10 @@ class ModeEventConsoleRulePacks(ABCEventConsoleMode):
         if request.has_var("_delete"):
             nr = request.get_integer_input_mandatory("_delete")
             rule_pack = self._rule_packs[nr]
-            self._add_change("delete-rule-pack", _("Deleted rule pack %s") % rule_pack["id"])
+            self._add_change(
+                action_name="delete-rule-pack",
+                text=_("Deleted rule pack %s") % rule_pack["id"],
+            )
             del self._rule_packs[nr]
             _save_mkeventd_rules(self._rule_packs)
 
@@ -1839,14 +1841,17 @@ class ModeEventConsoleRulePacks(ABCEventConsoleMode):
         elif request.has_var("_reset_counters"):
             for site in _get_event_console_sync_sites():
                 execute_command("RESETCOUNTERS", site=site)
-            self._add_change("counter-reset", _("Reset all rule hit counters to zero"))
+            self._add_change(
+                action_name="counter-reset",
+                text=_("Reset all rule hit counters to zero"),
+            )
 
         # Copy rules from master
         elif request.has_var("_copy_rules"):
             self._copy_rules_from_master()
             self._add_change(
-                "copy-rules-from-master",
-                _("Copied the event rules from the central site into the local configuration"),
+                action_name="copy-rules-from-master",
+                text=_("Copied the event rules from the central site into the local configuration"),
             )
             flash(_("Copied rules from central site"))
             return redirect(self.mode_url())
@@ -1860,7 +1865,8 @@ class ModeEventConsoleRulePacks(ABCEventConsoleMode):
             self._rule_packs[to_pos:to_pos] = [rule_pack]
             _save_mkeventd_rules(self._rule_packs)
             self._add_change(
-                "move-rule-pack", _("Changed position of rule pack %s") % rule_pack["id"]
+                action_name="move-rule-pack",
+                text=_("Changed position of rule pack %s") % rule_pack["id"],
             )
 
         # Export rule pack
@@ -1875,8 +1881,8 @@ class ModeEventConsoleRulePacks(ABCEventConsoleMode):
             self._rule_packs[nr] = ec.MkpRulePackProxy(rule_pack["id"])
             _save_mkeventd_rules(self._rule_packs)
             self._add_change(
-                "export-rule-pack",
-                _("Made rule pack %s available for MKP export") % rule_pack["id"],
+                action_name="export-rule-pack",
+                text=_("Made rule pack %s available for MKP export") % rule_pack["id"],
             )
 
         # Make rule pack non-exportable
@@ -1892,8 +1898,8 @@ class ModeEventConsoleRulePacks(ABCEventConsoleMode):
             _save_mkeventd_rules(self._rule_packs)
             ec.remove_exported_rule_pack(self._rule_packs[nr], ec.mkp_rule_pack_dir())
             self._add_change(
-                "dissolve-rule-pack",
-                _("Removed rule_pack %s from MKP export") % self._rule_packs[nr]["id"],
+                action_name="dissolve-rule-pack",
+                text=_("Removed rule_pack %s from MKP export") % self._rule_packs[nr]["id"],
             )
 
         # Reset to rule pack provided via MKP
@@ -1906,8 +1912,8 @@ class ModeEventConsoleRulePacks(ABCEventConsoleMode):
                 raise MKUserError("_reset", _("The requested rule pack does not exist"))
             _save_mkeventd_rules(self._rule_packs)
             self._add_change(
-                "reset-rule-pack",
-                _("Reset the rules of rule pack %s to the ones provided via MKP") % rp.id_,
+                action_name="reset-rule-pack",
+                text=_("Reset the rules of rule pack %s to the ones provided via MKP") % rp.id_,
             )
 
         # Synchronize modified rule pack with MKP
@@ -1921,8 +1927,8 @@ class ModeEventConsoleRulePacks(ABCEventConsoleMode):
                 raise MKUserError("_synchronize", _("The requested rule pack does not exist"))
             _save_mkeventd_rules(self._rule_packs)
             self._add_change(
-                "synchronize-rule-pack",
-                _("Synchronized MKP with the modified rule pack %s") % rp.id_,
+                action_name="synchronize-rule-pack",
+                text=_("Synchronized MKP with the modified rule pack %s") % rp.id_,
             )
 
         # Update data structure after actions
@@ -2349,8 +2355,8 @@ class ModeEventConsoleRules(ABCEventConsoleMode):
                     _save_mkeventd_rules(self._rule_packs)
 
                     self._add_change(
-                        "move-rule-to-pack",
-                        _("Moved rule %s to pack %s") % (rule["id"], other_pack["id"]),
+                        action_name="move-rule-to-pack",
+                        text=_("Moved rule %s to pack %s") % (rule["id"], other_pack["id"]),
                     )
                     flash(_("Moved rule %s to pack %s") % (rule["id"], other_pack["title"]))
                     return None
@@ -2366,7 +2372,10 @@ class ModeEventConsoleRules(ABCEventConsoleMode):
             else:
                 rules = list(self._rule_pack["rules"])
 
-            self._add_change("delete-rule", _("Deleted rule %s") % rules[nr]["id"])
+            self._add_change(
+                action_name="delete-rule",
+                text=_("Deleted rule %s") % rules[nr]["id"],
+            )
             del rules[nr]
 
             self._rule_pack["rules"] = rules
@@ -2396,7 +2405,10 @@ class ModeEventConsoleRules(ABCEventConsoleMode):
                 _export_mkp_rule_pack(self._rule_pack)
             _save_mkeventd_rules(self._rule_packs)
 
-            self._add_change("move-rule", _("Changed position of rule %s") % rule["id"])
+            self._add_change(
+                action_name="move-rule",
+                text=_("Changed position of rule %s") % rule["id"],
+            )
         return redirect(self.mode_url(rule_pack=self._rule_pack_id))
 
     def page(self) -> None:
@@ -2630,8 +2642,8 @@ def _get_match(rule: ec.Rule) -> str:
 
 def _add_change_for_sites(
     *,
-    what: str,
-    message: str,
+    action_name: str,
+    text: str,
     rule_or_rulepack: DictionaryModel | ec.ECRulePackSpec,
     config_domain: ConfigDomainEventConsole,
 ) -> None:
@@ -2643,10 +2655,12 @@ def _add_change_for_sites(
         sites_ = _get_event_console_sync_sites()
 
     _changes.add_change(
-        what,
-        message,
+        action_name=action_name,
+        text=text,
+        user_id=user.id,
         domains=[config_domain],
         sites=sites_,
+        use_git=active_config.wato_use_git,
     )
 
 
@@ -2751,15 +2765,15 @@ class ModeEventConsoleEditRulePack(ABCEventConsoleMode):
 
         if self._new:
             _add_change_for_sites(
-                what="new-rule-pack",
-                message=_("Created new rule pack with id %s") % self._rule_pack["id"],
+                action_name="new-rule-pack",
+                text=_("Created new rule pack with id %s") % self._rule_pack["id"],
                 rule_or_rulepack=self._rule_pack,
                 config_domain=self._config_domain,
             )
         else:
             _add_change_for_sites(
-                what="edit-rule-pack",
-                message=_("Modified rule pack %s") % self._rule_pack["id"],
+                action_name="edit-rule-pack",
+                text=_("Modified rule pack %s") % self._rule_pack["id"],
                 rule_or_rulepack=self._rule_pack,
                 config_domain=self._config_domain,
             )
@@ -2951,15 +2965,15 @@ class ModeEventConsoleEditRule(ABCEventConsoleMode):
 
         if self._new:
             _add_change_for_sites(
-                what="new-rule",
-                message=("Created new event correlation rule with id %s") % rule["id"],
+                action_name="new-rule",
+                text=("Created new event correlation rule with id %s") % rule["id"],
                 rule_or_rulepack=rule,
                 config_domain=self._config_domain,
             )
         else:
             _add_change_for_sites(
-                what="edit-rule",
-                message=("Modified event correlation rule %s") % rule["id"],
+                action_name="edit-rule",
+                text=("Modified event correlation rule %s") % rule["id"],
                 rule_or_rulepack=rule,
                 config_domain=self._config_domain,
             )
@@ -3021,7 +3035,12 @@ class ModeEventConsoleStatus(ABCEventConsoleMode):
         else:
             new_mode = "takeover"
         execute_command("SWITCHMODE", [new_mode], omd_site())
-        log_audit("mkeventd-switchmode", "Switched replication slave mode to %s" % new_mode)
+        log_audit(
+            action="mkeventd-switchmode",
+            message="Switched replication slave mode to %s" % new_mode,
+            user_id=user.id,
+            use_git=active_config.wato_use_git,
+        )
         flash(_("Switched to %s mode") % new_mode)
         return None
 
@@ -3174,7 +3193,10 @@ class ModeEventConsoleSettings(ABCEventConsoleMode, ABCGlobalSettingsMode):
 
         save_global_settings(self._current_settings)
 
-        self._add_change("edit-configvar", msg)
+        self._add_change(
+            action_name="edit-configvar",
+            text=msg,
+        )
 
         if action == "_reset":
             flash(msg)
@@ -3346,7 +3368,10 @@ class ModeEventConsoleMIBs(ABCEventConsoleMode):
             self._delete_mib(filename, custom_mibs[filename].name)
 
     def _delete_mib(self, filename: str, mib_name: str) -> None:
-        self._add_change("delete-mib", _("Deleted MIB %s") % filename)
+        self._add_change(
+            action_name="delete-mib",
+            text=_("Deleted MIB %s") % filename,
+        )
         pyc_suffix = f".cpython-{sys.version_info.major}{sys.version_info.minor}.pyc"
         for path in {
             _compiled_mibs_dir() / p
@@ -3553,7 +3578,10 @@ class ModeEventConsoleUploadMIBs(ABCEventConsoleMode):
         mib_upload_dir().mkdir(parents=True, exist_ok=True)
         with (mib_upload_dir() / filename).open("wb") as f:
             f.write(content)
-        self._add_change("uploaded-mib", _("MIB %s: %s") % (filename, msg))
+        self._add_change(
+            action_name="uploaded-mib",
+            text=_("MIB %s: %s") % (filename, msg),
+        )
         return msg
 
     def _validate_mib_file_name(self, filename: str) -> None:

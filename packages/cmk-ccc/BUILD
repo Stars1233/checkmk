@@ -57,6 +57,14 @@ py_library(
 )
 
 py_library(
+    name = "hostaddress",
+    srcs = ["cmk/ccc/hostaddress.py"],
+    imports = ["."],
+    visibility = ["//visibility:public"],
+    deps = ["_init"],
+)
+
+py_library(
     name = "i18n",
     srcs = ["cmk/ccc/i18n.py"],
     imports = ["."],
@@ -110,6 +118,14 @@ py_library(
 )
 
 py_library(
+    name = "user",
+    srcs = ["cmk/ccc/user.py"],
+    imports = ["."],
+    visibility = ["//visibility:public"],
+    deps = ["_init"],
+)
+
+py_library(
     name = "version",
     srcs = ["cmk/ccc/version.py"],
     imports = ["."],
@@ -126,11 +142,13 @@ _ALL = [
     "daemon",
     "debug",
     "exceptions",
+    "hostaddress",
     "i18n",
     "plugin-registry",
     "profile",
     "site",
     "store",
+    "user",
     "version",
 ]
 
@@ -161,6 +179,21 @@ py_test(
         "daemon",
         "exceptions",
         "store",
+        requirement("pytest"),
+    ],
+)
+
+py_test(
+    name = "hostaddress-tests",
+    size = "small",
+    srcs = [
+        "__test__.py",
+        "tests/test_hostaddress.py",
+    ],
+    main = "__test__.py",
+    deps = [
+        "__test__",
+        "hostaddress",
         requirement("pytest"),
     ],
 )

@@ -16,11 +16,11 @@ from typing import Literal, NamedTuple, override, TypeGuard
 
 from cmk.ccc import store
 from cmk.ccc.exceptions import MKGeneralException
+from cmk.ccc.hostaddress import HostAddress, HostName
+from cmk.ccc.user import UserId
 
-from cmk.utils.hostaddress import HostAddress, HostName
 from cmk.utils.paths import configuration_lockfile
 from cmk.utils.translations import translate_hostname, TranslationOptions
-from cmk.utils.user import UserId
 
 from cmk.gui import userdb
 from cmk.gui.cron import CronJob, CronJobRegistry
@@ -89,6 +89,7 @@ def execute_network_scan_job() -> None:
                     get_site_config(active_config, folder.site_id()),
                     "network-scan",
                     [("folder", folder.path())],
+                    debug=active_config.debug,
                 )
                 assert isinstance(raw_response, list)
                 found = raw_response
@@ -96,7 +97,9 @@ def execute_network_scan_job() -> None:
             if not isinstance(found, list):
                 raise MKGeneralException(_("Received an invalid network scan result: %r") % found)
 
-            _add_scanned_hosts_to_folder(folder, found, run_as)
+            _add_scanned_hosts_to_folder(
+                folder, found, run_as, pprint_value=active_config.wato_pprint_config
+            )
 
             result.update(
                 {
@@ -132,7 +135,7 @@ def _find_folder_to_scan() -> Folder | None:
 
 
 def _add_scanned_hosts_to_folder(
-    folder: Folder, found: NetworkScanFoundHosts, username: UserId
+    folder: Folder, found: NetworkScanFoundHosts, username: UserId, *, pprint_value: bool
 ) -> None:
     if (network_scan_properties := folder.attributes.get("network_scan")) is None:
         return
@@ -166,7 +169,7 @@ def _add_scanned_hosts_to_folder(
             entries.append((host_name, attrs, None))
 
     with store.lock_checkmk_configuration(configuration_lockfile):
-        folder.create_hosts(entries)
+        folder.create_hosts(entries, pprint_value=pprint_value)
         folder.save_folder_attributes()
         folder_tree().invalidate_caches()
 

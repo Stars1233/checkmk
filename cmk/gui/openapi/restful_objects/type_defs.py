@@ -219,6 +219,12 @@ CollectionItem = dict[str, str]
 LocationType = Literal["path", "query", "header", "cookie"]
 ResultType = Literal["object", "list", "scalar", "void"]
 
+KnownContentType = Literal[
+    "application/json",
+    "application/gzip",
+]
+AcceptFieldType = KnownContentType | list[KnownContentType]
+
 
 class LinkType(TypedDict):
     rel: str
@@ -377,6 +383,7 @@ OpenAPIParameter = TypedDict(
         "allowEmptyValue": bool,
         "example": Any,
         "schema": SchemaType | type[Schema],
+        "content": dict[str, dict[str, object]],
     },
     total=False,
 )
@@ -423,15 +430,6 @@ class CodeSample(TypedDict, total=True):
 
 ParameterReference = str
 
-SchemaParameter = TypedDict(
-    "SchemaParameter",
-    {
-        "in": LocationType,
-        "schema": type[Schema],
-    },
-    total=True,
-)
-
 OperationSpecType = TypedDict(
     "OperationSpecType",
     {
@@ -440,7 +438,7 @@ OperationSpecType = TypedDict(
         "tags": list[str],
         "description": str,
         "responses": ResponseType,
-        "parameters": Sequence[SchemaParameter],
+        "parameters": Sequence[OpenAPIParameter],
         "requestBody": dict[str, Any],
         "summary": str,
         "deprecated": bool,

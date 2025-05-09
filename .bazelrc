@@ -6,10 +6,17 @@ try-import %workspace%/user.bazelrc
 # common --remote_cache=grpcs://${USER}:${PASSWORD}@{URL}
 try-import %workspace%/remote.bazelrc
 
+# Use local registry to add local download mirrors
+common --registry="file://%workspace%/bazel/registry"
+common --registry=https://bcr.bazel.build
+
 # default/common bazel args for all commands supporting it
 common --experimental_ui_max_stdouterr_bytes=10000000
 common --experimental_remote_cache_async
 common --remote_cache_compression
+# send pings after this time of no read operations on the connection, but only if there is at least one pending gRPC call
+# only with this flag "grpc_keepalive_timeout" is enabled, defaults to 20s
+common --grpc_keepalive_time=10s
 # minimum blob size required to compress/decompress with zstd (1MB)
 common --experimental_remote_cache_compression_threshold=1048576
 common --remote_local_fallback
@@ -50,7 +57,7 @@ common:ci --color=no
 common:ci --show_progress_rate_limit=0
 common:ci --show_timestamps
 common:ci --memory_profile=bazel-memory.profile
-common:ci --extra_toolchains="//bazel/toolchains/cc:ci"
+common:ci --extra_toolchains="//bazel/toolchains/cc/gcc/ci:ci"
 common:ci --local_resources=cpu=HOST_CPUS*.21
 common:ci --local_resources=memory=HOST_RAM*.67
 # the later flags will override the previous flags

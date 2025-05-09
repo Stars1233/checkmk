@@ -30,7 +30,6 @@ def main() {
         "INTERNAL_DEPLOY_PORT",
         "ARTIFACT_STORAGE",
         "DOCKER_REGISTRY",
-        "NEXUS_BUILD_CACHE_URL",
     ]);
 
     def versioning = load("${checkout_dir}/buildscripts/scripts/utils/versioning.groovy");
@@ -149,6 +148,7 @@ def main() {
                     build_params: [
                         CUSTOM_GIT_REF: effective_git_ref,
                         VERSION: params.VERSION,
+                        EDITION: params.EDITION,
                         DISABLE_CACHE: params.DISABLE_CACHE,
                     ],
                     build_params_no_check: [
@@ -239,7 +239,7 @@ def main() {
         dir("${deliverables_dir}") {
             /// BOM shall have a unique name, see CMK-16483
             sh("""
-                cp omd/bill-of-materials.json check-mk-${params.EDITION}-${cmk_version_rc_aware}-bill-of-materials.json
+                cp omd/bill-of-materials.json check-mk-${params.EDITION}-${cmk_version}-bill-of-materials.json
             """);
         }
 

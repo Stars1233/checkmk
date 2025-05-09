@@ -20,7 +20,7 @@ import tty
 from collections.abc import Iterator, Sequence
 from functools import cache
 from pathlib import Path
-from typing import ClassVar, Literal, NamedTuple, NoReturn, override, Type, TypeVar
+from typing import ClassVar, Literal, NamedTuple, NoReturn, override, TypeVar
 
 from pydantic import BaseModel, Field
 
@@ -87,7 +87,7 @@ class Stash(BaseModel):
         self.ids_by_project[project].append(werk_id.id)
 
     @classmethod
-    def load_from_file(cls: Type[T]) -> T:
+    def load_from_file(cls: type[T]) -> T:
         if not cls.PATH.exists():
             return cls.model_validate({"ids_by_project": {}})
         content = cls.PATH.read_text(encoding="utf-8")
@@ -775,9 +775,9 @@ WERK_NOTES = """
     |                                                                             |
     |             The werk is intended for the user/admin!!                       |
     |                                                                             |
-    |    From the titel it should be obvious if the user/admin is affected.       |
+    |    It should be obvious from the title if a user/admin is affected.         |
     |    Describe what needs to be done in the details. You can also note if no   |
-    |    user interaction is required. If necessary add technical details.        |
+    |    user interaction is required. If necessary, add technical details.       |
     |                                                                             |
     '-----------------------------------------------------------------------------'
 
@@ -1091,7 +1091,7 @@ def main_fetch_ids(args: argparse.Namespace) -> None:
 
     if args.count is None:
         per_project = "\n".join(
-            "{project}: {len(ids)}" for project, ids in stash.ids_by_project.items()
+            f"{project}: {len(ids)}" for project, ids in stash.ids_by_project.items()
         )
         sys.stdout.write(f"You have {stash.count()} reserved IDs:\n{per_project}\n")
         sys.exit(0)

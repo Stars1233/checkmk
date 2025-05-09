@@ -25,9 +25,10 @@ from cmk.gui.exceptions import MKAuthException
 from cmk.gui.hooks import request_memoize
 from cmk.gui.logged_in import user
 from cmk.gui.watolib.hosts_and_folders import Folder, folder_tree, Host
+from cmk.gui.watolib.php_formatter import format_php
 from cmk.gui.watolib.rulesets import AllRulesets, Rule, RuleConditions, Ruleset
 from cmk.gui.watolib.simple_config_file import ConfigFileRegistry, WatoSingleConfigFile
-from cmk.gui.watolib.utils import format_php, multisite_dir, wato_root_dir
+from cmk.gui.watolib.utils import multisite_dir, wato_root_dir
 
 
 class TagConfigFile(WatoSingleConfigFile[TagConfigSpec]):
@@ -55,17 +56,17 @@ class TagConfigFile(WatoSingleConfigFile[TagConfigSpec]):
 
         return cfg
 
-    def save(self, cfg: TagConfigSpec) -> None:
-        self._save_gui_config(cfg)
-        self._save_base_config(cfg)
+    def save(self, cfg: TagConfigSpec, pprint_value: bool) -> None:
+        self._save_gui_config(cfg, pprint_value)
+        self._save_base_config(cfg, pprint_value)
         _export_hosttags_to_php(cfg)
 
-    def _save_gui_config(self, cfg: TagConfigSpec) -> None:
-        super().save(cfg)
+    def _save_gui_config(self, cfg: TagConfigSpec, pprint_value: bool) -> None:
+        super().save(cfg, pprint_value)
 
-    def _save_base_config(self, cfg: TagConfigSpec) -> None:
+    def _save_base_config(self, cfg: TagConfigSpec, pprint_value: bool) -> None:
         self._config_file_path.parent.mkdir(mode=0o770, exist_ok=True, parents=True)
-        store.save_to_mk_file(Path(wato_root_dir()) / "tags.mk", "tag_config", cfg)
+        store.save_to_mk_file(Path(wato_root_dir()) / "tags.mk", "tag_config", cfg, pprint_value)
 
 
 def register(config_file_registry: ConfigFileRegistry) -> None:
@@ -88,7 +89,7 @@ def load_all_tag_config_read_only() -> TagConfig:
     return tag_config
 
 
-def update_tag_config(tag_config: TagConfig) -> None:
+def update_tag_config(tag_config: TagConfig, pprint_value: bool) -> None:
     """Persist the tag config saving the information to the mk file
     and update the current environment
 
@@ -98,8 +99,8 @@ def update_tag_config(tag_config: TagConfig) -> None:
 
     """
     user.need_permission("wato.hosttags")
-    TagConfigFile().save(tag_config.get_dict_format())
-    _update_tag_dependencies()
+    TagConfigFile().save(tag_config.get_dict_format(), pprint_value)
+    _update_tag_dependencies(pprint_value=pprint_value)
     hooks.call("tags-changed")
 
 
@@ -116,7 +117,7 @@ def load_tag_group(ident: TagGroupID) -> TagGroup | None:
     return tag_config.get_tag_group(ident)
 
 
-def save_tag_group(tag_group: TagGroup) -> None:
+def save_tag_group(tag_group: TagGroup, pprint_value: bool) -> None:
     """Save a new tag group
 
     Args:
@@ -127,7 +128,7 @@ def save_tag_group(tag_group: TagGroup) -> None:
     tag_config = load_tag_config()
     tag_config.insert_tag_group(tag_group)
     tag_config.validate_config()
-    update_tag_config(tag_config)
+    update_tag_config(tag_config, pprint_value)
 
 
 def is_builtin(ident: TagGroupID) -> bool:
@@ -144,18 +145,23 @@ def tag_group_exists(ident: TagGroupID, builtin_included: bool = False) -> bool:
     return tag_config.tag_group_exists(ident)
 
 
-def _update_tag_dependencies() -> None:
+def _update_tag_dependencies(*, pprint_value: bool) -> None:
     load_config()
     tree = folder_tree()
     tree.invalidate_caches()
-    tree.root_folder().recursively_save_hosts()
+    tree.root_folder().recursively_save_hosts(pprint_value=pprint_value)
 
 
 class RepairError(MKGeneralException):
     pass
 
 
-def edit_tag_group(ident: TagGroupID, edited_group: TagGroup, allow_repair: bool = False) -> None:
+def edit_tag_group(
+    ident: TagGroupID,
+    edited_group: TagGroup,
+    allow_repair: bool,
+    pprint_value: bool,
+) -> None:
     """Update attributes of a tag group & update the relevant positions which used the relevant tag group
 
     Args:
@@ -177,18 +183,16 @@ def edit_tag_group(ident: TagGroupID, edited_group: TagGroup, allow_repair: bool
     tag_config.update_tag_group(edited_group)
     tag_config.validate_config()
     operation = OperationReplaceGroupedTags(ident, tag_ids_to_remove, tag_ids_to_replace)
-    affected = change_host_tags(
-        operation,
-        TagCleanupMode.CHECK,
-    )
+    affected = change_host_tags(operation, TagCleanupMode.CHECK, pprint_value=pprint_value)
     if any(affected):
         if not allow_repair:
             raise RepairError("Permission missing")
         _ = change_host_tags(
             operation,
             TagCleanupMode("repair"),
+            pprint_value=pprint_value,
         )
-    update_tag_config(tag_config)
+    update_tag_config(tag_config, pprint_value)
 
 
 def identify_modified_tags(
@@ -292,15 +296,16 @@ class OperationReplaceGroupedTags(ABCOperation):
 
 
 def change_host_tags(
-    operation: ABCTagGroupOperation | OperationReplaceGroupedTags, mode: TagCleanupMode
+    operation: ABCTagGroupOperation | OperationReplaceGroupedTags,
+    mode: TagCleanupMode,
+    *,
+    pprint_value: bool,
 ) -> tuple[list[Folder], list[Host], list[Ruleset]]:
     affected_folder, affected_hosts = _change_host_tags_in_folders(
-        operation,
-        mode,
-        folder_tree().root_folder(),
+        operation, mode, folder_tree().root_folder(), pprint_value=pprint_value
     )
 
-    affected_rulesets = change_host_tags_in_rulesets(operation, mode)
+    affected_rulesets = _change_host_tags_in_rulesets(operation, mode, pprint_value=pprint_value)
     return affected_folder, affected_hosts, affected_rulesets
 
 
@@ -309,8 +314,11 @@ def _get_all_rulesets() -> AllRulesets:
     return cmk.gui.watolib.rulesets.AllRulesets.load_all_rulesets()
 
 
-def change_host_tags_in_rulesets(
-    operation: ABCTagGroupOperation | OperationReplaceGroupedTags, mode: TagCleanupMode
+def _change_host_tags_in_rulesets(
+    operation: ABCTagGroupOperation | OperationReplaceGroupedTags,
+    mode: TagCleanupMode,
+    *,
+    pprint_value: bool,
 ) -> list[Ruleset]:
     affected_rulesets = set()
     all_rulesets = _get_all_rulesets()
@@ -319,13 +327,17 @@ def change_host_tags_in_rulesets(
             affected_rulesets.update(_change_host_tags_in_rule(operation, mode, ruleset, rule))
 
     if mode != TagCleanupMode.CHECK:
-        all_rulesets.save()
+        all_rulesets.save(pprint_value=pprint_value)
 
     return sorted(affected_rulesets, key=lambda x: x.title() or "")
 
 
 def _change_host_tags_in_folders(
-    operation: ABCTagGroupOperation | OperationReplaceGroupedTags, mode: TagCleanupMode, folder: Any
+    operation: ABCTagGroupOperation | OperationReplaceGroupedTags,
+    mode: TagCleanupMode,
+    folder: Any,
+    *,
+    pprint_value: bool,
 ) -> tuple[list[Folder], list[Host]]:
     """Update host tag assignments in hosts/folders
 
@@ -346,11 +358,15 @@ def _change_host_tags_in_folders(
                 pass
 
         for subfolder in folder.subfolders():
-            aff_folders, aff_hosts = _change_host_tags_in_folders(operation, mode, subfolder)
+            aff_folders, aff_hosts = _change_host_tags_in_folders(
+                operation, mode, subfolder, pprint_value=pprint_value
+            )
             affected_folders += aff_folders
             affected_hosts += aff_hosts
 
-        affected_hosts += _change_host_tags_in_hosts(operation, mode, folder)
+        affected_hosts += _change_host_tags_in_hosts(
+            operation, mode, folder, pprint_value=pprint_value
+        )
 
     return affected_folders, affected_hosts
 
@@ -359,6 +375,8 @@ def _change_host_tags_in_hosts(
     operation: ABCTagGroupOperation | OperationReplaceGroupedTags,
     mode: TagCleanupMode,
     folder: Folder,
+    *,
+    pprint_value: bool,
 ) -> list[Host]:
     affected_hosts = []
     for host in folder.hosts().values():
@@ -367,7 +385,7 @@ def _change_host_tags_in_hosts(
 
     if affected_hosts and mode != TagCleanupMode.CHECK:
         try:
-            folder.save_hosts()
+            folder.save_hosts(pprint_value=pprint_value)
         except MKAuthException:
             # Ignore MKAuthExceptions of locked host.mk files
             pass

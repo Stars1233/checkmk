@@ -7,7 +7,7 @@ import re
 from abc import abstractmethod
 from re import Pattern
 from typing import Literal, overload, override
-from urllib.parse import urljoin
+from urllib.parse import quote_plus, urljoin
 
 from playwright.sync_api import expect, FrameLocator, Locator, Page, Response
 
@@ -39,7 +39,7 @@ class CmkPage(LocatorHelper):
         if self._navigate_to_page:
             self.navigate()
         else:
-            self._validate_page()
+            self.validate_page()
         self._url = self.page.url
 
     @abstractmethod
@@ -47,11 +47,11 @@ class CmkPage(LocatorHelper):
         """Navigate to the page.
 
         Perform navigation steps, wait for the page to load and validate
-        the correct page is displayed by using the `_validate_page` method.
+        the correct page is displayed by using the `validate_page` method.
         """
 
     @abstractmethod
-    def _validate_page(self) -> None:
+    def validate_page(self) -> None:
         """Validate correct page is displayed.
 
         Ensure the expected page is displayed by checking the page title,
@@ -111,12 +111,14 @@ class CmkPage(LocatorHelper):
         logger.info("Activate changes")
         try:
             self.get_link(re.compile(r"^[1-9][0-9]*\+? changes?$"), exact=False).click()
+            self.page.wait_for_url(url=re.compile(quote_plus("wato.py?mode=changelog")))
             self.activate_selected()
             self.expect_success_state()
         except Exception as e:
             if site:
                 e.add_note(
-                    "Flake during changes activation. The changes will be activated through the API."
+                    "Flake during changes activation."
+                    " The changes will be activated through the API."
                 )
                 site.openapi.changes.activate_and_wait_for_completion(force_foreign_changes=True)
             raise e
@@ -376,6 +378,15 @@ class MainArea(LocatorHelper):
     @property
     def page_menu_bar(self) -> Locator:
         return self.locator("table#page_menu_bar")
+
+    @property
+    def _page_menu_popups(self) -> Locator:
+        return self.locator("div#page_menu_popups")
+
+    def get_confirmation_popup_button(self, button_name: str) -> Locator:
+        return self._page_menu_popups.locator("div.confirm_container").get_by_role(
+            "button", name=button_name
+        )
 
     def dropdown_button(self, name: str, exact: bool = True) -> Locator:
         return self.page_menu_bar.get_by_role(role="heading", name=name, exact=exact)

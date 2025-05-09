@@ -189,11 +189,9 @@ include \
     packages/libgsf/libgsf.make \
     packages/monitoring-plugins/monitoring-plugins.make \
     packages/check-cert/check-cert.make \
-    packages/lcab/lcab.make \
     packages/msitools/msitools.make \
     packages/nagios/nagios.make \
     packages/heirloom-mailx/heirloom-mailx.make \
-    packages/nrpe/nrpe.make \
     packages/pnp4nagios/pnp4nagios.make \
     packages/omd/omd.make \
     packages/appliance/appliance.make \

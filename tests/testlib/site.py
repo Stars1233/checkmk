@@ -50,6 +50,7 @@ from tests.testlib.openapi_session import CMKOpenApiSession
 from tests.testlib.utils import (
     check_output,
     execute,
+    get_processes_by_cmdline,
     is_containerized,
     makedirs,
     PExpectDialog,
@@ -150,6 +151,10 @@ class Site:
         self.result_dir().mkdir(parents=True, exist_ok=True)
 
     @property
+    def alias(self) -> str:
+        return self.id.replace("_", " ").capitalize()
+
+    @property
     def version(self) -> CMKVersion:
         return self._package.version
 
@@ -168,9 +173,14 @@ class Site:
         return self._apache_port
 
     @property
+    def url_prefix(self) -> str:
+        """This gives the prefix for the URL of the site."""
+        return f"{self.http_proto}://{self.http_address}:{self.apache_port}/{self.id}/"
+
+    @property
     def internal_url(self) -> str:
         """This gives the address-port combination where the site-Apache process listens."""
-        return f"{self.http_proto}://{self.http_address}:{self.apache_port}/{self.id}/check_mk/"
+        return self.url_prefix + "check_mk/"
 
     @property
     def internal_url_mobile(self) -> str:
@@ -410,18 +420,31 @@ class Site:
         self,
         hostname: str,
         pending: bool | None = None,
+        extra_columns: Sequence[str] = (),
     ) -> dict[str, ServiceInfo]:
         """Return dict for all services in the given site and host.
 
         If pending=True, return the pending services only.
         """
         services = {}
+
+        mandatory_columns = ["state", "plugin_output"]
+
+        columns = mandatory_columns + [
+            column for column in extra_columns if column not in mandatory_columns
+        ]
+
         for service in self.openapi.services.get_host_services(
-            hostname, columns=["state", "plugin_output"], pending=pending
+            hostname, columns=columns, pending=pending
         ):
             services[service["extensions"]["description"]] = ServiceInfo(
                 state=service["extensions"]["state"],
                 summary=service["extensions"]["plugin_output"],
+                extra_columns={
+                    column: service["extensions"][column]
+                    for column in extra_columns
+                    if column in service["extensions"]
+                },
             )
         return services
 
@@ -696,6 +719,15 @@ class Site:
 
     def path(self, rel_path: str | Path) -> Path:
         return self.root / rel_path
+
+    def file_mtime(self, rel_path: str | Path) -> float:
+        """Return the last modification time of a file."""
+        try:
+            stdout = self.check_output(["stat", "-c", "%Y", self.path(rel_path).as_posix()])
+        except subprocess.CalledProcessError as excp:
+            excp.add_note(f"Failed to read file '{rel_path}'!")
+            raise excp
+        return float(stdout)
 
     def read_file(self, rel_path: str | Path) -> str:
         try:
@@ -1160,6 +1192,20 @@ class Site:
             sys.stdout.flush()
             time.sleep(0.2)
 
+        # let's ensure, that no more processes for the site are running (CMK-21668)
+        # all site processes will be for some file below /omd/sites/<site_id>
+        site_procs = get_processes_by_cmdline(f"omd/sites/{self.id}/")
+        if site_procs:
+            logger.warning(
+                "processes still running after stopping the site %s (only first 10):", self.id
+            )
+            for proc in site_procs[:10]:
+                logger.warning("  [%s] %s: %s", proc.pid, proc.info["name"], proc.info["cmdline"])
+            raise AssertionError(
+                "Site '%s' has still %d processes running after stopping!"
+                % (self.id, len(site_procs))
+            )
+
     def exists(self) -> bool:
         return os.path.exists("/omd/sites/%s" % self.id)
 
@@ -1623,6 +1669,34 @@ class Site:
             self.read_global_settings(relative_path) | update,
         )
 
+    def read_site_specific_settings(
+        self, relative_path: Path
+    ) -> dict[str, dict[str, dict[str, object]]]:
+        site_specific_settings: dict[str, dict[str, dict[str, object]]] = {"sites": {}}
+        exec(self.read_file(relative_path), {}, site_specific_settings)
+        return site_specific_settings
+
+    def write_site_specific_settings(
+        self,
+        relative_path: Path,
+        site_specific_settings: Mapping[str, Mapping[str, object]],
+    ) -> None:
+        self.write_text_file(
+            relative_path,
+            "\n".join(f"{key} = {repr(val)}" for key, val in site_specific_settings.items()),
+        )
+
+    def update_site_specific_settings(
+        self, relative_path: Path, update: Mapping[str, Mapping[str, object]]
+    ) -> None:
+        current_settings = self.read_site_specific_settings(relative_path)
+        for site_id, updated_site_settings in update.items():
+            if site_id not in current_settings["sites"]:
+                current_settings["sites"][site_id] = {}
+            current_settings["sites"][site_id].update(updated_site_settings)
+
+        self.write_site_specific_settings(relative_path, current_settings)
+
 
 @dataclass(frozen=True)
 class GlobalSettingsUpdate:
@@ -1781,8 +1855,8 @@ class SiteFactory:
 
         return site
 
-    def copy_site(self, site: Site, copy_name: str) -> Site:
-        self._base_ident = ""
+    @contextmanager
+    def copy_site(self, site: Site, copy_name: str) -> Iterator[Site]:
         site_copy = self._site_obj(copy_name)
 
         assert not site_copy.exists(), (
@@ -1791,11 +1865,17 @@ class SiteFactory:
 
         site.stop()
         logger.info("Copying site '%s' to site '%s'...", site.id, site_copy.id)
-        run(["omd", "cp", site.id, copy_name], sudo=True)
+        run(["omd", "cp", site.id, site_copy.id], sudo=True)
         site_copy = self.get_existing_site(copy_name)
         site_copy.start()
 
-        return site_copy
+        try:
+            yield site_copy
+
+        finally:
+            if os.getenv("CLEANUP", "1") == "1":
+                logger.info("Removing site '%s'...", site_copy.id)
+                site_copy.rm()
 
     def interactive_update(
         self,
@@ -2278,3 +2358,79 @@ def _resource_attributes_from_env(env: Mapping[str, str]) -> Mapping[str, str]:
         ]
         if val
     }
+
+
+@contextmanager
+def connection(
+    *,
+    central_site: Site,
+    remote_site: Site,
+) -> Iterator[None]:
+    """Set up the site connection between central and remote site for a distributed setup"""
+    if central_site.edition.is_managed_edition():
+        basic_settings = {
+            "alias": "Remote Testsite",
+            "site_id": remote_site.id,
+            "customer": "provider",
+        }
+    else:
+        basic_settings = {
+            "alias": "Remote Testsite",
+            "site_id": remote_site.id,
+        }
+
+    logger.info("Create site connection from '%s' to '%s'", central_site.id, remote_site.id)
+    central_site.openapi.sites.create(
+        {
+            "basic_settings": basic_settings,
+            "status_connection": {
+                "connection": {
+                    "socket_type": "tcp",
+                    "host": remote_site.http_address,
+                    "port": remote_site.livestatus_port,
+                    "encrypted": False,
+                    "verify": False,
+                },
+                "proxy": {
+                    "use_livestatus_daemon": "direct",
+                },
+                "connect_timeout": 2,
+                "persistent_connection": False,
+                "url_prefix": f"/{remote_site.id}/",
+                "status_host": {"status_host_set": "disabled"},
+                "disable_in_status_gui": False,
+            },
+            "configuration_connection": {
+                "enable_replication": True,
+                "url_of_remote_site": remote_site.internal_url,
+                "disable_remote_configuration": True,
+                "ignore_tls_errors": True,
+                "direct_login_to_web_gui_allowed": True,
+                "user_sync": {"sync_with_ldap_connections": "all"},
+                "replicate_event_console": True,
+                "replicate_extensions": True,
+                "message_broker_port": remote_site.message_broker_port,
+            },
+        }
+    )
+    logger.info("Establish site login '%s' to '%s'", central_site.id, remote_site.id)
+    central_site.openapi.sites.login(remote_site.id)
+    logger.info("Activating site setup changes")
+    central_site.openapi.changes.activate_and_wait_for_completion(
+        # this seems to be necessary to avoid sporadic CI failures
+        force_foreign_changes=True,
+    )
+    try:
+        logger.info("Connection from '%s' to '%s' established", central_site.id, remote_site.id)
+        yield
+    finally:
+        if os.environ.get("CLEANUP", "1") == "1":
+            logger.info("Remove site connection from '%s' to '%s'", central_site.id, remote_site.id)
+            logger.info("Hosts left: %s", central_site.openapi.hosts.get_all_names())
+            logger.info("Delete remote site connection '%s'", remote_site.id)
+            central_site.openapi.sites.delete(remote_site.id)
+            logger.info("Activating site removal changes")
+            central_site.openapi.changes.activate_and_wait_for_completion(
+                # this seems to be necessary to avoid sporadic CI failures
+                force_foreign_changes=True,
+            )

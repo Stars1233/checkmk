@@ -9,7 +9,8 @@ import re
 from collections.abc import Collection, Iterator, Mapping, Sequence
 from typing import override, TypeVar
 
-from cmk.utils.hostaddress import HostName
+from cmk.ccc.hostaddress import HostName
+
 from cmk.utils.labels import Labels
 from cmk.utils.tags import TagGroupID, TagID
 
@@ -619,7 +620,9 @@ class ModeFolder(WatoMode):
                 target_folder = tree.folder(
                     mandatory_parameter("_move_folder_to", request.var("_move_folder_to"))
                 )
-                self._folder.move_subfolder_to(what_folder, target_folder)
+                self._folder.move_subfolder_to(
+                    what_folder, target_folder, pprint_value=active_config.wato_pprint_config
+                )
             return redirect(folder_url)
 
         # Operations on current FOLDER
@@ -627,7 +630,10 @@ class ModeFolder(WatoMode):
         if request.has_var("_remove_tls_registration_from_folder"):
             if isinstance(self._folder, SearchFolder):
                 raise MKUserError(None, _("This action can not be performed on search results"))
-            remove_tls_registration(self._folder.get_hosts_by_site(list(self._folder.hosts())))
+            remove_tls_registration(
+                self._folder.get_hosts_by_site(list(self._folder.hosts())),
+                debug=active_config.debug,
+            )
             return None
 
         # Operations on HOSTS
@@ -638,14 +644,20 @@ class ModeFolder(WatoMode):
             delname = HostName(delname)
 
         if delname and self._folder.has_host(delname):
-            self._folder.delete_hosts([delname], automation=delete_hosts)
+            self._folder.delete_hosts(
+                [delname], automation=delete_hosts, pprint_value=active_config.wato_pprint_config
+            )
             return redirect(folder_url)
 
         # Move single hosts to other folders
         if (target_folder_str := request.var("_move_host_to")) is not None:
             hostname = request.get_validated_type_input_mandatory(HostName, "_ident")
             if self._folder.has_host(hostname):
-                self._folder.move_hosts([hostname], folder_tree().folder(target_folder_str))
+                self._folder.move_hosts(
+                    [hostname],
+                    folder_tree().folder(target_folder_str),
+                    pprint_value=active_config.wato_pprint_config,
+                )
                 return redirect(folder_url)
 
         # bulk operation on hosts
@@ -669,7 +681,9 @@ class ModeFolder(WatoMode):
             if target_folder_path is None:
                 raise MKUserError("_bulk_moveto", _("Please select the destination folder"))
             target_folder = folder_tree().folder(target_folder_path)
-            self._folder.move_hosts(selected_host_names, target_folder)
+            self._folder.move_hosts(
+                selected_host_names, target_folder, pprint_value=active_config.wato_pprint_config
+            )
             flash(_("Moved %d hosts to %s") % (len(selected_host_names), target_folder.title()))
             return redirect(folder_url)
 
@@ -698,7 +712,9 @@ class ModeFolder(WatoMode):
         if request.var("_remove_tls_registration_from_selection"):
             if isinstance(self._folder, SearchFolder):
                 raise MKUserError(None, _("This action can not be performed on search results"))
-            remove_tls_registration(self._folder.get_hosts_by_site(selected_host_names))
+            remove_tls_registration(
+                self._folder.get_hosts_by_site(selected_host_names), debug=active_config.debug
+            )
 
         return None
 
@@ -1212,7 +1228,9 @@ class ModeFolder(WatoMode):
             )
 
     def _delete_hosts(self, host_names: Sequence[HostName]) -> ActionResult:
-        self._folder.delete_hosts(host_names, automation=delete_hosts)
+        self._folder.delete_hosts(
+            host_names, automation=delete_hosts, pprint_value=active_config.wato_pprint_config
+        )
         flash(_("Successfully deleted %d hosts") % len(host_names))
         return redirect(self._folder.url())
 
@@ -1442,7 +1460,7 @@ class ModeEditFolder(ABCFolderMode):
 
     @override
     def _save(self, title: str, attributes: HostAttributes) -> None:
-        self._folder.edit(title, attributes)
+        self._folder.edit(title, attributes, pprint_value=active_config.wato_pprint_config)
 
 
 class ModeCreateFolder(ABCFolderMode):
@@ -1476,7 +1494,9 @@ class ModeCreateFolder(ABCFolderMode):
         else:
             name = find_available_folder_name(title, parent_folder)
 
-        parent_folder.create_subfolder(name, title, attributes)
+        parent_folder.create_subfolder(
+            name, title, attributes, pprint_value=active_config.wato_pprint_config
+        )
 
 
 class PageAjaxSetFoldertree(AjaxPage):

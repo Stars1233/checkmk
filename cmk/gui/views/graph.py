@@ -9,7 +9,7 @@ from collections.abc import Mapping, Sequence
 from typing import Literal
 from uuid import uuid4
 
-from cmk.utils.user import UserId
+from cmk.ccc.user import UserId
 
 from cmk.gui.config import active_config
 from cmk.gui.graphing._from_api import graphs_from_api, metrics_from_api, RegisteredMetric
@@ -63,8 +63,8 @@ def register(
     painter_option_registry: PainterOptionRegistry,
     multisite_builtin_views: dict[ViewName, ViewSpec],
 ) -> None:
-    painter_option_registry.register(PainterOptionGraphRenderOptions)
-    painter_option_registry.register(PainterOptionPNPTimerange)
+    painter_option_registry.register(PainterOptionGraphRenderOptions())
+    painter_option_registry.register(PainterOptionPNPTimerange())
 
     multisite_builtin_views.update(_GRAPH_VIEWS)
 

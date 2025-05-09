@@ -15,9 +15,9 @@ from redis import ConnectionError as RedisConnectionError
 
 from livestatus import LocalConnection, MKLivestatusSocketError
 
+from cmk.ccc.hostaddress import HostName
 from cmk.ccc.site import SiteId
 
-from cmk.utils.hostaddress import HostName
 from cmk.utils.paths import log_dir
 from cmk.utils.rulesets.ruleset_matcher import RuleSpec
 
@@ -31,7 +31,7 @@ from cmk.gui.watolib.activate_changes import ActivateChangesManager
 from cmk.gui.watolib.automation_commands import AutomationCommand
 from cmk.gui.watolib.automations import do_remote_automation, MKAutomationException
 from cmk.gui.watolib.check_mk_automations import analyze_host_rule_matches, delete_hosts
-from cmk.gui.watolib.hosts_and_folders import folder_tree, Host
+from cmk.gui.watolib.hosts_and_folders import Folder, folder_tree, Host
 from cmk.gui.watolib.rulesets import SingleRulesetRecursively, UseHostFolder
 
 _LOGGER = cmk.gui.log.logger.getChild("automatic_host_removal")
@@ -50,21 +50,24 @@ def execute_host_removal_job() -> None:
 
     _LOGGER_BACKGROUND_JOB.debug("Starting host removal background job")
 
+    def _folder_of_host(h: Host) -> Folder:
+        return h.folder()
+
     try:
         _LOGGER.info("Starting host removal background job")
 
         if not (
             hosts_to_be_removed := {
-                site_id: hosts for site_id, hosts in _hosts_to_be_removed() if hosts
+                site_id: hosts
+                for site_id, hosts in _hosts_to_be_removed(debug=active_config.debug)
+                if hosts
             }
         ):
             _LOGGER_BACKGROUND_JOB.debug("Found no hosts to be removed, exiting")
             _LOGGER.info("Found no hosts to be removed, exiting")
             return
-
         for folder, hosts_in_folder in itertools.groupby(
-            itertools.chain.from_iterable(hosts_to_be_removed.values()),
-            lambda h: h.folder(),
+            itertools.chain.from_iterable(hosts_to_be_removed.values()), _folder_of_host
         ):
             hostnames = list(host.name() for host in hosts_in_folder)
             _LOGGER_BACKGROUND_JOB.debug(
@@ -74,7 +77,11 @@ def execute_host_removal_job() -> None:
             )
             _LOGGER.info(f"Removing {len(hostnames)} hosts from folder {folder.title()}")
             with SuperUserContext():
-                folder.delete_hosts(hostnames, automation=delete_hosts)
+                folder.delete_hosts(
+                    hostnames,
+                    automation=delete_hosts,
+                    pprint_value=active_config.wato_pprint_config,
+                )
 
         _LOGGER.info("Hosts removed, starting activation of changes")
         _activate_changes(hosts_to_be_removed)
@@ -95,12 +102,15 @@ def _init_logging() -> None:
     _LOGGER.propagate = False
 
 
-def _hosts_to_be_removed() -> list[tuple[SiteId, list[Host]]]:
+def _hosts_to_be_removed(*, debug: bool) -> list[tuple[SiteId, list[Host]]]:
     _LOGGER_BACKGROUND_JOB.info("Gathering hosts to be removed")
-    return [(site_id, _hosts_to_be_removed_for_site(site_id)) for site_id in wato_site_ids()]
+    return [
+        (site_id, _hosts_to_be_removed_for_site(site_id, debug=debug))
+        for site_id in wato_site_ids()
+    ]
 
 
-def _hosts_to_be_removed_for_site(site_id: SiteId) -> list[Host]:
+def _hosts_to_be_removed_for_site(site_id: SiteId, *, debug: bool) -> list[Host]:
     if site_is_local(active_config, site_id):
         try:
             # evaluate the generator here to potentially catch the exception below
@@ -119,6 +129,7 @@ def _hosts_to_be_removed_for_site(site_id: SiteId) -> list[Host]:
                     get_site_config(active_config, site_id),
                     "hosts-for-auto-removal",
                     [],
+                    debug=debug,
                 )
             )
         except (MKUserError, MKAutomationException) as e:

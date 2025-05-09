@@ -16,9 +16,9 @@ from cryptography.hazmat.primitives.serialization import Encoding, load_pem_priv
 from dateutil.relativedelta import relativedelta
 
 from cmk.ccc.site import omd_site, SiteId
+from cmk.ccc.user import UserId
 
 from cmk.utils.log.security_event import SecurityEvent
-from cmk.utils.user import UserId
 
 from cmk.crypto.certificate import (
     Certificate,
@@ -28,6 +28,7 @@ from cmk.crypto.certificate import (
 )
 from cmk.crypto.hash import HashAlgorithm
 from cmk.crypto.keys import is_supported_private_key_type, PrivateKey
+from cmk.crypto.x509 import SubjectAlternativeName
 
 
 class _CNTemplate:
@@ -91,7 +92,7 @@ class RootCA(CertificateWithPrivateKey):
         new_cert, new_key = self.issue_new_certificate(
             common_name=common_name,
             organization=f"Checkmk Site {omd_site()}",
-            subject_alt_dns_names=[common_name],
+            subject_alternative_names=[SubjectAlternativeName.dns_name(common_name)],
             expiry=validity,
             key_size=key_size,
         )

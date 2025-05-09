@@ -17,9 +17,9 @@ from pytest import MonkeyPatch
 from tests.testlib.common.repo import is_managed_repo
 
 import cmk.ccc.version
+from cmk.ccc.user import UserId
 
 import cmk.utils.paths
-from cmk.utils.user import UserId
 
 import cmk.gui.userdb._user_attribute._registry
 import cmk.gui.userdb.session  # pylint: disable-unused-import
@@ -572,7 +572,7 @@ def test_user_attribute_sync_plugins(monkeypatch: MonkeyPatch, set_config: SetCo
         )
 
         plugins = dict(ldap.all_attribute_plugins())
-        ldap_plugin = plugins["vip"]()
+        ldap_plugin = plugins["vip"]
         assert ldap_plugin.title == "VIP"
         assert ldap_plugin.help == "VIP attribute"
         assert ldap_plugin.needed_attributes(connection, {"attr": "vip_attr"}) == ["vip_attr"]

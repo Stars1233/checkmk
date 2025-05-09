@@ -17,10 +17,11 @@ from typing import (
 )
 
 from cmk.ccc.exceptions import MKGeneralException
+from cmk.ccc.hostaddress import HostName
 from cmk.ccc.site import omd_site
+from cmk.ccc.user import UserId
 
 from cmk.utils.global_ident_type import GlobalIdent, PROGRAM_ID_DCD, PROGRAM_ID_QUICK_SETUP
-from cmk.utils.hostaddress import HostName
 from cmk.utils.password_store import Password
 from cmk.utils.rulesets.definition import RuleGroupType
 from cmk.utils.rulesets.ruleset_matcher import RuleSpec
@@ -211,27 +212,45 @@ def read_config_bundle(bundle_id: BundleId) -> ConfigBundle:
     raise MKGeneralException(f'Configuration bundle "{bundle_id}" does not exist.')
 
 
-def edit_config_bundle_configuration(bundle_id: BundleId, bundle: ConfigBundle) -> None:
+def edit_config_bundle_configuration(
+    bundle_id: BundleId, bundle: ConfigBundle, pprint_value: bool
+) -> None:
     store = ConfigBundleStore()
     all_bundles = store.load_for_modification()
     if bundle_id not in all_bundles:
         raise MKGeneralException(f'Configuration bundle "{bundle_id}" does not exist.')
     all_bundles[bundle_id] = bundle
-    store.save(all_bundles)
+    store.save(all_bundles, pprint_value)
 
 
 def _validate_and_prepare_create_calls(
-    bundle_ident: GlobalIdent, entities: CreateBundleEntities
+    bundle_ident: GlobalIdent,
+    entities: CreateBundleEntities,
+    *,
+    user_id: UserId | None,
+    pprint_value: bool,
+    use_git: bool,
 ) -> list[CreateFunction]:
     create_functions = []
     if entities.passwords:
         create_functions.append(
-            _prepare_create_passwords(bundle_ident, entities.passwords, load_passwords())
+            _prepare_create_passwords(
+                bundle_ident,
+                entities.passwords,
+                load_passwords(),
+                user_id=user_id,
+                pprint_value=pprint_value,
+                use_git=use_git,
+            )
         )
     if entities.hosts:
-        create_functions.append(_prepare_create_hosts(bundle_ident, entities.hosts))
+        create_functions.append(
+            _prepare_create_hosts(bundle_ident, entities.hosts, pprint_value=pprint_value)
+        )
     if entities.rules:
-        create_functions.append(_prepare_create_rules(bundle_ident, entities.rules))
+        create_functions.append(
+            _prepare_create_rules(bundle_ident, entities.rules, pprint_value=pprint_value)
+        )
     if entities.dcd_connections:
         create_functions.append(
             _prepare_create_dcd_connections(
@@ -242,7 +261,13 @@ def _validate_and_prepare_create_calls(
 
 
 def create_config_bundle(
-    bundle_id: BundleId, bundle: ConfigBundle, entities: CreateBundleEntities
+    bundle_id: BundleId,
+    bundle: ConfigBundle,
+    entities: CreateBundleEntities,
+    *,
+    user_id: UserId | None,
+    pprint_value: bool,
+    use_git: bool,
 ) -> None:
     bundle_ident = GlobalIdent(
         site_id=omd_site(), program_id=bundle["program_id"], instance_id=bundle_id
@@ -253,23 +278,40 @@ def create_config_bundle(
         raise MKGeneralException(f'Configuration bundle "{bundle_id}" already exists.')
 
     try:
-        create_functions = _validate_and_prepare_create_calls(bundle_ident, entities)
+        create_functions = _validate_and_prepare_create_calls(
+            bundle_ident,
+            entities,
+            user_id=user_id,
+            pprint_value=pprint_value,
+            use_git=use_git,
+        )
     except Exception as e:
         raise MKGeneralException(
             f'Configuration bundle "{bundle_id}" failed validation: {e}'
         ) from e
 
     all_bundles[bundle_id] = bundle
-    store.save(all_bundles)
+    store.save(all_bundles, pprint_value)
     try:
         for create_function in create_functions:
             create_function()
     except Exception as e:
-        delete_config_bundle(bundle_id)
+        delete_config_bundle(
+            bundle_id,
+            user_id=user_id,
+            pprint_value=pprint_value,
+            use_git=use_git,
+        )
         raise MKGeneralException(f'Failed to create configuration bundle "{bundle_id}"') from e
 
 
-def delete_config_bundle(bundle_id: BundleId) -> None:
+def delete_config_bundle(
+    bundle_id: BundleId,
+    *,
+    user_id: UserId | None,
+    pprint_value: bool,
+    use_git: bool,
+) -> None:
     store = ConfigBundleStore()
     all_bundles = store.load_for_modification()
     if (bundle := all_bundles.pop(bundle_id, None)) is None:
@@ -277,22 +319,40 @@ def delete_config_bundle(bundle_id: BundleId) -> None:
 
     # we have to delete the bundle itself first, so the overview page doesn't error out
     # when someone refreshes it while the deletion is in progress
-    store.save(all_bundles)
-    delete_config_bundle_objects(bundle_id, bundle["group"])
+    store.save(all_bundles, pprint_value)
+    delete_config_bundle_objects(
+        bundle_id,
+        bundle_group=bundle["group"],
+        user_id=user_id,
+        pprint_value=pprint_value,
+        use_git=use_git,
+    )
 
 
-def delete_config_bundle_objects(bundle_id: BundleId, bundle_group: str | None) -> None:
+def delete_config_bundle_objects(
+    bundle_id: BundleId,
+    *,
+    bundle_group: str | None,
+    user_id: UserId | None,
+    pprint_value: bool,
+    use_git: bool,
+) -> None:
     references = identify_bundle_references(bundle_group, {bundle_id})[bundle_id]
 
     # delete resources in inverse order to create, as rules may reference hosts for example
     if references.rules:
-        _delete_rules(references.rules)
+        _delete_rules(references.rules, pprint_value=pprint_value)
     if references.hosts:
-        _delete_hosts(references.hosts)
+        _delete_hosts(references.hosts, pprint_value=pprint_value)
     if references.passwords:
-        _delete_passwords(references.passwords)
+        _delete_passwords(
+            references.passwords,
+            user_id=user_id,
+            pprint_value=pprint_value,
+            use_git=use_git,
+        )
     if references.dcd_connections:
-        _delete_dcd_connections(references.dcd_connections)
+        _delete_dcd_connections(references.dcd_connections, pprint_value=pprint_value)
 
 
 def _collect_many(values: Iterable[tuple[str, _T]]) -> Mapping[BundleId, Sequence[_T]]:
@@ -323,7 +383,9 @@ def _get_host_attributes(bundle_ident: GlobalIdent, params: CreateHost) -> HostA
     return attributes
 
 
-def _prepare_create_hosts(bundle_ident: GlobalIdent, hosts: Iterable[CreateHost]) -> CreateFunction:
+def _prepare_create_hosts(
+    bundle_ident: GlobalIdent, hosts: Iterable[CreateHost], *, pprint_value: bool
+) -> CreateFunction:
     folder_getter = itemgetter("folder")
     hosts_sorted_by_folder: list[CreateHost] = sorted(hosts, key=folder_getter)
     folder_and_valid_hosts = []
@@ -347,12 +409,12 @@ def _prepare_create_hosts(bundle_ident: GlobalIdent, hosts: Iterable[CreateHost]
 
     def create() -> None:
         for f, validated_hosts in folder_and_valid_hosts:
-            f.create_validated_hosts(validated_hosts)
+            f.create_validated_hosts(validated_hosts, pprint_value=pprint_value)
 
     return create
 
 
-def _delete_hosts(hosts: Iterable[Host]) -> None:
+def _delete_hosts(hosts: Iterable[Host], *, pprint_value: bool) -> None:
     folder_getter = itemgetter(0)
     folders_and_hosts = sorted(
         ((host.folder(), host) for host in hosts),
@@ -361,7 +423,10 @@ def _delete_hosts(hosts: Iterable[Host]) -> None:
     for folder, host_iter in groupby(folders_and_hosts, key=folder_getter):  # type: Folder, Iterable[tuple[Folder, Host]]
         host_names = [host.name() for _folder, host in host_iter]
         folder.delete_hosts(
-            host_names, automation=check_mk_automations.delete_hosts, allow_locked_deletion=True
+            host_names,
+            automation=check_mk_automations.delete_hosts,
+            allow_locked_deletion=True,
+            pprint_value=pprint_value,
         )
 
 
@@ -377,6 +442,10 @@ def _prepare_create_passwords(
     bundle_ident: GlobalIdent,
     create_passwords: Collection[CreatePassword],
     all_passwords: Mapping[str, Password],
+    *,
+    user_id: UserId | None,
+    pprint_value: bool,
+    use_git: bool,
 ) -> CreateFunction:
     for password in create_passwords:
         if password["id"] in all_passwords:
@@ -387,14 +456,32 @@ def _prepare_create_passwords(
             spec = pw["spec"]
             spec["locked_by"] = bundle_ident
             spec["owned_by"] = user.id
-            save_password(pw["id"], spec, new_password=True)
+            save_password(
+                pw["id"],
+                spec,
+                new_password=True,
+                user_id=user_id,
+                pprint_value=pprint_value,
+                use_git=use_git,
+            )
 
     return create
 
 
-def _delete_passwords(passwords: Iterable[tuple[str, Password]]) -> None:
+def _delete_passwords(
+    passwords: Iterable[tuple[str, Password]],
+    *,
+    user_id: UserId | None,
+    pprint_value: bool,
+    use_git: bool,
+) -> None:
     for password_id, _password in passwords:
-        remove_password(password_id)
+        remove_password(
+            password_id,
+            user_id=user_id,
+            pprint_value=pprint_value,
+            use_git=use_git,
+        )
 
 
 def _iter_all_rules(rulespecs: set[str] | None) -> Iterable[tuple[Folder, int, Rule]]:
@@ -419,7 +506,9 @@ def _collect_rules(
             yield bundle_id, rule
 
 
-def _prepare_create_rules(bundle_ident: GlobalIdent, rules: Iterable[CreateRule]) -> CreateFunction:
+def _prepare_create_rules(
+    bundle_ident: GlobalIdent, rules: Iterable[CreateRule], *, pprint_value: bool
+) -> CreateFunction:
     validated_data = []
     # sort by folder, then ruleset
     sorted_rules = sorted(rules, key=itemgetter("folder", "ruleset"))
@@ -449,12 +538,12 @@ def _prepare_create_rules(bundle_ident: GlobalIdent, rules: Iterable[CreateRule]
                 index = rule.ruleset.append_rule(f, rule)
                 rule.ruleset.add_new_rule_change(index, f, rule)
 
-            rulesets.save_folder()
+            rulesets.save_folder(pprint_value=pprint_value)
 
     return create
 
 
-def _delete_rules(rules: Iterable[Rule]) -> None:
+def _delete_rules(rules: Iterable[Rule], *, pprint_value: bool) -> None:
     folder_getter = itemgetter(0)
     sorted_rules = sorted(((rule.folder, rule) for rule in rules), key=folder_getter)
     for folder, rule_iter in groupby(sorted_rules, key=folder_getter):  # type: Folder, Iterable[tuple[Folder, Rule]]
@@ -465,7 +554,7 @@ def _delete_rules(rules: Iterable[Rule]) -> None:
             actual_rule = ruleset.get_rule_by_id(rule.id)
             rulesets.get(rule.ruleset.name).delete_rule(actual_rule)
 
-        rulesets.save_folder()
+        rulesets.save_folder(pprint_value=pprint_value)
 
 
 def _collect_dcd_connections(
@@ -495,16 +584,21 @@ def _prepare_create_dcd_connections(
     return create
 
 
-def _delete_dcd_connections(dcd_connections: Sequence[tuple[str, DCDConnectionSpec]]) -> None:
+def _delete_dcd_connections(
+    dcd_connections: Sequence[tuple[str, DCDConnectionSpec]], *, pprint_value: bool
+) -> None:
     for dcd_connection_id, _spec in dcd_connections:
         DCDConnectionHook.delete_dcd_connection(dcd_connection_id)
 
     _delete_hosts(
-        host
-        for _dcd_id, host in _collect_hosts(
-            _prepare_id_finder(PROGRAM_ID_DCD, {dcd_id for dcd_id, _spec in dcd_connections}),
-            Host.all().values(),
-        )
+        (
+            host
+            for _dcd_id, host in _collect_hosts(
+                _prepare_id_finder(PROGRAM_ID_DCD, {dcd_id for dcd_id, _spec in dcd_connections}),
+                Host.all().values(),
+            )
+        ),
+        pprint_value=pprint_value,
     )
 
 

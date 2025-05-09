@@ -9,6 +9,7 @@ from collections.abc import Collection
 import cmk.utils.paths
 
 from cmk.gui.backup import handler
+from cmk.gui.config import active_config
 from cmk.gui.http import request
 from cmk.gui.i18n import _
 from cmk.gui.logged_in import user
@@ -182,7 +183,12 @@ class ModeBackupUploadKey(handler.PageBackupUploadKey, WatoMode):
         super().__init__(key_store=make_site_backup_keypair_store())
 
     def _upload_key(self, key_file: str, alias: str, passphrase: Password) -> None:
-        log_audit("upload-backup-key", "Uploaded backup key '%s'" % alias)
+        log_audit(
+            action="upload-backup-key",
+            message="Uploaded backup key '%s'" % alias,
+            user_id=user.id,
+            use_git=active_config.wato_use_git,
+        )
         super()._upload_key(key_file, alias, passphrase)
 
 

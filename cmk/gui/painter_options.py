@@ -8,7 +8,7 @@ from __future__ import annotations
 import abc
 import time
 from collections.abc import Sequence
-from typing import Any
+from typing import Any, override
 
 from cmk.ccc.plugin_registry import Registry
 
@@ -28,12 +28,12 @@ from cmk.gui.view_utils import CellSpec
 
 
 def register(painter_option_registry_: PainterOptionRegistry) -> None:
-    painter_option_registry.register(PainterOptionRefresh)
-    painter_option_registry.register(PainterOptionNumColumns)
+    painter_option_registry.register(PainterOptionRefresh())
+    painter_option_registry.register(PainterOptionNumColumns())
 
 
 class PainterOption(abc.ABC):
-    def __init__(self):
+    def __init__(self) -> None:
         self.request = request
         self.config = active_config
 
@@ -146,7 +146,7 @@ class PainterOptions:
             request.del_var(varname)
 
     def get_valuespec_of(self, name: str) -> ValueSpec:
-        return painter_option_registry[name]().valuespec
+        return painter_option_registry[name].valuespec
 
     def _is_set(self, name: str) -> bool:
         return name in self._options
@@ -207,19 +207,22 @@ class PainterOptions:
             html.hidden_fields()
 
 
-class PainterOptionRegistry(Registry[type[PainterOption]]):
-    def plugin_name(self, instance: type[PainterOption]) -> str:
-        return instance().ident
+class PainterOptionRegistry(Registry[PainterOption]):
+    @override
+    def plugin_name(self, instance: PainterOption) -> str:
+        return instance.ident
 
 
 painter_option_registry = PainterOptionRegistry()
 
 
 class PainterOptionRefresh(PainterOption):
+    @override
     @property
     def ident(self) -> str:
         return "refresh"
 
+    @override
     @property
     def valuespec(self) -> ValueSpec:
         choices = [
@@ -232,10 +235,12 @@ class PainterOptionRefresh(PainterOption):
 
 
 class PainterOptionNumColumns(PainterOption):
+    @override
     @property
     def ident(self) -> str:
         return "num_columns"
 
+    @override
     @property
     def valuespec(self) -> ValueSpec:
         return DropdownChoice(

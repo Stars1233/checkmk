@@ -4,7 +4,7 @@
 # conditions defined in the file COPYING, which is part of this source code package.
 
 
-from datetime import datetime, timezone
+from datetime import datetime, UTC
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -16,8 +16,9 @@ from cmk.ccc.site import SiteId
 
 from cmk.utils.certs import CN_TEMPLATE, RootCA
 
-from cmk.crypto.certificate import Certificate, CertificateWithPrivateKey, X509Name
+from cmk.crypto.certificate import Certificate, CertificateWithPrivateKey
 from cmk.crypto.keys import PlaintextPrivateKeyPEM, PrivateKey
+from cmk.crypto.x509 import SubjectAlternativeName, X509Name
 
 
 def _rsa_private_keys_equal(key_a: PrivateKey, key_b: PrivateKey) -> bool:
@@ -227,9 +228,9 @@ MC4CAQAwBQYDK2VwBCIEIK/fWo6sKC4PDigGfEntUd/o8KKs76Hsi03su4QhpZox
     peter_cert = Certificate._create(
         subject_public_key=peter_key.public_key,
         subject_name=X509Name.create(common_name="peter"),
-        subject_alt_dns_names=None,
+        subject_alternative_names=None,
         expiry=relativedelta(days=1),
-        start_date=datetime.now(timezone.utc),
+        start_date=datetime.now(UTC),
         is_ca=True,
         issuer_signing_key=peters_mom.private_key,
         issuer_name=peters_mom.certificate.subject,
@@ -239,7 +240,7 @@ MC4CAQAwBQYDK2VwBCIEIK/fWo6sKC4PDigGfEntUd/o8KKs76Hsi03su4QhpZox
         daughter_cert, daughter_key = peter_root_ca.issue_new_certificate(
             common_name="peters_daughter",
             organization="Checkmk Testing",
-            subject_alt_dns_names=["peters_daughter"],
+            subject_alternative_names=[SubjectAlternativeName.dns_name("peters_daughter")],
             expiry=relativedelta(days=100),
             key_size=1024,
         )

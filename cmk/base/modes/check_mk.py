@@ -22,6 +22,7 @@ import cmk.ccc.debug
 import cmk.ccc.version as cmk_version
 from cmk.ccc import store
 from cmk.ccc.exceptions import MKBailOut, MKGeneralException, MKTimeout, OnError
+from cmk.ccc.hostaddress import HostAddress, HostName, Hosts
 
 import cmk.utils.cleanup
 import cmk.utils.password_store
@@ -41,18 +42,17 @@ from cmk.utils.diagnostics import (
     OPT_PERFORMANCE_GRAPHS,
 )
 from cmk.utils.everythingtype import EVERYTHING
-from cmk.utils.hostaddress import HostAddress, HostName, Hosts
 from cmk.utils.log import console, section
 from cmk.utils.paths import configuration_lockfile
 from cmk.utils.rulesets.tuple_rulesets import hosttags_match_taglist
 from cmk.utils.sectionname import SectionMap, SectionName
 from cmk.utils.structured_data import (
     ImmutableTree,
+    InventoryPaths,
+    InventoryStore,
     make_meta,
     MutableTree,
     RawIntervalFromConfig,
-    TreeOrArchiveStore,
-    TreeStore,
     UpdateResult,
 )
 from cmk.utils.tags import TagID
@@ -2620,13 +2620,10 @@ def mode_inventory(options: _InventoryOptions, args: list[str]) -> None:
         logger=logging.getLogger("cmk.base.inventory"),
     )
 
-    store.makedirs(cmk.utils.paths.inventory_output_dir)
-    store.makedirs(cmk.utils.paths.inventory_archive_dir)
-
     section_plugins = SectionPluginMapper({**plugins.agent_sections, **plugins.snmp_sections})
     inventory_plugins = plugins.inventory_plugins
 
-    tree_store = TreeStore(Path(cmk.utils.paths.inventory_output_dir))
+    inv_store = InventoryStore(cmk.utils.paths.omd_root)
 
     for hostname in hostnames:
 
@@ -2654,7 +2651,7 @@ def mode_inventory(options: _InventoryOptions, args: list[str]) -> None:
         section.section_begin(hostname)
         section.section_step("Inventorizing")
         try:
-            previous_tree = tree_store.load(host_name=hostname)
+            previous_tree = inv_store.load_inventory_tree(host_name=hostname)
             if hostname in hosts_config.clusters:
                 check_results = inventory.inventorize_cluster(
                     config_cache.nodes(hostname),
@@ -2735,11 +2732,8 @@ def execute_active_check_inventory(
     parameters: HWSWInventoryParameters,
     raw_intervals_from_config: Sequence[RawIntervalFromConfig],
 ) -> Sequence[ActiveCheckResult]:
-    tree_or_archive_store = TreeOrArchiveStore(
-        Path(cmk.utils.paths.inventory_output_dir),
-        Path(cmk.utils.paths.inventory_archive_dir),
-    )
-    previous_tree = tree_or_archive_store.load_previous(host_name=host_name)
+    inv_store = InventoryStore(cmk.utils.paths.omd_root)
+    previous_tree = inv_store.load_previous_inventory_tree(host_name=host_name)
 
     if host_name in hosts_config.clusters:
         result = inventory.inventorize_cluster(
@@ -2769,10 +2763,11 @@ def execute_active_check_inventory(
             previous_tree=previous_tree,
         )
 
+    inv_paths = InventoryPaths(cmk.utils.paths.omd_root)
     if result.no_data_or_files:
-        AutoQueue(cmk.utils.paths.autoinventory_dir).add(host_name)
+        AutoQueue(inv_paths.auto_dir).add(host_name)
     else:
-        (AutoQueue(cmk.utils.paths.autoinventory_dir).path / str(host_name)).unlink(missing_ok=True)
+        (AutoQueue(inv_paths.auto_dir).path / str(host_name)).unlink(missing_ok=True)
 
     if not (result.processing_failed or result.no_data_or_files):
         save_tree_actions = _get_save_tree_actions(
@@ -2783,10 +2778,10 @@ def execute_active_check_inventory(
         # The order of archive or save is important:
         if save_tree_actions.do_archive:
             console.verbose("Archive current inventory tree.")
-            tree_or_archive_store.archive(host_name=host_name)
+            inv_store.archive_inventory_tree(host_name=host_name)
         if save_tree_actions.do_save:
             console.verbose("Save new inventory tree.")
-            tree_or_archive_store.save(
+            inv_store.save_inventory_tree(
                 host_name=host_name,
                 tree=result.inventory_tree,
                 meta=make_meta(do_archive=save_tree_actions.do_archive),
@@ -2834,7 +2829,7 @@ def mode_inventorize_marked_hosts(options: Mapping[str, object]) -> None:
     except ValueError as exc:
         raise MKBailOut("Unknown SNMP backend") from exc
 
-    if not (queue := AutoQueue(cmk.utils.paths.autoinventory_dir)):
+    if not (queue := AutoQueue(InventoryPaths(cmk.utils.paths.omd_root).auto_dir)):
         console.verbose("Autoinventory: No hosts marked by inventory check")
         return
 

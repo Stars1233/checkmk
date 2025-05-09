@@ -35,10 +35,10 @@ from typing import cast, Literal
 import cmk.ccc.debug
 from cmk.ccc import store
 from cmk.ccc.exceptions import MKGeneralException
+from cmk.ccc.hostaddress import HostName
 
 import cmk.utils.paths
 from cmk.utils import log
-from cmk.utils.hostaddress import HostName
 from cmk.utils.http_proxy_config import HTTPProxyConfig
 from cmk.utils.log import console
 from cmk.utils.macros import replace_macros_in_str
@@ -1511,7 +1511,7 @@ def rbn_match_contact_groups(
 
         for required_group in rule["contact_match_groups"]:
             contactgroups = contact["contactgroups"]
-            assert isinstance(contactgroups, (tuple, list))
+            assert isinstance(contactgroups, tuple | list)
 
             if required_group not in contactgroups:
                 return "he/she is not member of the contact group {} (his groups are {})".format(

@@ -52,18 +52,15 @@ _STR_PATHS: Final = {
     "htpasswd_file",
     "livestatus_unix_socket",
     "livebackendsdir",
-    "inventory_output_dir",
-    "inventory_archive_dir",
-    "inventory_delta_cache_dir",
-    "status_data_dir",
     "share_dir",
     "checks_dir",
+    "cmk_addons_plugins_dir",
+    "cmk_plugins_dir",
     "inventory_dir",
     "legacy_check_manpages_dir",
     "agents_dir",
     "web_dir",
     "lib_dir",
-    "autoinventory_dir",
 }
 
 

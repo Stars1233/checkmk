@@ -29,7 +29,6 @@
 
 from __future__ import annotations
 
-import abc
 import copy
 import shutil
 import time
@@ -66,12 +65,12 @@ import cmk.ccc.version as cmk_version
 from cmk.ccc import store
 from cmk.ccc.exceptions import MKGeneralException
 from cmk.ccc.site import omd_site
+from cmk.ccc.user import UserId
 
 import cmk.utils.paths
 from cmk.utils import password_store
 from cmk.utils.log.security_event import log_security_event
 from cmk.utils.macros import replace_macros_in_str
-from cmk.utils.user import UserId
 
 from cmk.gui import hooks, log
 from cmk.gui.config import active_config
@@ -83,6 +82,7 @@ from cmk.gui.logged_in import user as logged_in_user
 from cmk.gui.site_config import has_wato_slave_sites
 from cmk.gui.type_defs import Users, UserSpec
 from cmk.gui.utils import escaping
+from cmk.gui.utils.html import HTML
 from cmk.gui.utils.security_log_events import UserManagementEvent
 from cmk.gui.valuespec import (
     CascadingDropdown,
@@ -126,13 +126,13 @@ def register(
 ) -> None:
     user_connector_registry.register(LDAPUserConnector)
 
-    ldap_attribute_plugin_registry.register(LDAPAttributePluginMail)
-    ldap_attribute_plugin_registry.register(LDAPAttributePluginAlias)
-    ldap_attribute_plugin_registry.register(LDAPAttributePluginAuthExpire)
-    ldap_attribute_plugin_registry.register(LDAPAttributePluginPager)
-    ldap_attribute_plugin_registry.register(LDAPAttributePluginGroupsToContactgroups)
-    ldap_attribute_plugin_registry.register(LDAPAttributePluginGroupAttributes)
-    ldap_attribute_plugin_registry.register(LDAPAttributePluginGroupsToRoles)
+    ldap_attribute_plugin_registry.register(LDAPAttributePluginMail())
+    ldap_attribute_plugin_registry.register(LDAPAttributePluginAlias())
+    ldap_attribute_plugin_registry.register(LDAPAttributePluginAuthExpire())
+    ldap_attribute_plugin_registry.register(LDAPAttributePluginPager())
+    ldap_attribute_plugin_registry.register(LDAPAttributePluginGroupsToContactgroups())
+    ldap_attribute_plugin_registry.register(LDAPAttributePluginGroupAttributes())
+    ldap_attribute_plugin_registry.register(LDAPAttributePluginGroupsToRoles())
 
 
 # LDAP attributes are case insensitive, we only use lower case!
@@ -316,7 +316,9 @@ class LDAPUserConnector(UserConnector[LDAPUserConnectionConfig]):
             return None
         return self._config["customer"]
 
-    def connect_server(self, server: str) -> tuple[ldap.ldapobject.ReconnectLDAPObject, str | None]:
+    def connect_server(
+        self, server: str
+    ) -> tuple[ldap.ldapobject.ReconnectLDAPObject, None] | tuple[None, str]:
         """Connects to an LDAP server using the provided server uri"""
         try:
             # We don't want this debugging possibly enabled
@@ -368,11 +370,11 @@ class LDAPUserConnector(UserConnector[LDAPUserConnectionConfig]):
             else:
                 msg = "%s" % e
 
-            return None, f"{uri}: {msg}"  # type: ignore[return-value]
+            return None, f"{uri}: {msg}"
 
         except MKLDAPException as e:
             self._clear_nearest_dc_cache()
-            return None, "%s" % e  # type: ignore[return-value]
+            return None, "%s" % e
 
     def _format_ldap_uri(self, server: str) -> str:
         uri = "ldaps://" if self.use_ssl() else "ldap://"
@@ -409,7 +411,7 @@ class LDAPUserConnector(UserConnector[LDAPUserConnectionConfig]):
             for server in servers:
                 ldap_obj, error_msg = self.connect_server(server)
 
-                if ldap_obj:  # type: ignore[truthy-bool]
+                if ldap_obj:
                     self._ldap_obj = ldap_obj
                 else:
                     if error_msg is not None:  # it should be, though
@@ -561,7 +563,7 @@ class LDAPUserConnector(UserConnector[LDAPUserConnectionConfig]):
         plugins = dict(all_attribute_plugins())
         for key, params in self._config["active_plugins"].items():
             try:
-                plugin = plugins[key]()
+                plugin = plugins[key]
             except KeyError:
                 continue
             if not params:
@@ -1471,12 +1473,7 @@ class LDAPUserConnector(UserConnector[LDAPUserConnectionConfig]):
                     ldap_user_id
                 )
             except CantSyncLDAPUserException:
-                cant_sync_msg = (
-                    '  SKIP SYNC "{}" name conflict with user from "{}" connector.'.format(
-                        ldap_user_id,
-                        self.id,
-                    )
-                )
+                cant_sync_msg = f'  SKIP SYNC "{ldap_user_id}" name conflict with user from "{self.id}" connector.'
                 if not self._has_suffix():
                     cant_sync_msg += " A suffix should be added to this connector."
                 self._logger.info(cant_sync_msg)
@@ -1696,42 +1693,48 @@ def _unescape_dn(dn):
 #   '----------------------------------------------------------------------'
 
 
-class LDAPAttributePlugin(abc.ABC):
+class LDAPAttributePlugin:
     """Base class for all LDAP attribute synchronization plugins"""
 
-    @property
-    @abc.abstractmethod
-    def ident(self) -> str:
-        raise NotImplementedError()
+    def __init__(
+        self,
+        *,
+        builtin: bool,
+        ident: str,
+        title: str,
+        help_text: str | HTML | None,
+    ) -> None:
+        self._builtin = builtin
+        self._ident = ident
+        self._title = title
+        self._help_text = help_text
 
     @property
-    @abc.abstractmethod
-    def title(self) -> str:
-        raise NotImplementedError()
-
-    @property
-    @abc.abstractmethod
-    def help(self) -> str:
-        raise NotImplementedError()
-
-    @property
-    @abc.abstractmethod
     def is_builtin(self) -> bool:
-        raise NotImplementedError()
+        return self._builtin
 
-    @abc.abstractmethod
+    @property
+    def ident(self) -> str:
+        return self._ident
+
+    @property
+    def title(self) -> str:
+        return self._title
+
+    @property
+    def help(self) -> str | HTML | None:
+        return self._help_text
+
     def lock_attributes(self, params: dict) -> list[str]:
         """List of user attributes to lock
 
         Normally the attributes that are modified by the sync_func()"""
         raise NotImplementedError()
 
-    @abc.abstractmethod
     def needed_attributes(self, connection: LDAPUserConnector, params: dict) -> list[str]:
         """Gathers the LDAP user attributes that are needed by this plug-in"""
         raise NotImplementedError()
 
-    @abc.abstractmethod
     def sync_func(
         self,
         connection: LDAPUserConnector,
@@ -1752,13 +1755,6 @@ class LDAPAttributePlugin(abc.ABC):
             totext=_("This synchronization plug-in has no parameters."),
         )
 
-    # Dictionary(
-    #    title=plugin['title'],
-    #    help=plugin['help'],
-    #    elements=plugin['parameters'],
-    #    required_keys=plugin.get('required_parameters', []),
-    # )))
-
     @property
     def multisite_attributes(self) -> list[str]:
         """When a plug-in introduces new user attributes, it should declare the output target for
@@ -1776,31 +1772,69 @@ class LDAPAttributePlugin(abc.ABC):
         return []
 
 
-class LDAPAttributePluginRegistry(cmk.ccc.plugin_registry.Registry[type[LDAPAttributePlugin]]):
+class LDAPAttributePluginRegistry(cmk.ccc.plugin_registry.Registry[LDAPAttributePlugin]):
     def plugin_name(self, instance):
-        return instance().ident
-
-
-class LDAPBuiltinAttributePlugin(LDAPAttributePlugin):
-    """Base class for all built-in based sync plugins"""
-
-    @property
-    def is_builtin(self) -> bool:
-        return True
+        return instance.ident
 
 
 class LDAPUserAttributePlugin(LDAPAttributePlugin):
     """Base class for all custom user attribute based sync plugins"""
 
-    @property
-    def is_builtin(self) -> bool:
-        return False
+    def __init__(self, *, ident: str, title: str, help_text: str | HTML | None) -> None:
+        super().__init__(
+            builtin=False,
+            ident=ident,
+            title=title,
+            help_text=help_text,
+        )
+
+    def lock_attributes(self, params: dict) -> list[str]:
+        return [self.ident]
+
+    def needed_attributes(self, connection: LDAPUserConnector, params: dict) -> list[str]:
+        return [params.get("attr", connection._ldap_attr(self.ident)).lower()]
+
+    def sync_func(
+        self,
+        connection: LDAPUserConnector,
+        plugin: str,
+        params: dict,
+        user_id: UserId,
+        ldap_user: LDAPUserSpec,
+        user: dict,
+    ) -> dict:
+        attr = self.needed_attributes(connection, params)[0]
+        if attr in ldap_user:
+            attr_value = ldap_user[attr][0]
+            # LDAP attribute in boolean format sends str "TRUE" or "FALSE"
+            if plugin == "disable_notifications":
+                return {plugin: {"disable": True} if attr_value == "TRUE" else {}}
+            return {plugin: attr_value}
+        return {}
+
+    def parameters(self, connection: LDAPUserConnector | None) -> Dictionary:
+        return Dictionary(
+            title=self.title,
+            help=self.help,
+            elements=[
+                (
+                    "attr",
+                    TextInput(
+                        title=_("LDAP attribute to sync"),
+                        help=_(
+                            "The LDAP attribute whose contents shall be synced into this custom attribute."
+                        ),
+                        default_value=lambda: ldap_attr_of_connection(connection, self.ident),
+                    ),
+                ),
+            ],
+        )
 
 
 ldap_attribute_plugin_registry = LDAPAttributePluginRegistry()
 
 
-def all_attribute_plugins() -> list[tuple[str, type[LDAPAttributePlugin]]]:
+def all_attribute_plugins() -> list[tuple[str, LDAPAttributePlugin]]:
     return [
         *ldap_attribute_plugin_registry.items(),
         *config_based_custom_user_attribute_sync_plugins(),
@@ -1811,66 +1845,20 @@ def ldap_attribute_plugins_elements(
     connection: LDAPUserConnector | None,
 ) -> list[tuple[str, FixedValue | Dictionary]]:
     """Returns a list of pairs (key, parameters) of all available attribute plugins"""
-    elements = []
-    items = sorted(
-        [(ident, plugin_class()) for ident, plugin_class in all_attribute_plugins()],
-        key=lambda x: x[1].title,
-    )
-    for key, plugin in items:
-        elements.append((key, plugin.parameters(connection)))
-    return elements
+    return [
+        (key, plugin.parameters(connection))
+        for key, plugin in sorted(all_attribute_plugins(), key=lambda x: x[1].title)
+    ]
 
 
-def config_based_custom_user_attribute_sync_plugins() -> list[
-    tuple[str, type[LDAPUserAttributePlugin]]
-]:
-    """Register sync plug-ins for all custom user attributes (assuming simple data types)"""
+def config_based_custom_user_attribute_sync_plugins() -> list[tuple[str, LDAPAttributePlugin]]:
     return [
         (
             name,
-            type(
-                "LDAPUserAttributePlugin%s" % name.title(),
-                (LDAPUserAttributePlugin,),
-                {
-                    "ident": name,
-                    "title": attr.valuespec().title(),
-                    "help": attr.valuespec().help(),
-                    "needed_attributes": lambda self, connection, params: [
-                        params.get("attr", connection._ldap_attr(self.ident)).lower()
-                    ],
-                    "lock_attributes": lambda self, params: [self.ident],
-                    "parameters": lambda self, connection: Dictionary(
-                        title=self.title,
-                        help=self.help,
-                        elements=[
-                            (
-                                "attr",
-                                TextInput(
-                                    title=_("LDAP attribute to sync"),
-                                    help=_(
-                                        "The LDAP attribute whose contents shall be synced into this custom attribute."
-                                    ),
-                                    default_value=lambda: ldap_attr_of_connection(
-                                        connection, self.ident
-                                    ),
-                                ),
-                            ),
-                        ],
-                    ),
-                    "sync_func": lambda self,
-                    connection,
-                    plugin,
-                    params,
-                    user_id,
-                    ldap_user,
-                    user: _ldap_sync_simple(
-                        user_id,
-                        ldap_user,
-                        user,
-                        plugin,
-                        self.needed_attributes(connection, params)[0],
-                    ),
-                },
+            LDAPUserAttributePlugin(
+                ident=name,
+                title=attr.valuespec().title() or name,
+                help_text=attr.valuespec().help(),
             ),
         )
         for name, attr in get_user_attributes()
@@ -1895,18 +1883,6 @@ def ldap_filter_of_connection(
         # The default type is "Active directory", so we use it here.
         return ldap_filter_map["ad"].get(key, "(objectclass=*)")
     return connection._ldap_filter(key, handle_config)
-
-
-def _ldap_sync_simple(
-    user_id: UserId, ldap_user: LDAPUserSpec, user: dict, user_attr: str, attr: str
-) -> dict:
-    if attr in ldap_user:
-        attr_value = ldap_user[attr][0]
-        # LDAP attribute in boolean format sends str "TRUE" or "FALSE"
-        if user_attr == "disable_notifications":
-            return {user_attr: {"disable": attr_value == "TRUE"}}
-        return {user_attr: attr_value}
-    return {}
 
 
 def _get_connection_choices(add_this: bool = True) -> list[tuple[str | None, str]]:
@@ -2003,18 +1979,14 @@ def _group_membership_parameters():
     ]
 
 
-class LDAPAttributePluginMail(LDAPBuiltinAttributePlugin):
-    @property
-    def ident(self) -> str:
-        return "email"
-
-    @property
-    def title(self) -> str:
-        return _("Email address")
-
-    @property
-    def help(self):
-        return _("Synchronizes the email of the LDAP user account into Checkmk.")
+class LDAPAttributePluginMail(LDAPAttributePlugin):
+    def __init__(self) -> None:
+        super().__init__(
+            builtin=True,
+            ident="email",
+            title=_("Email address"),
+            help_text=_("Synchronizes the email of the LDAP user account into Checkmk."),
+        )
 
     def lock_attributes(self, params):
         return ["email"]
@@ -2068,20 +2040,16 @@ class LDAPAttributePluginMail(LDAPBuiltinAttributePlugin):
 #   '----------------------------------------------------------------------'
 
 
-class LDAPAttributePluginAlias(LDAPBuiltinAttributePlugin):
-    @property
-    def ident(self) -> str:
-        return "alias"
-
-    @property
-    def title(self) -> str:
-        return _("Alias")
-
-    @property
-    def help(self):
-        return _(
-            "Populates the alias attribute of the Setup user by synchronizing an attribute "
-            "from the LDAP user account. By default the LDAP attribute <tt>cn</tt> is used."
+class LDAPAttributePluginAlias(LDAPAttributePlugin):
+    def __init__(self) -> None:
+        super().__init__(
+            builtin=True,
+            ident="alias",
+            title=_("Alias"),
+            help_text=_(
+                "Populates the alias attribute of the Setup user by synchronizing an attribute "
+                "from the LDAP user account. By default the LDAP attribute <tt>cn</tt> is used."
+            ),
         )
 
     def lock_attributes(self, params):
@@ -2098,14 +2066,9 @@ class LDAPAttributePluginAlias(LDAPBuiltinAttributePlugin):
         user_id: UserId,
         ldap_user: LDAPUserSpec,
         user: dict,
-    ) -> dict:
-        return _ldap_sync_simple(
-            user_id,
-            ldap_user,
-            user,
-            "alias",
-            params.get("attr", connection._ldap_attr("cn")).lower(),
-        )
+    ) -> dict[str, str]:
+        attr = params.get("attr", connection._ldap_attr("cn")).lower()
+        return {self.ident: ldap_user[attr][0]} if attr in ldap_user else {}
 
     def parameters(self, connection: LDAPUserConnector | None) -> Dictionary:
         return Dictionary(
@@ -2135,27 +2098,23 @@ class LDAPAttributePluginAlias(LDAPBuiltinAttributePlugin):
 #   '----------------------------------------------------------------------'
 
 
-class LDAPAttributePluginAuthExpire(LDAPBuiltinAttributePlugin):
+class LDAPAttributePluginAuthExpire(LDAPAttributePlugin):
     """Checks whether or not the user auth must be invalidated
 
     This is done by increasing the auth serial of the user. In first instance, it must parse
     the pw-changed field, then check whether or not a date has been stored in the user before
     and then maybe increase the serial."""
 
-    @property
-    def ident(self) -> str:
-        return "auth_expire"
-
-    @property
-    def title(self) -> str:
-        return _("Authentication Expiration")
-
-    @property
-    def help(self):
-        return _(
-            "This plug-in fetches all information which are needed to check whether or "
-            "not an already authenticated user should be deauthenticated, e.g. because "
-            "the password has changed in LDAP or the account has been locked."
+    def __init__(self) -> None:
+        super().__init__(
+            builtin=True,
+            ident="auth_expire",
+            title=_("Authentication Expiration"),
+            help_text=_(
+                "This plug-in fetches all information which are needed to check whether or "
+                "not an already authenticated user should be deauthenticated, e.g. because "
+                "the password has changed in LDAP or the account has been locked."
+            ),
         )
 
     def lock_attributes(self, params):
@@ -2257,27 +2216,23 @@ class LDAPAttributePluginAuthExpire(LDAPBuiltinAttributePlugin):
 #   '----------------------------------------------------------------------'
 
 
-class LDAPAttributePluginPager(LDAPBuiltinAttributePlugin):
-    @property
-    def ident(self) -> str:
-        return "pager"
-
-    @property
-    def title(self) -> str:
-        return _("Pager")
-
-    @property
-    def help(self):
-        return _(
-            "This plug-in synchronizes a field of the users LDAP account to the pager attribute "
-            "of the Setup user accounts, which is then forwarded to the monitoring core and can be used "
-            "for notifications. By default the LDAP attribute <tt>mobile</tt> is used."
+class LDAPAttributePluginPager(LDAPAttributePlugin):
+    def __init__(self) -> None:
+        super().__init__(
+            builtin=True,
+            ident="pager",
+            title=_("Pager"),
+            help_text=_(
+                "This plug-in synchronizes a field of the users LDAP account to the pager attribute "
+                "of the Setup user accounts, which is then forwarded to the monitoring core and can be used "
+                "for notifications. By default the LDAP attribute <tt>mobile</tt> is used."
+            ),
         )
 
     def lock_attributes(self, params):
         return ["pager"]
 
-    def needed_attributes(self, connection, params):
+    def needed_attributes(self, connection: LDAPUserConnector, params: dict) -> list[str]:
         return [params.get("attr", connection._ldap_attr("mobile")).lower()]
 
     def sync_func(
@@ -2288,14 +2243,9 @@ class LDAPAttributePluginPager(LDAPBuiltinAttributePlugin):
         user_id: UserId,
         ldap_user: LDAPUserSpec,
         user: dict,
-    ) -> dict:
-        return _ldap_sync_simple(
-            user_id,
-            ldap_user,
-            user,
-            "pager",
-            params.get("attr", connection._ldap_attr("mobile")).lower(),
-        )
+    ) -> dict[str, str]:
+        attr = params.get("attr", connection._ldap_attr("mobile")).lower()
+        return {self.ident: ldap_user[attr][0]} if attr in ldap_user else {}
 
     def parameters(self, connection: LDAPUserConnector | None) -> Dictionary:
         return Dictionary(
@@ -2325,21 +2275,17 @@ class LDAPAttributePluginPager(LDAPBuiltinAttributePlugin):
 #   '----------------------------------------------------------------------'
 
 
-class LDAPAttributePluginGroupsToContactgroups(LDAPBuiltinAttributePlugin):
-    @property
-    def ident(self) -> str:
-        return "groups_to_contactgroups"
-
-    @property
-    def title(self) -> str:
-        return _("Contact group membership")
-
-    @property
-    def help(self):
-        return _(
-            "Adds the user to contact groups based on the group memberships in LDAP. This "
-            "plug-in adds the user only to existing contact groups while the name of the "
-            "contact group must match the common name (cn) of the LDAP group."
+class LDAPAttributePluginGroupsToContactgroups(LDAPAttributePlugin):
+    def __init__(self) -> None:
+        super().__init__(
+            builtin=True,
+            ident="groups_to_contactgroups",
+            title=_("Contact group membership"),
+            help_text=_(
+                "Adds the user to contact groups based on the group memberships in LDAP. This "
+                "plug-in adds the user only to existing contact groups while the name of the "
+                "contact group must match the common name (cn) of the LDAP group."
+            ),
         )
 
     def lock_attributes(self, params):
@@ -2389,24 +2335,20 @@ class LDAPAttributePluginGroupsToContactgroups(LDAPBuiltinAttributePlugin):
 #   '----------------------------------------------------------------------'
 
 
-class LDAPAttributePluginGroupAttributes(LDAPBuiltinAttributePlugin):
+class LDAPAttributePluginGroupAttributes(LDAPAttributePlugin):
     """Populate user attributes based on group memberships within LDAP"""
 
-    @property
-    def ident(self) -> str:
-        return "groups_to_attributes"
-
-    @property
-    def title(self) -> str:
-        return _("Groups to custom user attributes")
-
-    @property
-    def help(self):
-        return _(
-            "Sets custom user attributes based on the group memberships in LDAP. This "
-            "plug-in can be used to set custom user attributes to specified values "
-            "for all users which are member of a group in LDAP. The specified group "
-            "name must match the common name (CN) of the LDAP group."
+    def __init__(self) -> None:
+        super().__init__(
+            builtin=True,
+            ident="groups_to_attributes",
+            title=_("Groups to custom user attributes"),
+            help_text=_(
+                "Sets custom user attributes based on the group memberships in LDAP. This "
+                "plug-in can be used to set custom user attributes to specified values "
+                "for all users which are member of a group in LDAP. The specified group "
+                "name must match the common name (CN) of the LDAP group."
+            ),
         )
 
     def lock_attributes(self, params):
@@ -2526,23 +2468,19 @@ class LDAPAttributePluginGroupAttributes(LDAPBuiltinAttributePlugin):
 #   '----------------------------------------------------------------------'
 
 
-class LDAPAttributePluginGroupsToRoles(LDAPBuiltinAttributePlugin):
-    @property
-    def ident(self) -> str:
-        return "groups_to_roles"
-
-    @property
-    def title(self) -> str:
-        return _("Roles")
-
-    @property
-    def help(self):
-        return _(
-            "Configures the roles of the user depending on its group memberships "
-            "in LDAP.<br><br>"
-            "Please note: Additionally the user is assigned to the "
-            '<a href="wato.py?mode=edit_configvar&varname=default_user_profile&site=&folder=">Default Roles</a>. '
-            "Deactivate them if unwanted."
+class LDAPAttributePluginGroupsToRoles(LDAPAttributePlugin):
+    def __init__(self) -> None:
+        super().__init__(
+            builtin=True,
+            ident="groups_to_roles",
+            title=_("Roles"),
+            help_text=_(
+                "Configures the roles of the user depending on its group memberships "
+                "in LDAP.<br><br>"
+                "Please note: Additionally the user is assigned to the "
+                '<a href="wato.py?mode=edit_configvar&varname=default_user_profile&site=&folder=">Default Roles</a>. '
+                "Deactivate them if unwanted."
+            ),
         )
 
     def lock_attributes(self, params):

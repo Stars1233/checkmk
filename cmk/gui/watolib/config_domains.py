@@ -23,13 +23,13 @@ from pydantic import BaseModel
 import cmk.ccc.version as cmk_version
 from cmk.ccc import store
 from cmk.ccc.exceptions import MKGeneralException
+from cmk.ccc.hostaddress import HostName
 from cmk.ccc.site import omd_site, SiteId
 
 import cmk.utils.paths
 from cmk.utils.certs import CertManagementEvent, CN_TEMPLATE, RemoteSiteCertsStore
 from cmk.utils.config_warnings import ConfigurationWarnings
 from cmk.utils.encryption import raw_certificates_from_file
-from cmk.utils.hostaddress import HostName
 from cmk.utils.log.security_event import log_security_event
 
 from cmk.gui.background_job import (
@@ -57,7 +57,7 @@ from cmk.gui.watolib.config_domain_name import (
     SerializedSettings,
 )
 from cmk.gui.watolib.piggyback_hub import validate_piggyback_hub_config
-from cmk.gui.watolib.utils import liveproxyd_config_dir, multisite_dir, wato_root_dir
+from cmk.gui.watolib.utils import multisite_dir, wato_root_dir
 
 from cmk.crypto.certificate import Certificate, CertificatePEM
 from cmk.crypto.hash import HashAlgorithm
@@ -237,15 +237,20 @@ class ConfigDomainLiveproxy(ABCConfigDomain):
             and active_config.liveproxyd_enabled
         )
 
-    def config_dir(self):
-        return liveproxyd_config_dir()
+    def config_dir(self) -> str:
+        return cmk.utils.paths.default_config_dir + "/liveproxyd.d/wato/"
 
     def save(self, settings, site_specific=False, custom_site_path=None):
         super().save(settings, site_specific=site_specific, custom_site_path=custom_site_path)
         self.activate()
 
     def activate(self, settings: SerializedSettings | None = None) -> ConfigurationWarnings:
-        log_audit("liveproxyd-activate", "Activating changes of Livestatus Proxy configuration")
+        log_audit(
+            action="liveproxyd-activate",
+            message="Activating changes of Livestatus Proxy configuration",
+            user_id=user.id,
+            use_git=active_config.wato_use_git,
+        )
 
         try:
             pidfile = Path(cmk.utils.paths.livestatus_unix_socket).with_name("liveproxyd.pid")

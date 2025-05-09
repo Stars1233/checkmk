@@ -10,18 +10,18 @@ from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
-from typing import Annotated, Any, Literal, NamedTuple, NewType, NotRequired, TypedDict
+from typing import Annotated, Any, Literal, NamedTuple, NewType, NotRequired, override, TypedDict
 
-from pydantic import BaseModel, PlainValidator
+from pydantic import BaseModel, PlainValidator, WithJsonSchema
 
 from cmk.ccc.site import SiteId
+from cmk.ccc.user import UserId
 
 from cmk.utils.cpu_tracking import Snapshot
 from cmk.utils.labels import Labels
 from cmk.utils.metrics import MetricName
 from cmk.utils.notify_types import DisabledNotificationsOptions, EventRule
 from cmk.utils.structured_data import SDPath
-from cmk.utils.user import UserId
 
 from cmk.gui.exceptions import FinalizeRequest
 from cmk.gui.utils.speaklater import LazyString
@@ -257,7 +257,11 @@ class UserObjectValue(TypedDict):
 
 UserObject = dict[UserId, UserObjectValue]
 
-AnnotatedUserId = Annotated[UserId, PlainValidator(UserId.parse)]
+AnnotatedUserId = Annotated[
+    UserId,
+    PlainValidator(UserId.parse),
+    WithJsonSchema({"type": "string"}, mode="serialization"),
+]
 
 Users = dict[AnnotatedUserId, UserSpec]  # TODO: Improve this type
 
@@ -473,6 +477,7 @@ class ColumnSpec:
             "column_type": self.column_type,
         }
 
+    @override
     def __repr__(self) -> str:
         """
         Used to serialize user-defined visuals
@@ -496,6 +501,7 @@ class SorterSpec:
             self.join_key,
         )
 
+    @override
     def __repr__(self) -> str:
         """
         Used to serialize user-defined visuals
@@ -557,12 +563,14 @@ class SetOnceDict(dict):
 
     """
 
-    def __setitem__(self, key, value):
+    @override
+    def __setitem__(self, key, value):  # type: ignore[no-untyped-def]
         if key in self:
             raise ValueError(f"key {key!r} already set")
         dict.__setitem__(self, key, value)
 
-    def __delitem__(self, key):
+    @override
+    def __delitem__(self, key):  # type: ignore[no-untyped-def]
         raise NotImplementedError("Deleting items are not supported.")
 
 

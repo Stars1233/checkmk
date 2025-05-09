@@ -7,8 +7,9 @@ from __future__ import annotations
 
 import contextlib
 from collections.abc import Container, Iterator
+from contextlib import AbstractContextManager as ContextManager
 from datetime import datetime
-from typing import cast, ContextManager
+from typing import cast, override
 
 import flask
 from flask import Flask
@@ -16,9 +17,9 @@ from flask.sessions import SessionInterface, SessionMixin
 
 from cmk.ccc.exceptions import MKException
 from cmk.ccc.site import omd_site
+from cmk.ccc.user import UserId
 
 from cmk.utils.log.security_event import log_security_event
-from cmk.utils.user import UserId
 
 from cmk.gui import config, userdb
 from cmk.gui.auth import (
@@ -59,21 +60,21 @@ class CheckmkFileBasedSession(dict, SessionMixin):
         user = self.get("_user")
         if user is None:
             return LoggedInNobody()
-        return user
+        return user  # type: ignore[no-any-return]
 
     @user.setter
     def user(self, user: LoggedInUser) -> None:
-        if not isinstance(user, (LoggedInNobody, LoggedInSuperUser, LoggedInRemoteSite)):
+        if not isinstance(user, LoggedInNobody | LoggedInSuperUser | LoggedInRemoteSite):
             assert user.id is not None
         self["_user"] = user
 
     @property
-    def user_id(self):
+    def user_id(self):  # type: ignore[no-untyped-def]
         raise AttributeError("Don't set user_id please.")
 
     @property
     def persist_session(self) -> bool:
-        if isinstance(self.user, (LoggedInNobody, LoggedInSuperUser, LoggedInRemoteSite)):
+        if isinstance(self.user, LoggedInNobody | LoggedInSuperUser | LoggedInRemoteSite):
             return False
 
         if not self.is_gui_session:
@@ -265,7 +266,7 @@ class CheckmkFileBasedSession(dict, SessionMixin):
             self.session_info.flashes.append(tuple_to_add)
 
     def two_factor_pending(self) -> bool:
-        if isinstance(self.user, (LoggedInNobody, LoggedInSuperUser)):
+        if isinstance(self.user, LoggedInNobody | LoggedInSuperUser):
             return False
 
         return (
@@ -295,12 +296,14 @@ class FileBasedSession(SessionInterface):
 
     session_class = CheckmkFileBasedSession
 
+    @override
     def get_cookie_name(self, app: Flask) -> str:
         # NOTE: get_cookie_name and get_cookie_path are implemented at runtime (not with
         # app.settings[...]) to allow the Flask-App to be reused for different sites in
         # the tests.
         return f"auth_{omd_site()}"
 
+    @override
     def get_cookie_path(self, app: Flask) -> str:
         # NOTE: get_cookie_name and get_cookie_path are implemented at runtime (not with
         # app.settings[...]) to allow the Flask-App to be reused for different sites in
@@ -368,6 +371,7 @@ class FileBasedSession(SessionInterface):
         }
         userdb.save_custom_attr(userid, "last_login", last_login_info)
 
+    @override
     @tracer.instrument("FileBasedSession.open_session")
     def open_session(self, app: Flask, request: flask.Request) -> CheckmkFileBasedSession | None:
         # We need the config to be able to set the timeout values correctly.
@@ -381,6 +385,7 @@ class FileBasedSession(SessionInterface):
     # NOTE: The type-ignore[override] here is due to the fact, that any alternative would result
     # in multiple hundreds of lines changes and hundreds of mypy errors at this point and is thus
     # deferred to a later date.
+    @override
     @tracer.instrument("FileBasedSession.save_session")
     def save_session(  # type: ignore[override]
         self, app: Flask, session: CheckmkFileBasedSession, response: flask.Response

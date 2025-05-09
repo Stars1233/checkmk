@@ -32,6 +32,7 @@ import livestatus
 import cmk.ccc.debug
 from cmk.ccc import version
 from cmk.ccc.exceptions import MKBailOut, MKGeneralException, MKSNMPError, MKTimeout, OnError
+from cmk.ccc.hostaddress import HostAddress, HostName, Hosts
 from cmk.ccc.version import edition_supports_nagvis
 
 import cmk.utils.password_store
@@ -44,7 +45,6 @@ from cmk.utils.config_path import LATEST_CONFIG
 from cmk.utils.diagnostics import deserialize_cl_parameters, DiagnosticsCLParameters
 from cmk.utils.encoding import ensure_str_with_fallback
 from cmk.utils.everythingtype import EVERYTHING
-from cmk.utils.hostaddress import HostAddress, HostName, Hosts
 from cmk.utils.labels import DiscoveredHostLabelsStore, HostLabel, LabelManager
 from cmk.utils.log import console
 from cmk.utils.macros import replace_macros_in_str
@@ -58,6 +58,8 @@ from cmk.utils.paths import (
     discovered_host_labels_dir,
     local_agent_based_plugins_dir,
     local_checks_dir,
+    local_cmk_addons_plugins_dir,
+    local_cmk_plugins_dir,
     logwatch_dir,
     nagios_startscript,
     omd_root,
@@ -76,6 +78,7 @@ from cmk.automations.results import (
     ActiveCheckResult,
     AnalyseHostResult,
     AnalyseServiceResult,
+    AnalyzeHostRuleEffectivenessResult,
     AnalyzeHostRuleMatchesResult,
     AnalyzeServiceRuleMatchesResult,
     AutodiscoveryResult,
@@ -135,8 +138,7 @@ from cmk.checkengine.discovery import (
     automation_discovery,
     CheckPreview,
     CheckPreviewEntry,
-    DiscoveryMode,
-    DiscoveryResult,
+    DiscoveryReport,
     DiscoverySettings,
     get_check_preview,
     set_autochecks_for_effective_host,
@@ -274,20 +276,9 @@ class AutomationDiscovery(DiscoveryAutomation):
         file_cache_options = FileCacheOptions(use_outdated=True)
 
         if len(args) < 2:
-            raise MKAutomationError(
-                "Need two arguments: %s " % "DiscoveryMode|DiscoverySettings HOSTNAME"
-            )
+            raise MKAutomationError("Need two arguments: DiscoverySettings HOSTNAME")
 
-        # TODO 2.3 introduced a new format but has to be compatible for 2.2.
-        # Can be removed one day
-        if (discovery_settings := args[0]) in ["new", "remove", "fixall", "refresh"]:
-            settings = DiscoverySettings.from_discovery_mode(
-                DiscoveryMode.from_str(discovery_settings)
-            )
-        else:
-            # 2.3 format
-            settings = DiscoverySettings.from_json(discovery_settings)
-
+        settings = DiscoverySettings.from_automation_arg(args[0])
         hostnames = [HostName(h) for h in islice(args, 1, None)]
 
         if plugins is None:
@@ -305,6 +296,7 @@ class AutomationDiscovery(DiscoveryAutomation):
         )
         config_cache = loading_result.config_cache
         ruleset_matcher = config_cache.ruleset_matcher
+        hosts_config = config_cache.hosts_config
         service_name_config = config_cache.make_passive_service_name_config()
         autochecks_config = config.AutochecksConfigurer(
             config_cache, plugins.check_plugins, service_name_config
@@ -313,7 +305,7 @@ class AutomationDiscovery(DiscoveryAutomation):
             plugins.check_plugins, service_name_config
         )
 
-        results: dict[HostName, DiscoveryResult] = {}
+        results: dict[HostName, DiscoveryReport] = {}
 
         parser = CMKParser(
             config_cache.parser_factory(),
@@ -337,7 +329,8 @@ class AutomationDiscovery(DiscoveryAutomation):
             snmp_backend_override=None,
             password_store_file=cmk.utils.password_store.pending_password_store_path(),
         )
-        for hostname in hostnames:
+        # sort clusters last, to have them operate with the new nodes host labels.
+        for is_cluster, hostname in sorted((h in hosts_config.clusters, h) for h in hostnames):
 
             def section_error_handling(
                 section_name: SectionName,
@@ -352,10 +345,9 @@ class AutomationDiscovery(DiscoveryAutomation):
                     rtc_package=None,
                 )
 
-            hosts_config = config_cache.hosts_config
             results[hostname] = automation_discovery(
                 hostname,
-                is_cluster=hostname in config_cache.hosts_config.clusters,
+                is_cluster=is_cluster,
                 cluster_nodes=config_cache.nodes(hostname),
                 active_hosts={
                     hn
@@ -401,13 +393,6 @@ class AutomationDiscovery(DiscoveryAutomation):
 
 
 automations.register(AutomationDiscovery())
-
-
-class AutomationDiscoveryPre22Name(AutomationDiscovery):
-    cmd = "inventory"
-
-
-automations.register(AutomationDiscoveryPre22Name())
 
 
 class AutomationSpecialAgentDiscoveryPreview(Automation):
@@ -828,7 +813,7 @@ automations.register(AutomationAutodiscovery())
 def _execute_autodiscovery(
     ab_plugins: AgentBasedPlugins | None,
     loading_result: config.LoadingResult | None,
-) -> tuple[Mapping[HostName, DiscoveryResult], bool]:
+) -> tuple[Mapping[HostName, DiscoveryReport], bool]:
     file_cache_options = FileCacheOptions(use_outdated=True)
 
     if not (autodiscovery_queue := AutoQueue(autodiscovery_dir)):
@@ -896,12 +881,13 @@ def _execute_autodiscovery(
     on_error = OnError.IGNORE
 
     hosts_config = config_cache.hosts_config
-    all_hosts = frozenset(
-        itertools.chain(hosts_config.hosts, hosts_config.clusters, hosts_config.shadow_hosts)
-    )
+    all_hosts = frozenset(itertools.chain(hosts_config.hosts, hosts_config.shadow_hosts))
     for host_name in autodiscovery_queue:
-        if host_name not in all_hosts:
-            console.verbose(f"  Removing mark '{host_name}' (host not configured")
+        if host_name in hosts_config.clusters:
+            console.verbose(f"  Removing mark '{host_name}' (host is a cluster)")
+            (autodiscovery_queue.path / str(host_name)).unlink(missing_ok=True)
+        elif host_name not in all_hosts:
+            console.verbose(f"  Removing mark '{host_name}' (host not configured)")
             (autodiscovery_queue.path / str(host_name)).unlink(missing_ok=True)
 
     if (oldest_queued := autodiscovery_queue.oldest()) is None:
@@ -961,7 +947,6 @@ def _execute_autodiscovery(
                     hosts_config = config_cache.hosts_config
                     discovery_result, activate_host = autodiscovery(
                         host_name,
-                        is_cluster=host_name in config_cache.hosts_config.clusters,
                         cluster_nodes=config_cache.nodes(host_name),
                         active_hosts={
                             hn
@@ -984,7 +969,6 @@ def _execute_autodiscovery(
                         schedule_discovery_check=_schedule_discovery_check,
                         rediscovery_parameters=params.rediscovery,
                         invalidate_host_config=config_cache.invalidate_host_config,
-                        autodiscovery_queue=autodiscovery_queue,
                         reference_time=rediscovery_reference_time,
                         oldest_queued=oldest_queued,
                         enforced_services=config_cache.enforced_services_table(
@@ -992,6 +976,12 @@ def _execute_autodiscovery(
                         ),
                         on_error=on_error,
                     )
+                    # delete the file even in error case, otherwise we might be causing the same error
+                    # every time the cron job runs
+                    (autodiscovery_queue.path / str(host_name)).unlink(
+                        missing_ok=True
+                    )  # TODO: should be a method of autodiscovery_queue
+
                 if discovery_result:
                     discovery_results[host_name] = discovery_result
                     activation_required |= activate_host
@@ -1974,6 +1964,56 @@ class AutomationAnalyzeServiceRuleMatches(Automation):
 automations.register(AutomationAnalyzeServiceRuleMatches())
 
 
+class AutomationAnalyzeHostRuleEffectiveness(Automation):
+    cmd = "analyze-host-rule-effectiveness"
+    needs_config = True
+    needs_checks = False
+
+    def execute(
+        self,
+        args: list[str],
+        plugins: AgentBasedPlugins | None,
+        loading_result: config.LoadingResult | None,
+    ) -> AnalyzeHostRuleEffectivenessResult:
+        # We read the list of rules from stdin since it could be too much for the command line
+        match_rules = ast.literal_eval(sys.stdin.read())
+
+        if loading_result is None:
+            loading_result = load_config(discovery_rulesets=())
+        config_cache = loading_result.config_cache
+        ruleset_matcher = config_cache.ruleset_matcher
+
+        hosts_config = config_cache.hosts_config
+        labels_of_host = config_cache.label_manager.labels_of_host
+        host_names = list(
+            filter(
+                config_cache.is_online,
+                itertools.chain(
+                    hosts_config.hosts, hosts_config.clusters, hosts_config.shadow_hosts
+                ),
+            )
+        )
+
+        return AnalyzeHostRuleEffectivenessResult(
+            {
+                rules[0]["id"]: any(
+                    True
+                    for host_name in host_names
+                    for _ in ruleset_matcher.get_host_values(host_name, rules, labels_of_host)
+                )
+                # The caller needs to get one result per rule. For this reason we can not just use
+                # the list of rules with the ruleset matching functions but have to execute rule
+                # matching for the rules individually. If we would use the provided list of rules,
+                # then the not matching rules would not be represented in the result and we would
+                # not know which matched value is related to which rule.
+                for rules in match_rules
+            }
+        )
+
+
+automations.register(AutomationAnalyzeHostRuleEffectiveness())
+
+
 class ABCDeleteHosts:
     def _execute(self, args: list[str]) -> None:
         for hostname_str in args:
@@ -2161,6 +2201,8 @@ class AutomationRestart(Automation):
         for checks_path in [
             local_checks_dir,
             local_agent_based_plugins_dir,
+            local_cmk_addons_plugins_dir,
+            local_cmk_plugins_dir,
         ]:
             if not checks_path.exists():
                 continue
@@ -2876,7 +2918,6 @@ class AutomationDiagHost(Automation):
             credentials: SNMPCredentials = snmp_config.credentials
 
             if snmpv3_use:
-                snmpv3_credentials = [snmpv3_use]
                 if snmpv3_use in ["authNoPriv", "authPriv"]:
                     if (
                         not isinstance(snmpv3_auth_proto, str)
@@ -2884,22 +2925,30 @@ class AutomationDiagHost(Automation):
                         or not isinstance(snmpv3_security_password, str)
                     ):
                         raise TypeError()
-                    snmpv3_credentials.extend(
-                        [snmpv3_auth_proto, snmpv3_security_name, snmpv3_security_password]
-                    )
+                    if snmpv3_use == "authPriv":
+                        if not isinstance(snmpv3_privacy_proto, str) or not isinstance(
+                            snmpv3_privacy_password, str
+                        ):
+                            raise TypeError()
+                        credentials = (
+                            snmpv3_use,
+                            snmpv3_auth_proto,
+                            snmpv3_security_name,
+                            snmpv3_security_password,
+                            snmpv3_privacy_proto,
+                            snmpv3_privacy_password,
+                        )
+                    else:
+                        credentials = (
+                            snmpv3_use,
+                            snmpv3_auth_proto,
+                            snmpv3_security_name,
+                            snmpv3_security_password,
+                        )
                 else:
                     if not isinstance(snmpv3_security_name, str):
                         raise TypeError()
-                    snmpv3_credentials.extend([snmpv3_security_name])
-
-                if snmpv3_use == "authPriv":
-                    if not isinstance(snmpv3_privacy_proto, str) or not isinstance(
-                        snmpv3_privacy_password, str
-                    ):
-                        raise TypeError()
-                    snmpv3_credentials.extend([snmpv3_privacy_proto, snmpv3_privacy_password])
-
-                credentials = tuple(snmpv3_credentials)
+                    credentials = (snmpv3_use, snmpv3_security_name)
         else:
             credentials = snmp_community or (
                 snmp_config.credentials

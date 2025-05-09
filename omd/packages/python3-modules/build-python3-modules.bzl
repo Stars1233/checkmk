@@ -4,6 +4,8 @@ def get_pip_options(module_name):
     return {
         # * avoid compiling with BLAS support - we don't need super fast numpy (yet)
         "numpy": '--config-settings=setup-args="-Dallow-noblas=true"',
+        # pillow in version 11.2 and above would require libavif>=1.0.0 which is per default not available on debian-12, see https://github.com/radarhere/Pillow/commit/7d50816f0a6e607b04f9bdc8af7482a29ba578e3 and as we don't need avif support, we simply disable it
+        "pillow": "--config-settings=avif=disable",
     }.get(module_name, "")
 
 def create_requirements_file(name, outs):
@@ -13,8 +15,8 @@ def create_requirements_file(name, outs):
         name = name,
         outs = outs,
         cmd = """
-           echo "%s" > $@
-        """ % packages[name],
+           echo "%s %s" > $@
+        """ % (packages[name], get_pip_options(name)),
     )
 
 def build_python_module(name, srcs, outs, cmd, **kwargs):
@@ -93,7 +95,6 @@ build_cmd = """
       --ignore-installed \\
       --no-warn-script-location \\
       --prefix="$$HOME/$$MODULE_NAME" \\
-      {pip_add_opts} \\
       {requirements} 2>&1 | tee "$$HOME/""$$MODULE_NAME""_pip_install.stdout"
 
     tar cf $@ $$MODULE_NAME

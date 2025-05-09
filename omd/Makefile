@@ -28,7 +28,6 @@ PACKAGES := \
     erlang \
     libgsf \
     cpp-libs \
-    lcab \
     msitools \
     apache-omd \
     xinetd \
@@ -36,7 +35,6 @@ PACKAGES := \
     nagios \
     monitoring-plugins \
     check-cert \
-    nrpe \
     omd \
     pnp4nagios \
     heirloom-mailx \

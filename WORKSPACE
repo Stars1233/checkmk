@@ -1,89 +1,6 @@
 workspace(name = "omd_packages")
 
-load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
-load("@rules_rust//crate_universe:defs.bzl", "crate", "crates_repository")
 load("//:bazel_variables.bzl", "RUFF_VERSION")
-load("//bazel/rules:rust_workspace.bzl", "rust_workspace")
-
-rust_workspace()
-
-#   .--PACKAGES------------------------------------------------------------.
-#   |           ____   _    ____ _  __    _    ____ _____ ____             |
-#   |          |  _ \ / \  / ___| |/ /   / \  / ___| ____/ ___|            |
-#   |          | |_) / _ \| |   | ' /   / _ \| |  _|  _| \___ \            |
-#   |          |  __/ ___ \ |___| . \  / ___ \ |_| | |___ ___) |           |
-#   |          |_| /_/   \_\____|_|\_\/_/   \_\____|_____|____/            |
-#   |                                                                      |
-#   '----------------------------------------------------------------------'
-
-# Repin with `CARGO_BAZEL_REPIN=1 bazel sync --only=cargo_deps_site`.
-crates_repository(
-    # Repository for rust binaries or libraries deployed in the site.
-    name = "cargo_deps_site",
-    annotations = {
-        "openssl-sys": [
-            crate.annotation(
-                build_script_data = [
-                    "@openssl//:gen_dir",
-                ],
-                build_script_env = {
-                    "OPENSSL_DIR": "$(execpath @openssl//:gen_dir)",
-                    "OPENSSL_NO_VENDOR": "1",
-                },
-                deps = [
-                    "@openssl//:openssl_shared",
-                ],
-            ),
-        ],
-    },
-    cargo_lockfile = "//packages/site:Cargo.lock",
-    lockfile = "//packages/site:Cargo.lock.bazel",
-    manifests = [
-        "//packages/site:Cargo.toml",
-        "//packages/site/check-cert:Cargo.toml",
-        "//packages/site/check-http:Cargo.toml",
-    ],
-)
-
-load("@cargo_deps_site//:defs.bzl", site_crate_repository = "crate_repositories")
-
-site_crate_repository()
-
-# Repin with `CARGO_BAZEL_REPIN=1 bazel sync --only=cargo_deps_host`.
-crates_repository(
-    # Repository for rust binaries deployed on the host.
-    name = "cargo_deps_host",
-    annotations = {
-        "openssl-sys": [
-            crate.annotation(
-                build_script_data = [
-                    "@openssl//:gen_dir",
-                ],
-                build_script_env = {
-                    "OPENSSL_DIR": "$(execpath @openssl//:gen_dir)",
-                    "OPENSSL_NO_VENDOR": "1",
-                    "OPENSSL_STATIC": "1",
-                },
-                data = ["@openssl//:gen_dir"],
-                deps = [
-                    "@openssl",
-                ],
-            ),
-        ],
-    },
-    cargo_lockfile = "//packages/host:Cargo.lock",
-    lockfile = "//packages/host:Cargo.lock.bazel",
-    manifests = [
-        "//packages/host:Cargo.toml",
-        "//packages/host/cmk-agent-ctl:Cargo.toml",
-        "//packages/host/mk-sql:Cargo.toml",
-    ],
-)
-
-load("@cargo_deps_host//:defs.bzl", host_crate_repository = "crate_repositories")
-
-host_crate_repository()
-
 load("//omd/packages/redis:redis_http.bzl", "redis_workspace")
 
 redis_workspace()
@@ -179,6 +96,8 @@ create_python_requirements(
     ignored_modules = [
         # Broken third party packages
         "netapp-ontap",  # their build process is broken, see https://github.com/NetApp/ontap-rest-python/issues/46
+        # Currently broken due to new cython version, see https://github.com/pymssql/pymssql/issues/937
+        "pymssql",
     ],
     requirements_lock = "//:runtime-requirements.txt",
 )
@@ -206,13 +125,6 @@ rrdtool_native_workspace()
 load("//omd/packages/httplib:httplib_http.bzl", "httplib_workspace")
 
 httplib_workspace()
-
-http_archive(
-    name = "gtest",
-    sha256 = "75bfc7c1fd2eecf8dafeaee71836348941b422e9eee0a10493c68514cad81c8f",
-    strip_prefix = "googletest-e90fe2485641bab0d6af4500192dc503384950d1",
-    url = "https://github.com/google/googletest/archive/e90fe2485641bab0d6af4500192dc503384950d1.tar.gz",
-)
 
 load("//omd/packages/jaeger:jaeger_http.bzl", "jaeger_workspace")
 

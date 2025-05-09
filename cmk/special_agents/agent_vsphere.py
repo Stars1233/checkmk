@@ -987,19 +987,19 @@ def parse_arguments(argv: Sequence[str]) -> argparse.Namespace:
     )
     parser.add_argument(
         "--vm_pwr_display",
-        choices=("vm", "esxhost"),
-        default=None,
-        help="""Specifies where the virtual machines power state should be shown. Default (no
-        option) is on the queried vCenter or ESX-Host. Possible WHERE options: esxhost - show
-        on ESX host, vm - show on virtual machine""",
+        choices=("vm", "esxhost", "host"),
+        default="host",
+        help="""Specifies where the virtual machines power state should be shown. Default (host)
+        is on the queried vCenter or ESX-Host. Possible WHERE options: esxhost - show
+        on ESX host, vm - show on virtual machine, host - show on vCenter.""",
     )
     parser.add_argument(
         "--host_pwr_display",
-        choices=("vm", "esxhost"),
-        default=None,
-        help="""Specifies where the ESX hosts power state should be shown. Default (no option)
+        choices=("vm", "esxhost", "host"),
+        default="host",
+        help="""Specifies where the ESX hosts power state should be shown. Default (host)
         is on the queried vCenter or ESX-Host. Possible options: esxhost - show on ESX host,
-        vm - show on virtual machine.""",
+        vm - show on virtual machine, host - show on vCenter.""",
     )
     parser.add_argument(
         "--snapshots-on-host",
@@ -1601,7 +1601,8 @@ def get_vm_power_states(
         runtime_host = vm_data.get("runtime.host", "")  # Can we drop the .get() here?
         running_on = hostsystems.get(runtime_host, runtime_host)
         power_state = vm_data.get("runtime.powerState")
-        vm_info = f"virtualmachine\t{used_hostname}\t{running_on}\t{power_state}"
+        object_type = "template" if vm_data.get("config.template") == "true" else "virtualmachine"
+        vm_info = f"{object_type}\t{used_hostname}\t{running_on}\t{power_state}"
 
         if opt.vm_pwr_display == "vm":
             piggy_data.setdefault(used_hostname, []).append(vm_info)

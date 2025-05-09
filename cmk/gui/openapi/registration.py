@@ -42,15 +42,22 @@ from cmk.gui.openapi.endpoints import (
 )
 from cmk.gui.openapi.restful_objects.registry import EndpointRegistry
 
+from .framework.registry import VersionedEndpointRegistry
 from .restful_objects.endpoint_family import EndpointFamilyRegistry
+from .shared_endpoint_families.host_config import HOST_CONFIG_FAMILY
 from .spec import spec_generator_job
 
 
 def register(
     endpoint_registry: EndpointRegistry,
+    versioned_endpoint_registry: VersionedEndpointRegistry,
     endpoint_family_registry: EndpointFamilyRegistry,
     job_registry: BackgroundJobRegistry,
 ) -> None:
+    # TODO: once all legacy endpoints have been migrated the family registry should happen inside
+    #  respective endpoint module
+    endpoint_family_registry.register(HOST_CONFIG_FAMILY)
+
     acknowledgement.register(endpoint_registry)
     activate_changes.register(endpoint_registry)
     agent.register(endpoint_registry)
