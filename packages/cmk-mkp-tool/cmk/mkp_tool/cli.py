@@ -22,7 +22,7 @@ from ._mkp import (
     PackagePart,
     read_manifest_optionally,
 )
-from ._parts import PackageOperationCallbacks, PathConfig, ui_title
+from ._parts import make_path_config_template, PackageOperationCallbacks, PathConfig, ui_title
 from ._reporter import files_inventory
 from ._standalone import read_path_config, simple_file_write
 from ._type_defs import PackageError, PackageID, PackageName, PackageVersion
@@ -49,6 +49,7 @@ _VERSION_STR = f"cmk-mkp-tool {__version__}"
 @dataclass(frozen=True)
 class SiteContext:
     package_store: PackageStore
+    installed_packages_dir: Path
     callbacks: Mapping[PackagePart, PackageOperationCallbacks]
     post_package_change_actions: Callable[[Sequence[Manifest]], None]
     version: str
@@ -159,6 +160,16 @@ def _to_text(manifest: Manifest) -> str:
     )
 
 
+def _command_path_config_template(
+    _args: argparse.Namespace,
+    _path_config: PathConfig | None,
+    _persisting_function: Callable[[str, bytes], None],
+) -> int:
+    """Write a template for the path config to stdout"""
+    sys.stdout.write(f"{make_path_config_template().to_toml()}\n")
+    return 0
+
+
 def _args_find(
     subparser: argparse.ArgumentParser,
 ) -> None:
@@ -176,6 +187,7 @@ def _args_find(
 
 
 def _command_find(
+    site_context: SiteContext | None,
     args: argparse.Namespace,
     path_config: PathConfig | None,
     _persisting_function: Callable[[str, bytes], None],
@@ -184,9 +196,13 @@ def _command_find(
     if path_config is None:
         path_config = read_path_config()
 
-    installer = Installer(path_config.installed_packages_dir)
+    packaged_files = (
+        {}
+        if site_context is None
+        else Installer(site_context.installed_packages_dir).get_packaged_files()
+    )
 
-    files = files_inventory(installer, path_config)
+    files = files_inventory(packaged_files, path_config)
 
     if not args.all:
         files = [f for f in files if not f["package"]]
@@ -325,7 +341,7 @@ def _command_list(
     if path_config is None:
         path_config = read_path_config()
 
-    installer = Installer(path_config.installed_packages_dir)
+    installer = Installer(site_context.installed_packages_dir)
     classified_manifests = get_classified_manifests(
         site_context.package_store,
         installer,
@@ -418,7 +434,7 @@ def _command_release(
     if path_config is None:
         path_config = read_path_config()
 
-    release(Installer(path_config.installed_packages_dir), args.name, site_context.callbacks)
+    release(Installer(site_context.installed_packages_dir), args.name, site_context.callbacks)
     return 0
 
 
@@ -459,7 +475,7 @@ def _command_disable_outdated(
         path_config = read_path_config()
 
     disabled = disable_outdated(
-        Installer(path_config.installed_packages_dir),
+        Installer(site_context.installed_packages_dir),
         site_context.package_store,
         path_config,
         site_context.callbacks,
@@ -472,7 +488,7 @@ def _command_disable_outdated(
 
 def _command_update_active(
     site_context: SiteContext,
-    _args: argparse.Namespace,
+    args: argparse.Namespace,
     path_config: PathConfig | None,
     _persisting_function: Callable[[str, bytes], None],
 ) -> int:
@@ -488,7 +504,7 @@ def _command_update_active(
         path_config = read_path_config()
 
     uninstalled, installed = update_active_packages(
-        Installer(path_config.installed_packages_dir),
+        Installer(site_context.installed_packages_dir),
         path_config,
         site_context.package_store,
         site_context.callbacks,
@@ -496,7 +512,41 @@ def _command_update_active(
         parse_version=site_context.parse_version,
     )
     site_context.post_package_change_actions([*uninstalled, *installed])
+    _writeout_changed_packages(installed=installed, uninstalled=uninstalled, use_json=args.json)
     return 0
+
+
+def _writeout_changed_packages(
+    *,
+    installed: Sequence[Manifest],
+    uninstalled: Sequence[Manifest],
+    use_json: bool,
+) -> None:
+    """Print information about changed packages in either JSON or text format.
+
+    Note that there are various reasons why a package might be uninstalled or installed:
+    - The sites version is higher than the supported versions of the package
+    - The sites version is lower than the supported versions of the package
+    - The package is not compatible with other installed packages
+
+    Let's not try to be too smart about it and just print the package name and version.
+    """
+    if use_json:
+        sys.stdout.write(
+            json.dumps(
+                {
+                    "installed": [{"name": m.name, "version": m.version} for m in installed],
+                    "uninstalled": [{"name": m.name, "version": m.version} for m in uninstalled],
+                },
+                indent=2,
+            )
+            + "\n"
+        )
+    else:
+        for m in installed:
+            sys.stdout.write(f"[{m.name} {m.version}]: enabled\n")
+        for m in uninstalled:
+            sys.stdout.write(f"[{m.name} {m.version}]: disabled\n")
 
 
 def _args_package_id(
@@ -538,7 +588,7 @@ def _command_enable(
     if path_config is None:
         path_config = read_path_config()
 
-    installer = Installer(path_config.installed_packages_dir)
+    installer = Installer(site_context.installed_packages_dir)
     installed = install(
         installer,
         site_context.package_store,
@@ -566,7 +616,7 @@ def _command_disable(
 
     if (
         disabled := disable(
-            Installer(path_config.installed_packages_dir),
+            Installer(site_context.installed_packages_dir),
             site_context.package_store,
             path_config,
             site_context.callbacks,
@@ -593,28 +643,30 @@ def _command_template(
     path_config: PathConfig | None,
     _persisting_function: Callable[[str, bytes], None],
 ) -> int:
-    """Create a template of a package manifest"""
+    """Create a template of a package manifest
+
+    You can pipe the output of this command into a file, and edit it.
+    When you're happy with the manifest, you can use the `mkp package <path-to-file>` command to create the package.
+    """
     if path_config is None:
         path_config = read_path_config()
 
-    installer = Installer(path_config.installed_packages_dir)
-
-    unpackaged = get_unpackaged_files(installer, path_config)
+    if site_context:
+        installer = Installer(site_context.installed_packages_dir)
+        unpackaged = get_unpackaged_files(installer, path_config)
+        files = {part: files_ for part in PackagePart if (files_ := unpackaged.get(part))}
+    else:
+        # for now: lets not look for files without a site context
+        files = {part: [] for part in PackagePart}
 
     package = manifest_template(
         name=args.name,
         version_packaged=_VERSION_STR,
         version_required=site_context.version if site_context else "",
-        files={part: files_ for part in PackagePart if (files_ := unpackaged.get(part))},
+        files=files,
     )
 
-    temp_file = path_config.manifests_dir / f"{args.name}.manifest.temp"
-    temp_file.write_text(package.file_content())
-    sys.stdout.write(
-        f"Created '{temp_file}'.\n"
-        "You may now edit it.\n"
-        f"Create the package using `mkp package {temp_file}`.\n"
-    )
+    sys.stdout.write(f"{package.file_content()}\n")
     return 0
 
 
@@ -682,7 +734,7 @@ def _command_package(
     for err in remove_files(package, {}, path_config):
         _logger.info(err)
 
-    installer = Installer(path_config.installed_packages_dir)
+    installer = Installer(site_context.installed_packages_dir)
     try:
         installed = install(
             installer,
@@ -736,7 +788,13 @@ def _parse_arguments(argv: list[str], site_context: SiteContext | None) -> argpa
     parser.add_argument("--verbose", "-v", action="count", default=0, help="Be more verbose")
     subparsers = parser.add_subparsers(required=True, title="available commands")
 
-    _add_command(subparsers, "find", _args_find, _command_find)
+    _add_command(
+        subparsers,
+        "path-config-template",
+        _no_args,
+        _command_path_config_template,
+    )
+    _add_command(subparsers, "find", _args_find, partial_opt(_command_find, site_context))
     _add_command(subparsers, "inspect", _args_inspect, _command_inspect)
     _add_command(
         subparsers,
@@ -767,7 +825,7 @@ def _parse_arguments(argv: list[str], site_context: SiteContext | None) -> argpa
         subparsers, "disable-outdated", _no_args, partial(_command_disable_outdated, site_context)
     )
     _add_command(
-        subparsers, "update-active", _no_args, partial(_command_update_active, site_context)
+        subparsers, "update-active", _args_show_all, partial(_command_update_active, site_context)
     )
 
     return parser.parse_args(argv)
@@ -796,12 +854,11 @@ def set_up_logging(verbosity: int) -> None:
 
 
 def main(
-    argv: list[str],
     path_config: PathConfig | None = None,
     site_context: SiteContext | None = None,
     persisting_function: Callable[[str, bytes], None] = simple_file_write,
 ) -> int:
-    args = _parse_arguments(argv, site_context)
+    args = _parse_arguments(sys.argv[1:] or ["--help"], site_context)
     set_up_logging(args.verbose)
 
     try:

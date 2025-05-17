@@ -18,11 +18,11 @@ from typing import Any, assert_never, cast, Final, Literal
 
 from cmk.ccc import store
 from cmk.ccc.exceptions import MKGeneralException
+from cmk.ccc.hostaddress import HostName
 from cmk.ccc.version import Edition, edition
 
 from cmk.utils import paths
 from cmk.utils.global_ident_type import GlobalIdent
-from cmk.utils.hostaddress import HostName
 from cmk.utils.labels import LabelGroups, Labels
 from cmk.utils.object_diff import make_diff, make_diff_text
 from cmk.utils.regex import escape_regex_chars
@@ -45,9 +45,11 @@ from cmk.gui.exceptions import MKUserError
 from cmk.gui.htmllib.html import html
 from cmk.gui.i18n import _, _l
 from cmk.gui.log import logger
+from cmk.gui.logged_in import user
 from cmk.gui.utils.html import HTML
 from cmk.gui.valuespec import DropdownChoiceEntries, ValueSpec
 from cmk.gui.watolib.check_mk_automations import (
+    analyze_host_rule_effectiveness,
     analyze_host_rule_matches,
     analyze_service_rule_matches,
 )
@@ -436,9 +438,11 @@ class RulesetCollection:
         folder: Folder,
         rulesets: Mapping[RulesetName, Ruleset],
         unknown_rulesets: Mapping[str, Mapping[str, Sequence[RuleSpec[object]]]],
+        *,
+        pprint_value: bool,
     ) -> bool:
         RuleConfigFile(Path(folder.rules_file_path())).save_rulesets_and_unknown_rulesets(
-            rulesets, unknown_rulesets
+            rulesets, unknown_rulesets, pprint_value=pprint_value
         )
 
         # check if this contains a password. If so, the password file must be updated
@@ -461,6 +465,11 @@ class RulesetCollection:
 
     def delete(self, name: RulesetName) -> None:
         del self._rulesets[name]
+
+    def delete_unknown_rule(self, folder_path: FolderPath, name: RulesetName, rule_id: str) -> None:
+        self._unknown_rulesets[folder_path][name] = [
+            rs for rs in self._unknown_rulesets[folder_path][name] if rs["id"] != rule_id
+        ]
 
     def delete_unknown(self, folder_path: FolderPath, name: RulesetName) -> None:
         del self._unknown_rulesets[folder_path][name]
@@ -513,22 +522,26 @@ class AllRulesets(RulesetCollection):
         self._load_rulesets_recursively(folder_tree().root_folder())
         return self
 
-    def save(self) -> None:
+    def save(self, *, pprint_value: bool) -> None:
         """Save all rulesets of all folders recursively"""
-        if self._save_rulesets_recursively(folder_tree().root_folder()):
+        if self._save_rulesets_recursively(folder_tree().root_folder(), pprint_value=pprint_value):
             update_merged_password_file()
 
-    def save_folder(self, folder: Folder) -> None:
-        if self._save_folder(folder, self._rulesets, self._unknown_rulesets):
+    def save_folder(self, folder: Folder, *, pprint_value: bool) -> None:
+        if self._save_folder(
+            folder, self._rulesets, self._unknown_rulesets, pprint_value=pprint_value
+        ):
             update_merged_password_file()
 
-    def _save_rulesets_recursively(self, folder: Folder) -> bool:
+    def _save_rulesets_recursively(self, folder: Folder, *, pprint_value: bool) -> bool:
         needs_password_file_updating = False
         for subfolder in folder.subfolders():
-            needs_password_file_updating |= self._save_rulesets_recursively(subfolder)
+            needs_password_file_updating |= self._save_rulesets_recursively(
+                subfolder, pprint_value=pprint_value
+            )
 
         needs_password_file_updating |= self._save_folder(
-            folder, self._rulesets, self._unknown_rulesets
+            folder, self._rulesets, self._unknown_rulesets, pprint_value=pprint_value
         )
         return needs_password_file_updating
 
@@ -613,8 +626,10 @@ class FolderRulesets(RulesetCollection):
         self._load_folder_rulesets(folder)
         return self
 
-    def save_folder(self) -> None:
-        if RulesetCollection._save_folder(self._folder, self._rulesets, self._unknown_rulesets):
+    def save_folder(self, *, pprint_value: bool) -> None:
+        if RulesetCollection._save_folder(
+            self._folder, self._rulesets, self._unknown_rulesets, pprint_value=pprint_value
+        ):
             update_merged_password_file()
 
 
@@ -710,12 +725,14 @@ class Ruleset:
             self.append_rule(rule.folder, rule)
 
         add_change(
-            "new-rule",
-            _l('Cloned rule from rule %s in ruleset "%s" in folder "%s"')
+            action_name="new-rule",
+            text=_l('Cloned rule from rule %s in ruleset "%s" in folder "%s"')
             % (orig_rule.id, self.title(), rule.folder.alias_path()),
+            user_id=user.id,
             sites=rule.folder.all_site_ids(),
             diff_text=self.diff_rules(None, rule),
             object_ref=rule.object_ref(),
+            use_git=active_config.wato_use_git,
         )
 
     def move_to_folder(
@@ -752,12 +769,14 @@ class Ruleset:
 
     def add_new_rule_change(self, index: int, folder: Folder, rule: Rule) -> None:
         add_change(
-            "new-rule",
-            _('Created new rule #%d in ruleset "%s" in folder "%s"')
+            action_name="new-rule",
+            text=_('Created new rule #%d in ruleset "%s" in folder "%s"')
             % (index, self.title(), folder.alias_path()),
+            user_id=user.id,
             sites=folder.all_site_ids(),
             diff_text=self.diff_rules(None, rule),
             object_ref=rule.object_ref(),
+            use_git=active_config.wato_use_git,
         )
 
     def insert_rule_after(self, rule: Rule, after: Rule) -> None:
@@ -787,15 +806,18 @@ class Ruleset:
             self._rules[folder.path()].append(rule)
             self._rules_by_id[rule.id] = rule
 
-    def to_config(self, folder: Folder) -> str:
+    def to_config(self, folder: Folder, pprint_value: bool) -> str:
         return self.format_raw_value(
             self.name,
             (r.to_config() for r in self._rules[folder.path()]),
             self.is_optional(),
+            pprint_value=pprint_value,
         )
 
     @staticmethod
-    def format_raw_value(name: str, rule_specs: Iterable[RuleSpec], is_optional: bool) -> str:
+    def format_raw_value(
+        name: str, rule_specs: Iterable[RuleSpec], is_optional: bool, pprint_value: bool
+    ) -> str:
         content = ""
 
         if ":" in name:
@@ -815,7 +837,7 @@ class Ruleset:
         for rule_spec in rule_specs:
             # When using pprint we get a deterministic representation of the
             # data structures because it cares about sorting of the dict keys
-            if active_config.wato_use_git:
+            if pprint_value:
                 text = pprint.pformat(rule_spec)
             else:
                 text = repr(rule_spec)
@@ -835,10 +857,24 @@ class Ruleset:
         if not self.has_rule_search_options(search_options):
             return self.matches_fulltext_search(search_options)
 
+        rules = self.get_rules()
+
+        # Compute rule effectiveness for all rules in a rule set if needed
+        # Interesting: This has always tried host matching. Whether or not a service ruleset
+        # does not match any service has never been tested. Probably because this would be
+        # too expensive.
+        rule_effectiveness = (
+            analyze_host_rule_effectiveness(
+                [r.to_single_base_ruleset() for _f, _i, r in rules],
+            ).results
+            if rules and "rule_ineffective" in search_options
+            else {}
+        )
+
         # Store the matching rules for later result rendering
         self.search_matching_rules = []
-        for _folder, _rule_index, rule in self.get_rules():
-            if rule.matches_search(search_options):
+        for _folder, _rule_index, rule in rules:
+            if rule.matches_search(search_options, rule_effectiveness):
                 self.search_matching_rules.append(rule)
 
         # Show all rulesets where at least one rule matched
@@ -921,12 +957,14 @@ class Ruleset:
         folder_rules[index] = rule
 
         add_change(
-            "edit-rule",
-            _l('Changed properties of rule #%d in ruleset "%s" in folder "%s"')
+            action_name="edit-rule",
+            text=_l('Changed properties of rule #%d in ruleset "%s" in folder "%s"')
             % (index, self.title(), rule.folder.alias_path()),
+            user_id=user.id,
             sites=rule.folder.all_site_ids(),
             diff_text=self.diff_rules(orig_rule, rule),
             object_ref=rule.object_ref(),
+            use_git=active_config.wato_use_git,
         )
         self._on_change()
 
@@ -939,11 +977,13 @@ class Ruleset:
 
         if create_change:
             add_change(
-                "edit-rule",
-                _l('Deleted rule #%d in ruleset "%s" in folder "%s"')
+                action_name="edit-rule",
+                text=_l('Deleted rule #%d in ruleset "%s" in folder "%s"')
                 % (index, self.title(), rule.folder.alias_path()),
+                user_id=user.id,
                 sites=rule.folder.all_site_ids(),
                 object_ref=rule.object_ref(),
+                use_git=active_config.wato_use_git,
             )
         self._on_change()
 
@@ -957,11 +997,13 @@ class Ruleset:
         rules.remove(rule)
         rules.insert(index, rule)
         add_change(
-            "edit-ruleset",
-            _l('Moved rule %s from position #%d to #%d in ruleset "%s" in folder "%s"')
+            action_name="edit-ruleset",
+            text=_l('Moved rule %s from position #%d to #%d in ruleset "%s" in folder "%s"')
             % (rule.id, old_index, index, self.title(), rule.folder.alias_path()),
+            user_id=user.id,
             sites=rule.folder.all_site_ids(),
             object_ref=self.object_ref(),
+            use_git=active_config.wato_use_git,
         )
         return index
 
@@ -1278,33 +1320,10 @@ class Rule:
             },
         )
 
-    def is_ineffective(self) -> bool:
-        """Whether or not this rule does not match at all
-
-        Interesting: This has always tried host matching. Whether or not a service ruleset
-        does not match any service has never been tested. Probably because this would be
-        too expensive."""
-        hosts = Host.all()
-        for host_name in hosts.keys():
-            if self._matches_host_conditions(host_name):
-                return False
-        return True
-
-    def _matches_host_conditions(self, hostname: HostName) -> bool:
-        """Whether or not the given host matches this rule
-        This only evaluates host related conditions, even if the ruleset is a service ruleset."""
-        return bool(
-            list(
-                analyze_host_rule_matches(
-                    hostname,
-                    [self.to_single_base_ruleset()],
-                ).results.values()
-            )[0]
-        )
-
     def matches_search(
         self,
         search_options: SearchOptions,
+        rule_effectiveness: Mapping[str, bool],
     ) -> bool:
         if "rule_folder" in search_options and self.folder.path() not in self._get_search_folders(
             search_options
@@ -1325,7 +1344,7 @@ class Rule:
 
         if (
             "rule_ineffective" in search_options
-            and search_options["rule_ineffective"] != self.is_ineffective()
+            and search_options["rule_ineffective"] is rule_effectiveness[self.id]
         ):
             return False
 
@@ -1518,11 +1537,15 @@ class EnabledDisabledServicesEditor:
     def __init__(self, host: Host) -> None:
         self._host = host
 
-    def save_host_service_enable_disable_rules(self, to_enable, to_disable):
-        self._save_service_enable_disable_rules(to_enable, value=False)
-        self._save_service_enable_disable_rules(to_disable, value=True)
+    def save_host_service_enable_disable_rules(
+        self, to_enable: set[str], to_disable: set[str], *, pprint_value: bool
+    ) -> None:
+        self._save_service_enable_disable_rules(to_enable, value=False, pprint_value=pprint_value)
+        self._save_service_enable_disable_rules(to_disable, value=True, pprint_value=pprint_value)
 
-    def _save_service_enable_disable_rules(self, services, value):
+    def _save_service_enable_disable_rules(
+        self, services: set[str], *, value: bool, pprint_value: bool
+    ) -> None:
         """
         Load all disabled services rules from the folder, then check whether or not there is a
         rule for that host and check whether or not it currently disabled the services in question.
@@ -1575,7 +1598,7 @@ class EnabledDisabledServicesEditor:
         modified_folders += self._update_rule_of_host(ruleset, service_patterns, value=value)
 
         for folder in modified_folders:
-            rulesets.save_folder(folder)
+            rulesets.save_folder(folder, pprint_value=pprint_value)
 
     def _remove_from_rule_of_host(self, ruleset, service_patterns, value):
         other_rule = self._get_rule_of_host(ruleset, value)
@@ -1604,9 +1627,6 @@ class EnabledDisabledServicesEditor:
 
         elif service_patterns:
             rule = Rule.from_ruleset_defaults(folder, ruleset)
-
-            # mypy is wrong here vor some reason:
-            # Invalid index type "str" for "Union[Dict[str, str], str]"; expected type "Union[int, slice]"  [index]
             conditions = RuleConditions(
                 folder.path(),
                 host_name=[self._host.name()],
@@ -1709,27 +1729,31 @@ class RuleConfigFile(WatoConfigFile[Mapping[RulesetName, Any]]):
         self,
         rulesets: Mapping[RulesetName, Ruleset],
         unknown_rulesets: Mapping[str, Mapping[str, Sequence[RuleSpec[object]]]],
+        pprint_value: bool,
     ) -> None:
-        self._save_and_validate_folder(self.folder, rulesets, unknown_rulesets)
+        self._save_and_validate_folder(self.folder, rulesets, unknown_rulesets, pprint_value)
 
-    def save(self, cfg: Mapping[RulesetName, Any]) -> None:
-        self._save_and_validate_folder(self.folder, cfg, {})
+    def save(self, cfg: Mapping[RulesetName, Any], pprint_value: bool) -> None:
+        self._save_and_validate_folder(self.folder, cfg, {}, pprint_value)
 
     @staticmethod
     def _save_and_validate_folder(
         folder: Folder,
         rulesets: Mapping[RulesetName, Ruleset],
         unknown_rulesets: Mapping[str, Mapping[str, Sequence[RuleSpec[object]]]],
+        pprint_value: bool,
     ) -> None:
         store.mkdir(folder.tree.get_root_dir())
         content = [
             *(
-                ruleset.to_config(folder)
+                ruleset.to_config(folder, pprint_value)
                 for _name, ruleset in sorted(rulesets.items())
                 if not ruleset.is_empty_in_folder(folder)
             ),
             *(
-                Ruleset.format_raw_value(varname, raw_value, False)
+                Ruleset.format_raw_value(
+                    varname, raw_value, is_optional=False, pprint_value=pprint_value
+                )
                 for varname, raw_value in sorted(unknown_rulesets.get(folder.path(), {}).items())
             ),
         ]

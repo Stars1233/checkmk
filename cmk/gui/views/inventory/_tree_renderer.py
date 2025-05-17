@@ -10,10 +10,11 @@ from dataclasses import dataclass
 from functools import total_ordering
 from typing import Literal
 
+from cmk.ccc.hostaddress import HostName
 from cmk.ccc.site import SiteId
 
+import cmk.utils.paths
 import cmk.utils.render
-from cmk.utils.hostaddress import HostName
 from cmk.utils.structured_data import (
     ImmutableAttributes,
     ImmutableDeltaAttributes,
@@ -21,6 +22,7 @@ from cmk.utils.structured_data import (
     ImmutableDeltaTree,
     ImmutableTable,
     ImmutableTree,
+    InventoryStore,
     RetentionInterval,
     SDDeltaValue,
     SDKey,
@@ -294,7 +296,7 @@ class _SDDeltaItemsSorter(_ABCItemsSorter):
                     paint_function=c.paint_function,
                 )
                 for c in columns
-                for v in (row.get(c.key) or SDDeltaValue(None, None),)
+                for v in (row.get(c.key) or SDDeltaValue(old=None, new=None),)
             ]
 
         min_type = _MinType()
@@ -311,7 +313,7 @@ class _SDDeltaItemsSorter(_ABCItemsSorter):
                 for row in sorted(
                     self.table.rows,
                     key=lambda r: tuple(
-                        _sanitize(r.get(c.key) or SDDeltaValue(None, None)) for c in columns
+                        _sanitize(r.get(c.key) or SDDeltaValue(old=None, new=None)) for c in columns
                     ),
                 )
                 if any(_delta_value_has_change(delta_value) for delta_value in row.values())
@@ -330,7 +332,11 @@ def ajax_inv_render_tree() -> None:
 
     tree: ImmutableTree | ImmutableDeltaTree
     if tree_id := request.get_ascii_input_mandatory("tree_id", ""):
-        tree, corrupted_history_files = inventory.load_delta_tree(host_name, int(tree_id))
+        tree, corrupted_history_files = inventory.load_delta_tree(
+            InventoryStore(cmk.utils.paths.omd_root),
+            host_name,
+            int(tree_id),
+        )
         if corrupted_history_files:
             user_errors.add(
                 MKUserError(
@@ -341,9 +347,12 @@ def ajax_inv_render_tree() -> None:
             )
             return
     else:
-        row = inventory.get_status_data_via_livestatus(site_id, host_name)
+        raw_status_data_tree = inventory.get_raw_status_data_via_livestatus(site_id, host_name)
         try:
-            tree = inventory.load_filtered_and_merged_tree(row)
+            tree = inventory.load_tree(
+                host_name=host_name,
+                raw_status_data_tree=raw_status_data_tree,
+            )
         except Exception as e:
             if active_config.debug:
                 html.show_warning("%s" % e)

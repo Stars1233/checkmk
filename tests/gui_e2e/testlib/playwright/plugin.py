@@ -36,7 +36,6 @@ logger = logging.getLogger(__name__)
 _browser_engines = ["chromium", "firefox"]  # engines selectable via CLI
 _browser_engines_ci = ["chromium"]  # align with what playwright installs in the CI (see Makefile)
 _mobile_devices = ["iPhone 6", "Galaxy S8"]
-_viewport = {"width": 1920, "height": 1080}
 
 
 @pytest.fixture(scope="session", name="browser_type_launch_args")
@@ -95,8 +94,19 @@ def _browser(
     browser.close()
 
 
+@pytest.fixture(name="viewport", scope="session")
+def fixture_viewport(pytestconfig: pytest.Config) -> dict[str, int]:
+    return (
+        {"width": 1600, "height": 900}
+        if pytestconfig.getoption("--local-run")
+        else {"width": 1920, "height": 1080}
+    )
+
+
 @pytest.fixture(name="context_launch_kwargs", scope="session")
-def fixture_context_launch_kwargs(pytestconfig: pytest.Config) -> dict[str, t.Any]:
+def fixture_context_launch_kwargs(
+    pytestconfig: pytest.Config, viewport: dict[str, int]
+) -> dict[str, t.Any]:
     """Define and return arguments to initialize a playwright `BrowserContext`_ object.
 
     .. _BrowserContext: https://playwright.dev/python/docs/api/class-browsercontext
@@ -104,7 +114,7 @@ def fixture_context_launch_kwargs(pytestconfig: pytest.Config) -> dict[str, t.An
     kwargs = {"locale": pytestconfig.getoption("--locale")}
     if pytestconfig.getoption("--video"):
         kwargs["record_video_dir"] = str(pytestconfig.getoption("--output"))
-        kwargs["record_video_size"] = _viewport  # video size should match the viewport size
+        kwargs["record_video_size"] = viewport  # video size should match the viewport size
     return kwargs
 
 
@@ -112,10 +122,11 @@ def fixture_context_launch_kwargs(pytestconfig: pytest.Config) -> dict[str, t.An
 def _context(
     _browser: Browser,
     context_launch_kwargs: dict[str, t.Any],
+    viewport: dict[str, int],
 ) -> t.Generator[BrowserContext, None, None]:
     """Create a browser context(browser testing) for one test-module at a time."""
     if "viewport" not in context_launch_kwargs:
-        context_launch_kwargs.update({"viewport": _viewport})
+        context_launch_kwargs.update({"viewport": viewport})
     with manage_new_browser_context(_browser, context_launch_kwargs) as context:
         yield context
 
@@ -190,7 +201,7 @@ def manage_new_page_from_browser_context(
 
         NOTE: requires access to pytest fixture: `request`.
     """
-    pages: t.List[Page] = []
+    pages: list[Page] = []
     context.on("page", lambda page: pages.append(page))
     page = context.new_page()
     try:
@@ -203,7 +214,7 @@ def manage_new_page_from_browser_context(
 
 def _may_create_screenshot(
     request: pytest.FixtureRequest | None,
-    pages: t.List[Page],
+    pages: list[Page],
 ) -> None:
     if isinstance(request, pytest.FixtureRequest):
         failed = request.node.rep_call.failed if hasattr(request.node, "rep_call") else False
@@ -283,7 +294,7 @@ def pytest_runtest_makereport(item: t.Any) -> t.Generator[None, t.Any, None]:
     setattr(item, "rep_" + rep.when, rep)
 
 
-def pytest_addoption(parser: t.Any) -> None:
+def pytest_addoption(parser: pytest.Parser) -> None:
     """Add custom CLI arguments to GUI end to end testing framework."""
     group = parser.getgroup("playwright", "Playwright")
     group.addoption(
@@ -323,4 +334,9 @@ def pytest_addoption(parser: t.Any) -> None:
         action="store_true",
         default=False,
         help="Record a video of interactions occurring in a page.",
+    )
+    group.addoption(
+        "--local-run",
+        action="store_true",
+        help="Adapt certain settings for running testsuite locally.\n+ viewport size: 1600 x 900",
     )

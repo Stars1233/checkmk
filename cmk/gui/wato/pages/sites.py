@@ -6,14 +6,11 @@
 
 from __future__ import annotations
 
-import queue
 import socket
-import time
 import traceback
 from collections.abc import Collection, Iterable, Iterator, Mapping
 from copy import deepcopy
-from multiprocessing import JoinableQueue, Process
-from typing import Any, assert_never, cast, Literal, NamedTuple, overload
+from typing import Any, assert_never, cast, Literal, overload
 from urllib.parse import urlparse
 
 from livestatus import (
@@ -29,18 +26,17 @@ from livestatus import (
 
 from cmk.ccc.exceptions import MKGeneralException, MKTerminate, MKTimeout
 from cmk.ccc.site import omd_site, SiteId
+from cmk.ccc.user import UserId
 
 import cmk.utils.paths
 from cmk.utils.encryption import CertificateDetails, fetch_certificate_details
-from cmk.utils.licensing.handler import LicenseState
 from cmk.utils.licensing.registry import is_free
 from cmk.utils.paths import omd_root
-from cmk.utils.user import UserId
 
 import cmk.gui.sites
 import cmk.gui.watolib.audit_log as _audit_log
 import cmk.gui.watolib.changes as _changes
-from cmk.gui import forms, log
+from cmk.gui import forms
 from cmk.gui.breadcrumb import Breadcrumb
 from cmk.gui.config import active_config
 from cmk.gui.exceptions import FinalizeRequest, MKUserError
@@ -106,10 +102,8 @@ from cmk.gui.wato.piggyback_hub import CONFIG_VARIABLE_PIGGYBACK_HUB_IDENT
 from cmk.gui.watolib.activate_changes import get_free_message
 from cmk.gui.watolib.automation_commands import OMDStatus
 from cmk.gui.watolib.automations import (
-    do_remote_automation,
     do_site_login,
     MKAutomationException,
-    parse_license_state,
 )
 from cmk.gui.watolib.broker_certificates import trigger_remote_certs_creation
 from cmk.gui.watolib.broker_connections import BrokerConnectionsConfigFile
@@ -140,10 +134,13 @@ from cmk.gui.watolib.site_management import (
 )
 from cmk.gui.watolib.sites import (
     is_livestatus_encrypted,
+    ldap_connections_are_configurable,
+    PingResult,
+    ReplicationStatus,
+    ReplicationStatusFetcher,
     site_globals_editable,
     site_management_registry,
 )
-from cmk.gui.watolib.utils import ldap_connections_are_configurable
 
 from cmk.messaging import check_remote_connection, ConnectionFailed, ConnectionOK, ConnectionRefused
 
@@ -299,7 +296,11 @@ class ModeEditSite(WatoMode):
         )
 
         self._site = configured_sites[self._site_id] = site_spec
-        self._site_mgmt.save_sites(configured_sites)
+        self._site_mgmt.save_sites(
+            configured_sites,
+            activate=True,
+            pprint_value=active_config.wato_pprint_config,
+        )
 
         msg = add_changes_after_editing_site_connection(
             site_id=self._site_id,
@@ -697,7 +698,9 @@ class ModeEditBrokerConnection(WatoMode):
                 SiteId(raw_site_spec["connectee"]),
             )
         except KeyError:
-            raise MKUserError(None, _("Connecter and connectee sites must be specified."))
+            raise MKUserError(
+                None, _("The sites initiating and accepting the connection must be specified.")
+            )
 
         connection = BrokerConnection(
             connecter=BrokerSite(site_id=source_site),
@@ -705,7 +708,10 @@ class ModeEditBrokerConnection(WatoMode):
         )
 
         self._site_mgmt.validate_and_save_broker_connection(
-            raw_site_spec["unique_id"], connection, self._is_new
+            raw_site_spec["unique_id"],
+            connection,
+            is_new=self._is_new,
+            pprint_value=active_config.wato_pprint_config,
         )
         msg = add_changes_after_editing_broker_connection(
             connection_id=raw_site_spec["unique_id"],
@@ -750,7 +756,8 @@ class ModeEditBrokerConnection(WatoMode):
                 "connecter to the connectee and vice versa. "
                 "Note that the order in which you choose the sites here still might matter, "
                 "depending on your network restrictions: "
-                "The connecter must be able to establish a TCP connection to the connectee."
+                "The initiating peer must be able to establish a TCP connection to the accepting "
+                "peer."
             ),
         )
 
@@ -782,7 +789,7 @@ class ModeEditBrokerConnection(WatoMode):
             (
                 "connecter",
                 DropdownChoice(
-                    title=_("Connecter"),
+                    title=_("Initiating peer"),
                     choices=replicated_sites_choices,
                     sorted=True,
                     help=_("Select the site that is establishing the TCP connection."),
@@ -791,7 +798,7 @@ class ModeEditBrokerConnection(WatoMode):
             (
                 "connectee",
                 DropdownChoice(
-                    title=_("Connectee"),
+                    title=_("Accepting peer"),
                     choices=replicated_sites_choices,
                     sorted=True,
                     help=_("Select the site that is accepting the TCP connection."),
@@ -874,17 +881,19 @@ class ModeDistributedMonitoring(WatoMode):
 
         login_id = request.get_ascii_input("_login")
         if login_id:
-            return self._action_login(SiteId(login_id))
+            return self._action_login(SiteId(login_id), debug=active_config.debug)
 
         if trigger_certs_site_id := request.get_ascii_input("_trigger_certs_creation"):
-            return self._action_trigger_certs(SiteId(trigger_certs_site_id))
+            return self._action_trigger_certs(
+                SiteId(trigger_certs_site_id), debug=active_config.debug
+            )
 
         return None
 
-    def _action_trigger_certs(self, trigger_certs_site_id: SiteId) -> ActionResult:
+    def _action_trigger_certs(self, trigger_certs_site_id: SiteId, *, debug: bool) -> ActionResult:
         configured_sites = self._site_mgmt.load_sites()
         site = configured_sites[trigger_certs_site_id]
-        trigger_remote_certs_creation(trigger_certs_site_id, site, True)
+        trigger_remote_certs_creation(trigger_certs_site_id, site, force=True, debug=debug)
         flash(_("Remote broker certificates created for site %s.") % trigger_certs_site_id)
         return redirect(mode_url("sites"))
 
@@ -927,11 +936,17 @@ class ModeDistributedMonitoring(WatoMode):
                 % search_url,
             )
 
-        self._site_mgmt.delete_site(delete_id)
+        self._site_mgmt.delete_site(
+            delete_id,
+            pprint_value=active_config.wato_pprint_config,
+            use_git=active_config.wato_use_git,
+        )
         return redirect(mode_url("sites"))
 
     def _action_delete_broker_connection(self, delete_connection_id: ConnectionId) -> ActionResult:
-        source_site, dest_site = self._site_mgmt.delete_broker_connection(delete_connection_id)
+        source_site, dest_site = self._site_mgmt.delete_broker_connection(
+            delete_connection_id, pprint_value=active_config.wato_pprint_config
+        )
         add_changes_after_editing_broker_connection(
             connection_id=delete_connection_id,
             is_new_broker_connection=False,
@@ -944,17 +959,23 @@ class ModeDistributedMonitoring(WatoMode):
         site = configured_sites[logout_id]
         if "secret" in site:
             del site["secret"]
-        self._site_mgmt.save_sites(configured_sites)
+        self._site_mgmt.save_sites(
+            configured_sites,
+            activate=True,
+            pprint_value=active_config.wato_pprint_config,
+        )
         _changes.add_change(
-            "edit-site",
-            _("Logged out of remote site %s") % HTMLWriter.render_tt(site["alias"]),
+            action_name="edit-site",
+            text=_("Logged out of remote site %s") % HTMLWriter.render_tt(site["alias"]),
+            user_id=user.id,
             domains=[ConfigDomainGUI()],
             sites=[omd_site()],
+            use_git=active_config.wato_use_git,
         )
         flash(_("Logged out."))
         return redirect(mode_url("sites"))
 
-    def _action_login(self, login_id: SiteId) -> ActionResult:
+    def _action_login(self, login_id: SiteId, *, debug: bool) -> ActionResult:
         configured_sites = self._site_mgmt.load_sites()
         if request.get_ascii_input("_cancel"):
             return redirect(mode_url("sites"))
@@ -978,16 +999,25 @@ class ModeDistributedMonitoring(WatoMode):
                         ),
                     )
 
-                secret = do_site_login(site, name, passwd)
+                secret = do_site_login(site, name, passwd, debug=debug)
 
                 site["secret"] = secret
-                self._site_mgmt.save_sites(configured_sites)
+                self._site_mgmt.save_sites(
+                    configured_sites,
+                    activate=True,
+                    pprint_value=active_config.wato_pprint_config,
+                )
                 message = _("Successfully logged into remote site %s.") % HTMLWriter.render_tt(
                     site["alias"]
                 )
-                trigger_remote_certs_creation(login_id, site)
+                trigger_remote_certs_creation(login_id, site, force=False, debug=debug)
 
-                _audit_log.log_audit("edit-site", message)
+                _audit_log.log_audit(
+                    action="edit-site",
+                    message=message,
+                    user_id=user.id,
+                    use_git=active_config.wato_use_git,
+                )
                 flash(message)
                 return redirect(mode_url("sites"))
 
@@ -1148,8 +1178,8 @@ class ModeDistributedMonitoring(WatoMode):
         self, table: Table, connection_id: str, connection: BrokerConnection
     ) -> None:
         table.cell(_("ID"), connection_id)
-        table.cell(_("connecter"), connection.connecter.site_id)
-        table.cell(_("connectee"), connection.connectee.site_id)
+        table.cell(_("Initiating peer"), connection.connecter.site_id)
+        table.cell(_("Accepting peer"), connection.connectee.site_id)
 
     def _show_basic_settings(self, table: Table, site_id: SiteId, site: SiteConfiguration) -> None:
         table.cell(_("ID"), site_id)
@@ -1272,7 +1302,9 @@ class PageAjaxFetchSiteStatus(AjaxPage):
         replication_sites = [
             (key, val) for (key, val) in sites.items() if is_replication_enabled(val)
         ]
-        remote_status = ReplicationStatusFetcher().fetch(replication_sites)
+        remote_status = ReplicationStatusFetcher().fetch(
+            replication_sites, debug=active_config.debug
+        )
 
         for site_id, site in sites.items():
             site_id_str: str = site_id
@@ -1366,6 +1398,9 @@ class PageAjaxFetchSiteStatus(AjaxPage):
         if (remote_host := urlparse(site["multisiteurl"]).hostname) is None:
             return "cross", _("Offline: No valid multisite URL configured")
 
+        if remote_omd_status["rabbitmq"] == 5:
+            return "disabled", _("Disabled")
+
         remote_port = site["message_broker_port"]
         try:
             connection_status = check_remote_connection(
@@ -1392,125 +1427,11 @@ class PageAjaxFetchSiteStatus(AjaxPage):
             case ConnectionRefused.CERTIFICATE_VERIFY_FAILED:
                 return "cross", _("Connection to port %s refused: Invalid certificate")
             case ConnectionRefused.CLOSED:
-                match remote_omd_status["rabbitmq"]:
-                    case 1:
-                        return "cross", _("Not available")
-                    case 5:
-                        return "disabled", _("Disabled")
+                return "cross", _("Not available")
 
                 return "cross", _("Connection to port %s refused") % (remote_port,)
             case _:
                 assert_never(_)
-
-
-class PingResult(NamedTuple):
-    version: str
-    edition: str
-    omd_status: OMDStatus
-    license_state: LicenseState | None
-
-
-class ReplicationStatus(NamedTuple):
-    site_id: SiteId
-    success: bool
-    response: PingResult | Exception
-
-
-class ReplicationStatusFetcher:
-    """Helper class to retrieve the replication status of all relevant sites"""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self._logger = logger.getChild("replication-status")
-
-    def fetch(
-        self, sites: Collection[tuple[SiteId, SiteConfiguration]]
-    ) -> Mapping[SiteId, ReplicationStatus]:
-        self._logger.debug("Fetching replication status for %d sites" % len(sites))
-        results_by_site: dict[SiteId, ReplicationStatus] = {}
-
-        # Results are fetched simultaneously from the remote sites
-        result_queue: JoinableQueue[ReplicationStatus] = JoinableQueue()
-
-        processes = []
-        for site_id, site in sites:
-            process = Process(target=self._fetch_for_site, args=(site_id, site, result_queue))
-            process.start()
-            processes.append((site_id, process))
-
-        # Now collect the results from the queue until all processes are finished
-        while any(p.is_alive() for site_id, p in processes):
-            try:
-                result = result_queue.get_nowait()
-                result_queue.task_done()
-                results_by_site[result.site_id] = result
-
-            except queue.Empty:
-                time.sleep(0.5)  # wait some time to prevent CPU hogs
-
-            except Exception as e:
-                logger.exception(
-                    "error collecting replication results from site %s", result.site_id
-                )
-                html.show_error(f"{result.site_id}: {e}")
-
-        self._logger.debug("Got results")
-        return results_by_site
-
-    def _fetch_for_site(
-        self,
-        site_id: SiteId,
-        site: SiteConfiguration,
-        result_queue: JoinableQueue[ReplicationStatus],
-    ) -> None:
-        """Executes the tests on the site. This method is executed in a dedicated
-        subprocess (One per site)"""
-        self._logger.debug("[%s] Starting" % site_id)
-        result = None
-        try:
-            # TODO: Would be better to clean all open fds that are not needed, but we don't
-            # know the FDs of the result_queue pipe. Can we find it out somehow?
-            # Cleanup resources of the apache
-            # TODO: Needs to be solved for analzye_configuration too
-            # for x in range(3, 256):
-            #    try:
-            #        os.close(x)
-            #    except OSError, e:
-            #        if e.errno == errno.EBADF:
-            #            pass
-            #        else:
-            #            raise
-
-            # Reinitialize logging targets
-            log.init_logging()  # NOTE: We run in a subprocess!
-
-            raw_result = do_remote_automation(site, "ping", [], timeout=5)
-            assert isinstance(raw_result, dict)
-
-            result = ReplicationStatus(
-                site_id=site_id,
-                success=True,
-                response=PingResult(
-                    version=raw_result["version"],
-                    edition=raw_result["edition"],
-                    license_state=parse_license_state(raw_result.get("license_state", "")),
-                    omd_status=raw_result["omd_status"],
-                ),
-            )
-            self._logger.debug("[%s] Finished" % site_id)
-        except Exception as e:
-            self._logger.debug("[%s] Failed" % site_id, exc_info=True)
-            result = ReplicationStatus(
-                site_id=site_id,
-                success=False,
-                response=e,
-            )
-        finally:
-            if result:
-                result_queue.put(result)
-            result_queue.close()
-            result_queue.join_thread()
-            result_queue.join()
 
 
 class ModeEditSiteGlobals(ABCGlobalSettingsMode):
@@ -1619,17 +1540,23 @@ class ModeEditSiteGlobals(ABCGlobalSettingsMode):
         )
 
         self._site.setdefault("globals", {})[varname] = self._current_settings[varname]
-        self._site_mgmt.save_sites(self._configured_sites, activate=False)
+        self._site_mgmt.save_sites(
+            self._configured_sites,
+            activate=False,
+            pprint_value=active_config.wato_pprint_config,
+        )
 
         if self._site_id == omd_site():
             save_site_global_settings(self._current_settings)
 
         _changes.add_change(
-            "edit-configvar",
-            msg,
+            action_name="edit-configvar",
+            text=msg,
+            user_id=user.id,
             sites=[self._site_id],
             domains=[config_variable.domain()],
             need_restart=config_variable.need_restart(),
+            use_git=active_config.wato_use_git,
         )
 
         if action == "_reset":
@@ -1710,7 +1637,9 @@ class ModeEditSiteGlobalSetting(ABCEditGlobalSettingMode):
 
     def _save(self) -> None:
         site_management_registry["site_management"].save_sites(
-            self._configured_sites, activate=False
+            self._configured_sites,
+            activate=False,
+            pprint_value=active_config.wato_pprint_config,
         )
         if self._site_id == omd_site():
             save_site_global_settings(self._current_settings)
@@ -1803,10 +1732,13 @@ class ModeSiteLivestatusEncryption(WatoMode):
         trusted_cas.append(cert_str)
 
         _changes.add_change(
-            "edit-configvar",
-            _("Added CA with fingerprint %s to trusted certificate authorities") % digest_sha256,
+            action_name="edit-configvar",
+            text=_("Added CA with fingerprint %s to trusted certificate authorities")
+            % digest_sha256,
+            user_id=user.id,
             domains=[config_variable.domain()],
             need_restart=config_variable.need_restart(),
+            use_git=active_config.wato_use_git,
         )
         save_global_settings(
             {
@@ -1821,7 +1753,7 @@ class ModeSiteLivestatusEncryption(WatoMode):
     def page(self) -> None:
         if not is_livestatus_encrypted(self._site):
             html.show_message(
-                _("The livestatus connection to this site configured not to be encrypted.")
+                _("The livestatus connection to this site is configured not to be encrypted.")
             )
             return
 

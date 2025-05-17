@@ -19,26 +19,26 @@ def test_run_omd(site: Site) -> None:
 
 
 def test_run_omd_help(site: Site) -> None:
-    p = site.run(["omd", "help"])
+    p = site.omd("help", check=True)
     assert p.stderr == ""
     assert "Usage" in p.stdout
     assert "omd COMMAND -h" in p.stdout
 
 
 def test_run_omd_version(site: Site) -> None:
-    p = site.run(["omd", "version"])
+    p = site.omd("version", check=True)
     assert p.stderr == ""
     assert p.stdout.endswith("%s\n" % site.package.omd_version())
 
 
 def test_run_omd_version_bare(site: Site) -> None:
-    p = site.run(["omd", "version", "-b"])
+    p = site.omd("version", "-b", check=True)
     assert p.stderr == ""
     assert p.stdout.rstrip("\n") == site.package.omd_version()
 
 
 def test_run_omd_versions(site: Site) -> None:
-    p = site.run(["omd", "versions"])
+    p = site.omd("versions", check=True)
     assert p.stderr == ""
     versions = [v.split(" ", 1)[0] for v in p.stdout.split("\n")]
     assert len(versions) >= 1
@@ -46,7 +46,7 @@ def test_run_omd_versions(site: Site) -> None:
 
 
 def test_run_omd_versions_bare(site: Site) -> None:
-    p = site.run(["omd", "versions", "-b"])
+    p = site.omd("versions", "-b", check=True)
     assert p.stderr == ""
     versions = p.stdout.split("\n")
     assert len(versions) >= 1
@@ -54,13 +54,13 @@ def test_run_omd_versions_bare(site: Site) -> None:
 
 
 def test_run_omd_sites(site: Site) -> None:
-    p = site.run(["omd", "sites"])
+    p = site.omd("sites", check=True)
     assert p.stderr == ""
     assert site.id in p.stdout
 
 
 def test_run_omd_sites_bare(site: Site) -> None:
-    p = site.run(["omd", "sites", "-b"])
+    p = site.omd("sites", "-b", check=True)
     assert p.stderr == ""
     sites = p.stdout.split("\n")
     assert len(sites) >= 1
@@ -75,11 +75,7 @@ def test_run_omd_status_bare(site: Site) -> None:
     which is a service name followed by a number representing its status.
     """
 
-    p = site.run(
-        ["omd", "-v", "status", "--bare"],
-        text=True,
-        check=False,
-    )
+    p = site.omd("-v", "status", "--bare", check=False)
     assert p.returncode == 0, "The command should return status 0, 'running'"
     assert p.stderr == "", "No error output expected"
     services = p.stdout.splitlines()
@@ -105,25 +101,29 @@ def test_run_omd_status_bare(site: Site) -> None:
 def test_run_omd_backup_and_omd_restore(site: Site) -> None:
     """
     Test the 'omd backup' and 'omd restore' commands.
-
     This test creates a backup of the current site and then restores it with a new name.
+
     """
     site_factory = SiteFactory(
         package=CMKPackageInfo(version_from_env(), edition_from_env()),
         enforce_english_gui=False,
         prefix="",
     )
+
     restored_site_name = "restored_site"
     restored_site = None
     backup_path = Path(tempfile.gettempdir()) / "backup.tar.gz"
     try:
-        run(["omd", "backup", site.id, str(backup_path)], sudo=True, check=True)
+        # run the backup
+        site.omd("backup", str(backup_path), check=True)
         assert backup_path.stat().st_size > 0, "Backup file was not created."
 
+        # run restore as root to use a different site name
         run(["omd", "restore", restored_site_name, str(backup_path)], sudo=True, check=True)
-        restored_site = site_factory.get_existing_site(restored_site_name)
+        restored_site = site_factory.get_existing_site(restored_site_name, start=True)
         assert restored_site.exists(), "Restored site does not exist."
         assert restored_site.is_running(), "Restored site is not running."
+
     finally:
         if backup_path.exists():
             run(["rm", "-rf", str(backup_path)], sudo=True)

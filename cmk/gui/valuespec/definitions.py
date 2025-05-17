@@ -60,19 +60,19 @@ from dateutil.tz import tzlocal
 
 import cmk.ccc.plugin_registry
 from cmk.ccc.exceptions import MKGeneralException
+from cmk.ccc.hostaddress import HostAddress as HostAddressType
 from cmk.ccc.site import SiteId
+from cmk.ccc.user import UserId
 from cmk.ccc.version import Version
 
 import cmk.utils.log
 import cmk.utils.paths
 import cmk.utils.regex
 from cmk.utils import dateutils
-from cmk.utils.hostaddress import HostAddress as HostAddressType
 from cmk.utils.images import CMKImage, ImageType
 from cmk.utils.labels import AndOrNotLiteral, LabelSources
 from cmk.utils.render import SecondsRenderer
 from cmk.utils.urls import is_allowed_url
-from cmk.utils.user import UserId
 
 from cmk.gui import forms, site_config, user_sites, utils
 from cmk.gui.config import active_config
@@ -2902,7 +2902,7 @@ class Percentage(Float):
 
     def validate_datatype(self, value: float, varprefix: str) -> None:
         if self._allow_int:
-            if not isinstance(value, (int, float)):
+            if not isinstance(value, int | float):
                 raise MKUserError(
                     varprefix,
                     _("The value %r has type %s, but must be either float or int")
@@ -4533,13 +4533,13 @@ class RelativeDate(OptionalDropdownChoice[int]):
         return self.default_value()
 
     def render_input(self, varprefix: str, value: int | None) -> None:
-        if not isinstance(value, (int, float)):
+        if not isinstance(value, int | float):
             raise TypeError(value)
         reldays = int((_round_date(value) - _today()) / seconds_per_day)  # fixed: true-division
         super().render_input(varprefix, reldays)
 
     def value_to_html(self, value: int | None) -> ValueSpecText:
-        if not isinstance(value, (int, float)):
+        if not isinstance(value, int | float):
             raise TypeError(value)
         reldays = int((_round_date(value) - _today()) / seconds_per_day)  # fixed: true-division
         if reldays == -1:
@@ -4558,7 +4558,7 @@ class RelativeDate(OptionalDropdownChoice[int]):
         return _today() + reldays * seconds_per_day
 
     def validate_datatype(self, value: int | None, varprefix: str) -> None:
-        if not isinstance(value, (int, float)):
+        if not isinstance(value, int | float):
             raise MKUserError(varprefix, _("Date must be a number value"))
 
 
@@ -4786,7 +4786,7 @@ class AbsoluteDate(ValueSpec[None | float]):
     def validate_datatype(self, value: Any, varprefix: str) -> None:
         if value is None and self._allow_empty:
             return
-        if not isinstance(value, (int, float)):
+        if not isinstance(value, int | float):
             raise MKUserError(
                 varprefix,
                 _("The type of the timestamp must be int or float, but is %s") % type_name(value),
@@ -6454,7 +6454,7 @@ class AutoTimestamp(FixedValue[float]):
         return time.strftime("%F %T", time.localtime(value))
 
     def validate_datatype(self, value: float, varprefix: str) -> None:
-        if not isinstance(value, (int, float)):
+        if not isinstance(value, int | float):
             raise MKUserError(varprefix, _("Invalid datatype of timestamp: must be int or float."))
 
 
@@ -7895,7 +7895,7 @@ class IconSelector(ValueSpec[IconSelectorModel]):
         return json_value
 
     def validate_datatype(self, value: IconSelectorModel, varprefix: str) -> None:
-        if value is not None and self._with_emblem and not isinstance(value, (str, dict)):
+        if value is not None and self._with_emblem and not isinstance(value, str | dict):
             raise MKUserError(varprefix, "The type is %s, but should be str or dict" % type(value))
         if value is not None and not self._with_emblem and not isinstance(value, str):
             raise MKUserError(varprefix, "The type is %s, but should be str or dict" % type(value))

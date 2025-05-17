@@ -12,9 +12,8 @@ from pydantic import BaseModel
 
 from cmk.ccc import store
 from cmk.ccc.exceptions import MKGeneralException, MKTimeout
+from cmk.ccc.hostaddress import HostName
 from cmk.ccc.site import omd_site, SiteId
-
-from cmk.utils.hostaddress import HostName
 
 from cmk.gui.background_job import (
     BackgroundJob,
@@ -207,6 +206,7 @@ class PageFetchAgentOutput(AgentOutputPage):
             [
                 ("request", repr(self._request.serialize())),
             ],
+            debug=active_config.debug,
         )
 
     def _get_job_status(self) -> JobStatusSpec:
@@ -220,6 +220,7 @@ class PageFetchAgentOutput(AgentOutputPage):
                 [
                     ("request", repr(self._request.serialize())),
                 ],
+                debug=active_config.debug,
             )
         )
 
@@ -414,6 +415,7 @@ class PageDownloadAgentOutput(AgentOutputPage):
             [
                 ("request", repr(self._request.serialize())),
             ],
+            debug=active_config.debug,
         )
         assert isinstance(raw_response, bytes)
         return raw_response

@@ -20,6 +20,7 @@ from livestatus import LivestatusResponse
 from cmk.ccc import store
 from cmk.ccc.exceptions import MKGeneralException
 from cmk.ccc.site import SiteId
+from cmk.ccc.user import UserId
 from cmk.ccc.version import Edition, edition
 
 from cmk.utils import paths
@@ -38,7 +39,6 @@ from cmk.utils.notify_types import (
     NotifyPluginInfo,
 )
 from cmk.utils.statename import host_state_name, service_state_name
-from cmk.utils.user import UserId
 
 import cmk.gui.view_utils
 import cmk.gui.watolib.audit_log as _audit_log
@@ -534,8 +534,14 @@ class ABCNotificationsMode(ABCEventsMode):
         except IndexError:
             return _("Plain email")
 
-    def _add_change(self, log_what, log_text):
-        _changes.add_change(log_what, log_text, need_restart=False)
+    def _add_change(self, *, action_name: str, text: str) -> None:
+        _changes.add_change(
+            action_name=action_name,
+            text=text,
+            user_id=user.id,
+            need_restart=False,
+            use_git=active_config.wato_use_git,
+        )
 
     def _vs_notification_bulkby(self):
         return ListChoice(
@@ -854,7 +860,9 @@ class ModeNotifications(ABCNotificationsMode):
                 self._get_notification_rules(),
                 "notification",
                 _("notification rule"),
-                NotificationRuleConfigFile().save,
+                lambda c: NotificationRuleConfigFile().save(
+                    c, pprint_value=active_config.wato_pprint_config
+                ),
             )
 
         if back_mode := request.var("back_mode"):
@@ -1693,6 +1701,7 @@ class ModeTestNotifications(ModeNotifications):
                         ("context", json.dumps(context)),
                         ("dispatch", request.var("dispatch", "")),
                     ],
+                    debug=active_config.debug,
                 ),
             )
 
@@ -1777,8 +1786,8 @@ class ModeTestNotifications(ModeNotifications):
                     notification_sent_count,
                     self._vs_notification_scripts().value_to_html(dispatch_method),
                     ungettext(
-                        "notification has been sent out",
-                        "notifications have been sent out",
+                        "notification has been triggered",
+                        "notifications have been triggered",
                         notification_sent_count,
                     ),
                 )
@@ -1872,17 +1881,21 @@ class ModeTestNotifications(ModeNotifications):
         table.row(css=["notification_context hidden"])
 
     def _render_test_notifications(self) -> None:
-        if self._test_notification_ongoing() or request.var("test_notification"):
+        general_test_options = self._get_default_options(
+            request.var("host_name"),
+            request.var("service_name"),
+        )
+        advanced_test_options = ""
+        notify_plugin = {}
+        if (
+            form_submitted := request.var("test_notification")
+        ) or self._test_notification_ongoing():
             general_test_options = self._vs_general_test_options().from_html_vars("general_opts")
-            advanced_test_options = self._vs_advanced_test_options().from_html_vars("advanced_opts")
-            notify_plugin = self._vs_notify_plugin().from_html_vars("notify_plugin")
-        else:
-            general_test_options = self._get_default_options(
-                request.var("host_name"),
-                request.var("service_name"),
-            )
-            advanced_test_options = ""
-            notify_plugin = {}
+            if form_submitted:
+                advanced_test_options = self._vs_advanced_test_options().from_html_vars(
+                    "advanced_opts"
+                )
+                notify_plugin = self._vs_notify_plugin().from_html_vars("notify_plugin")
 
         self._ensure_correct_default_test_options()
 
@@ -2224,7 +2237,7 @@ class ModeTestNotifications(ModeNotifications):
                     "notify_plugin",
                     CascadingDropdown(
                         label=_("Notification method and parameter"),
-                        title=_("Send out notification for specific method"),
+                        title=_("Trigger notification for a specific method"),
                         choices=self._notification_script_choices_with_parameters,
                         default_value=("mail", None),
                         orientation="horizontal",
@@ -2368,8 +2381,8 @@ class ABCUserNotificationsMode(ABCNotificationsMode):
             del self._rules[nr]
             userdb.save_users(self._users, now)
             self._add_change(
-                "notification-delete-user-rule",
-                _("Deleted notification rule %d of user %s") % (nr, self._user_id()),
+                action_name="notification-delete-user-rule",
+                text=_("Deleted notification rule %d of user %s") % (nr, self._user_id()),
             )
 
         elif request.has_var("_move"):
@@ -2381,8 +2394,8 @@ class ABCUserNotificationsMode(ABCNotificationsMode):
             userdb.save_users(self._users, now)
 
             self._add_change(
-                "notification-move-user-rule",
-                _("Changed position of notification rule %d of user %s")
+                action_name="notification-move-user-rule",
+                text=_("Changed position of notification rule %d of user %s")
                 % (from_pos, self._user_id()),
             )
 
@@ -2545,12 +2558,20 @@ class ModePersonalUserNotifications(ABCUserNotificationsMode):
     def _user_id(self):
         return user.id
 
-    def _add_change(self, log_what: str, log_text: str) -> None:
+    def _add_change(self, *, action_name: str, text: str) -> None:
         if has_wato_slave_sites():
             self._start_async_repl = True
-            _audit_log.log_audit(log_what, log_text)
+            _audit_log.log_audit(
+                action=action_name,
+                message=text,
+                user_id=user.id,
+                use_git=active_config.wato_use_git,
+            )
         else:
-            super()._add_change(log_what, log_text)
+            super()._add_change(
+                action_name=action_name,
+                text=text,
+            )
 
     def title(self) -> str:
         return _("Your personal notification rules")
@@ -3012,7 +3033,7 @@ class ABCEditNotificationRuleMode(ABCNotificationsMode):
         choices = []
         for script_name, title in notification_script_choices():
             if script_name in notification_parameter_registry:
-                vs: Dictionary | ListOfStrings = notification_parameter_registry[script_name]().spec
+                vs: Dictionary | ListOfStrings = notification_parameter_registry[script_name].spec()
             else:
                 vs = ListOfStrings(
                     title=_("Call with the following parameters:"),
@@ -3094,7 +3115,10 @@ class ABCEditNotificationRuleMode(ABCNotificationsMode):
         self._save_rules(self._rules)
 
         log_what = "new-notification-rule" if self._new else "edit-notification-rule"
-        self._add_change(log_what, self._log_text(self._edit_nr))
+        self._add_change(
+            action_name=log_what,
+            text=self._log_text(self._edit_nr),
+        )
         flash(
             _("New notification rule #%d successfully created!") % (len(self._rules) - 1)
             if self._new
@@ -3143,7 +3167,7 @@ class ModeEditNotificationRule(ABCEditNotificationRuleMode):
         return NotificationRuleConfigFile().load_for_reading()
 
     def _save_rules(self, rules: list[EventRule]) -> None:
-        NotificationRuleConfigFile().save(rules)
+        NotificationRuleConfigFile().save(rules, pprint_value=active_config.wato_pprint_config)
 
     def _user_id(self):
         return None
@@ -3236,12 +3260,20 @@ class ModeEditPersonalNotificationRule(ABCEditUserNotificationRuleMode):
     def _user_id(self):
         return user.id
 
-    def _add_change(self, log_what, log_text):
+    def _add_change(self, action_name: str, text: str) -> None:
         if has_wato_slave_sites():
             self._start_async_repl = True
-            _audit_log.log_audit(log_what, log_text)
+            _audit_log.log_audit(
+                action=action_name,
+                message=text,
+                user_id=user.id,
+                use_git=active_config.wato_use_git,
+            )
         else:
-            super()._add_change(log_what, log_text)
+            super()._add_change(
+                action_name=action_name,
+                text=text,
+            )
 
     def _back_mode(self) -> ActionResult:
         if has_wato_slave_sites():
@@ -3395,10 +3427,18 @@ class ABCNotificationParameterMode(WatoMode):
         self,
         parameters: NotificationParameterSpecs,
     ) -> None:
-        NotificationParameterConfigFile().save(parameters)
+        NotificationParameterConfigFile().save(
+            parameters, pprint_value=active_config.wato_pprint_config
+        )
 
-    def _add_change(self, log_what, log_text):
-        _changes.add_change(log_what, log_text, need_restart=False)
+    def _add_change(self, *, action_name: str, text: str) -> None:
+        _changes.add_change(
+            action_name=action_name,
+            text=text,
+            user_id=user.id,
+            need_restart=False,
+            use_git=active_config.wato_use_git,
+        )
 
     def _log_text(self, edit_nr: int) -> str:
         raise NotImplementedError()
@@ -3426,6 +3466,7 @@ class ABCNotificationParameterMode(WatoMode):
                             param["general"]["description"]
                             for paramId, param in method_parameters.items()
                         ],
+                        "_clone",
                     )
                 except KeyError:
                     raise MKUserError(None, _("This %s does not exist.") % "notification parameter")
@@ -3446,7 +3487,7 @@ class ABCNotificationParameterMode(WatoMode):
 
     def _spec(self) -> Dictionary | LegacyValueSpec:
         try:
-            return notification_parameter_registry[self._method()]().spec
+            return notification_parameter_registry[self._method()].spec()
         except KeyError:
             if any(
                 self._method() == script_name
@@ -3493,8 +3534,8 @@ class ABCNotificationParameterMode(WatoMode):
                 i for i, v in enumerate(method_parameter_list) if v[0] == parameter_id
             )
             self._add_change(
-                "notification-delete-notification-parameter",
-                _("Deleted notification parameter %d") % parameter_number,
+                action_name="notification-delete-notification-parameter",
+                text=_("Deleted notification parameter %d") % parameter_number,
             )
 
         elif request.has_var("_move"):
@@ -3509,8 +3550,8 @@ class ABCNotificationParameterMode(WatoMode):
             self._save_parameters(self._parameters)
 
             self._add_change(
-                "notification-move-notification-parameter",
-                _("Changed position of notification parameter %d") % from_pos,
+                action_name="notification-move-notification-parameter",
+                text=_("Changed position of notification parameter %d") % from_pos,
             )
 
         if back_mode := request.var("back_mode"):
@@ -3704,8 +3745,14 @@ class ModeNotificationParameters(ABCNotificationParameterMode):
                         spec.value_to_html(parameter["parameter_properties"])
                     )
 
-    def _add_change(self, log_what, log_text):
-        _changes.add_change(log_what, log_text, need_restart=False)
+    def _add_change(self, *, action_name: str, text: str) -> None:
+        _changes.add_change(
+            action_name=action_name,
+            user_id=user.id,
+            text=text,
+            need_restart=False,
+            use_git=active_config.wato_use_git,
+        )
 
     def _parameter_links(
         self,
@@ -3824,7 +3871,10 @@ class ModeEditNotificationParameter(ABCNotificationParameterMode):
         self._save_parameters(self._parameters)
 
         log_what = "new-notification-parameter" if self._new else "edit-notification-parameter"
-        self._add_change(log_what, self._log_text(self._edit_nr))
+        self._add_change(
+            action_name=log_what,
+            text=self._log_text(self._edit_nr),
+        )
 
         if back_mode := request.var("back_mode"):
             return redirect(mode_url(back_mode, method=self._method()))
@@ -3868,7 +3918,9 @@ class ModeEditNotificationRuleQuickSetup(WatoMode):
                 rule = deepcopy(notifications_rules[self._clone_nr])
                 rule["rule_id"] = new_notification_rule_id()
                 notifications_rules.append(rule)
-                NotificationRuleConfigFile().save(notifications_rules)
+                NotificationRuleConfigFile().save(
+                    notifications_rules, pprint_value=active_config.wato_pprint_config
+                )
                 self._edit_nr = len(notifications_rules) - 1
             except IndexError:
                 raise MKUserError(None, _("Notification rule does not exist."))

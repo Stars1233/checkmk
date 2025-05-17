@@ -3,6 +3,8 @@
 # This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
 # conditions defined in the file COPYING, which is part of this source code package.
 
+# mypy: disable-error-code="no-any-return, no-untyped-call, no-untyped-def"
+
 from __future__ import annotations
 
 import functools
@@ -24,12 +26,12 @@ from livestatus import (
 
 import cmk.ccc.version as cmk_version
 from cmk.ccc import store
+from cmk.ccc.hostaddress import HostName
 from cmk.ccc.site import SiteId
 
 import cmk.utils.paths
 from cmk.utils import dateutils
 from cmk.utils.cpu_tracking import CPUTracker
-from cmk.utils.hostaddress import HostName
 from cmk.utils.servicename import ServiceName
 
 from cmk.gui import sites
@@ -824,7 +826,7 @@ def prepare_avo_timeformats(timeformat: AVTimeformatSpec) -> AVTimeFormats:
 
     """
     this_timeformat = [("percentage_2", render_number_function("percentage_2"))]
-    if isinstance(timeformat, (list, tuple)):
+    if isinstance(timeformat, list | tuple):
         if timeformat[0] == "both":
             this_timeformat = [
                 (timeformat[1], render_number_function(timeformat[1])),

@@ -40,6 +40,7 @@ import cmk.ccc.debug
 import cmk.ccc.version as cmk_version
 from cmk.ccc import store
 from cmk.ccc.exceptions import MKGeneralException, MKIPAddressLookupError
+from cmk.ccc.hostaddress import HostAddress, HostName, Hosts
 from cmk.ccc.site import omd_site, SiteId
 
 import cmk.utils
@@ -55,7 +56,6 @@ from cmk.utils.caching import cache_manager
 from cmk.utils.check_utils import maincheckify, section_name_of
 from cmk.utils.config_path import ConfigPath
 from cmk.utils.host_storage import apply_hosts_file_to_object, get_host_storage_loaders
-from cmk.utils.hostaddress import HostAddress, HostName, Hosts
 from cmk.utils.http_proxy_config import http_proxy_config_from_user_setting, HTTPProxyConfig
 from cmk.utils.ip_lookup import IPStackConfig
 from cmk.utils.labels import LabelManager, Labels, LabelSources
@@ -556,7 +556,7 @@ def handle_ip_lookup_failure(host_name: HostName, exc: Exception) -> None:
 def get_default_config() -> dict[str, Any]:
     """Provides a dictionary containing the Check_MK default configuration"""
     return {
-        key: copy.deepcopy(value) if isinstance(value, (dict, list)) else value
+        key: copy.deepcopy(value) if isinstance(value, dict | list) else value
         for key, value in default_config.__dict__.items()
         if key[0] != "_"
     }
@@ -1849,7 +1849,7 @@ class ConfigCache:
             checking_sections = frozenset(
                 agent_based_register.filter_relevant_raw_sections(
                     consumers=[
-                        plugins.check_plugins[n]
+                        p
                         for n in self.check_table(
                             hostname,
                             plugins.check_plugins,
@@ -1858,7 +1858,8 @@ class ConfigCache:
                             filter_mode=FilterMode.INCLUDE_CLUSTERED,
                             skip_ignored=True,
                         ).needed_check_names()
-                        if n in plugins.check_plugins
+                        if (p := agent_based_register.get_check_plugin(n, plugins.check_plugins))
+                        is not None
                     ],
                     sections=itertools.chain(
                         plugins.agent_sections.values(), plugins.snmp_sections.values()
@@ -2552,7 +2553,9 @@ class ConfigCache:
             passwords,
             password_store_file,
             ExecutableFinder(
-                cmk.utils.paths.local_special_agents_dir, cmk.utils.paths.special_agents_dir
+                # NOTE: we can't ignore these, they're an API promise.
+                cmk.utils.paths.local_special_agents_dir,
+                cmk.utils.paths.special_agents_dir,
             ),
         )
         for agentname, params_seq in host_special_agents:
@@ -3419,21 +3422,6 @@ class ConfigCache:
         hostname: HostName,
         ip_address_of: IPLookup,
     ) -> ObjectAttributes:
-        def _set_addresses(
-            attrs: ObjectAttributes,
-            addresses: list[HostAddress] | None,
-            what: Literal["4", "6"],
-        ) -> None:
-            key_base = f"_ADDRESSES_{what}"
-            if not addresses:
-                # If other addresses are not available, set to empty string in order to avoid unresolved macros
-                attrs[key_base] = ""
-                return
-            attrs[key_base] = " ".join(addresses)
-            for nr, address in enumerate(addresses):
-                key = f"{key_base}_{nr + 1}"
-                attrs[key] = address
-
         attrs = self.extra_host_attributes(hostname)
 
         # Pre 1.6 legacy attribute. We have changed our whole code to use the
@@ -3455,41 +3443,38 @@ class ConfigCache:
 
         ip_stack_config = ConfigCache.ip_stack_config(hostname)
 
-        # Now lookup configured IP addresses
-        v4address: str | None = None
-        if IPStackConfig.IPv4 in ip_stack_config:
-            v4address = ip_address_of(hostname, socket.AddressFamily.AF_INET)
+        v4address = (
+            ip_address_of(hostname, socket.AddressFamily.AF_INET)
+            if IPStackConfig.IPv4 in ip_stack_config
+            else None
+        )
+        attrs["_ADDRESS_4"] = "" if v4address is None else v4address
 
-        if v4address is None:
-            v4address = ""
-        attrs["_ADDRESS_4"] = v4address
+        v6address = (
+            ip_address_of(hostname, socket.AddressFamily.AF_INET6)
+            if IPStackConfig.IPv6 in ip_stack_config
+            else None
+        )
+        attrs["_ADDRESS_6"] = "" if v6address is None else v6address
 
-        v6address: str | None = None
-        if IPStackConfig.IPv6 in ip_stack_config:
-            v6address = ip_address_of(hostname, socket.AddressFamily.AF_INET6)
-        if v6address is None:
-            v6address = ""
-        attrs["_ADDRESS_6"] = v6address
-
-        if self.default_address_family(hostname) is socket.AF_INET6:
-            attrs["address"] = attrs["_ADDRESS_6"]
-            attrs["_ADDRESS_FAMILY"] = "6"
-        else:
-            attrs["address"] = attrs["_ADDRESS_4"]
-            attrs["_ADDRESS_FAMILY"] = "4"
+        ipv6_is_default = self.default_address_family(hostname) is socket.AF_INET6
+        attrs["address"] = attrs["_ADDRESS_6"] if ipv6_is_default else attrs["_ADDRESS_4"]
+        attrs["_ADDRESS_FAMILY"] = "6" if ipv6_is_default else "4"
 
         add_ipv4addrs, add_ipv6addrs = self.additional_ipaddresses(hostname)
-        _set_addresses(attrs, add_ipv4addrs, "4")
-        _set_addresses(attrs, add_ipv6addrs, "6")
 
-        # Add the optional WATO folder path
-        path = host_paths.get(hostname)
-        if path:
+        attrs["_ADDRESSES_4"] = " ".join(add_ipv4addrs)
+        for n, address in enumerate(add_ipv4addrs, start=1):
+            attrs[f"_ADDRESSES_4_{n}"] = address
+
+        attrs["_ADDRESSES_6"] = " ".join(add_ipv6addrs)
+        for n, address in enumerate(add_ipv6addrs, start=1):
+            attrs[f"_ADDRESSES_6_{n}"] = address
+
+        if path := host_paths.get(hostname):
             attrs["_FILENAME"] = path
 
-        # Add custom user icons and actions
-        actions = self.icons_and_actions(hostname)
-        if actions:
+        if actions := self.icons_and_actions(hostname):
             attrs["_ACTIONS"] = ",".join(actions)
 
         if cmk_version.edition(cmk.utils.paths.omd_root) is cmk_version.Edition.CME:
@@ -3644,7 +3629,7 @@ class ConfigCache:
     @staticmethod
     def replace_macros(s: str, macros: ObjectMacros) -> str:
         for key, value in macros.items():
-            if isinstance(value, (numbers.Integral, float)):
+            if isinstance(value, numbers.Integral | float):
                 value = str(value)  # e.g. in _EC_SL (service level)
 
             # TODO: Clean this up

@@ -71,7 +71,7 @@ py_wheel(
     distribution = "cmk-mkp-tool",
     strip_path_prefixes = ["packages/cmk-mkp-tool"],
     # TODO: Duplicated from pyproject.toml
-    version = "0.2.0",
+    version = "2.0.0",
     deps = [":cmk-mkp-tool"],
 )
 
@@ -79,4 +79,13 @@ package_wheel(
     name = "pkg_tar",
     visibility = ["//visibility:public"],
     whl = "wheel",
+)
+
+py_wheel(
+    name = "wheel_entrypoint_only",
+    console_scripts = {"mkp": "cmk.mkp_tool.cli:main"},
+    distribution = "cmk-mkp-tool-entrypoint",
+    version = "2.0.0",
+    visibility = ["//visibility:public"],
+    deps = [],
 )

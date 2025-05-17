@@ -20,9 +20,9 @@ from tests.testlib.unit.rest_api_client import ClientRegistry
 from tests.unit.cmk.web_test_app import SetConfig
 
 from cmk.ccc import version
+from cmk.ccc.user import UserId
 
 from cmk.utils import paths
-from cmk.utils.user import UserId
 
 from cmk.gui import userdb
 from cmk.gui.config import active_config
@@ -962,7 +962,7 @@ def _internal_attributes(user_attributes):
 def test_openapi_new_user_with_cloned_role(
     clients: ClientRegistry, monkeypatch: MonkeyPatch
 ) -> None:
-    cloned_role: UserRole = clone_role(RoleID("admin"))
+    cloned_role: UserRole = clone_role(RoleID("admin"), pprint_value=False)
     username = f"new_user_with_role_{cloned_role.name}"
     fullname = f"NewUser_{cloned_role.name}"
 

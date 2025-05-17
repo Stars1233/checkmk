@@ -10,13 +10,13 @@ from collections.abc import Collection
 from typing import NotRequired, TypedDict
 
 from cmk.ccc.exceptions import MKGeneralException
-
-from cmk.utils.hostaddress import HostAddress, HostName
+from cmk.ccc.hostaddress import HostAddress, HostName
 
 from cmk.snmplib import SNMPCredentials  # pylint: disable=cmk-module-layer-violation
 
 from cmk.gui import forms
 from cmk.gui.breadcrumb import Breadcrumb
+from cmk.gui.config import active_config
 from cmk.gui.exceptions import MKAuthException, MKUserError
 from cmk.gui.htmllib.html import html
 from cmk.gui.http import request
@@ -184,7 +184,7 @@ class ModeDiagHost(WatoMode):
                 return_message.append(_("SNMP credentials"))
                 attributes["snmp_community"] = new["snmp_community"]
 
-            self._host.update_attributes(attributes)
+            self._host.update_attributes(attributes, pprint_value=active_config.wato_pprint_config)
 
             flash(_("Updated attributes: ") + ", ".join(return_message))
             return redirect(

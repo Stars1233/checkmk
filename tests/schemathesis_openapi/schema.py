@@ -207,6 +207,7 @@ def get_schema() -> schemas.BaseOpenAPISchema:
     allow_nulls = os.getenv("SCHEMATHESIS_ALLOW_NULLS", "0") == "1"
     codec = os.getenv("SCHEMATHESIS_CODEC", "utf-8")
     generation_config = GenerationConfig(allow_x00=allow_nulls, codec=codec)
+    schemathesis.experimental.OPEN_API_3_1.enable()
     if os.path.exists(schema_filepath):
         logger.info('Loading OpenAPI schema from file "%s"...', schema_filepath)
         schema = schemathesis.from_path(
@@ -258,12 +259,20 @@ def update_property(
     """Update a property in the schema to suppress a specific problem."""
     if ticket_id and ticket_id not in settings.suppressed_issues:
         return
-    schema_data = raw_schema["components"]["schemas"][schema_name]["properties"].get(property_name)
+    schema_data = (
+        raw_schema["components"]["schemas"]
+        .get(schema_name, {})
+        .get("properties", {})
+        .get(property_name)
+    )
+    if schema_data is None:
+        logger.warning("SCHEMA %s: Schema not found!", schema_name)
+        return
     if property_data is None:
         del schema_data
         return
     for key in property_data:
-        if key not in schema_data or not isinstance(schema_data[key], (dict, list)):
+        if key not in schema_data or not isinstance(schema_data[key], dict | list):
             schema_data[key] = property_data[key]
             logger.warning(
                 'SCHEMA %s: Property "%s" must be defined as "%s".%s',

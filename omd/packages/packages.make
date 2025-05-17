@@ -33,7 +33,7 @@ $(DEPS_INSTALL_BAZEL):
 	#       resulting in different builds
 	# IMPORTANT: Keep the executio log file name in sync with what bazel_logs.groovy cleans-up.
 	# TODO: Find a better way to sync the generation and its clean up.
-	bazel build --cmk_version=$(VERSION) --cmk_edition=$(EDITION_SHORT) \
+	bazel build --cmk_version=$(VERSION) --cmk_edition=$(EDITION_SHORT) --cmk_distro=$(shell echo $(DISTRO_NAME)-$(DISTRO_VERSION) | tr A-Z a-z) \
 	    $(if $(filter sles15%,$(DISTRO_CODE)),--define git-ssl-no-verify=true) \
 	    --execution_log_json_file="$(REPO_PATH)/deps_install.json" \
 	    //omd:deps_install_$(EDITION_SHORT)
@@ -181,19 +181,15 @@ debug:
 
 # Include rules to make packages
 include \
-    packages/erlang/erlang.make \
     packages/apache-omd/apache-omd.make \
     packages/xinetd/xinetd.make \
     packages/cpp-libs/cpp-libs.make \
     packages/check_mk/check_mk.make \
-    packages/libgsf/libgsf.make \
     packages/monitoring-plugins/monitoring-plugins.make \
     packages/check-cert/check-cert.make \
-    packages/lcab/lcab.make \
     packages/msitools/msitools.make \
     packages/nagios/nagios.make \
     packages/heirloom-mailx/heirloom-mailx.make \
-    packages/nrpe/nrpe.make \
     packages/pnp4nagios/pnp4nagios.make \
     packages/omd/omd.make \
     packages/appliance/appliance.make \

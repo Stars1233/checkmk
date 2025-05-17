@@ -57,8 +57,10 @@ def user_profile_async_replication_dialog(sites: Sequence[SiteId], back_url: str
             changes_manager = ActivateChanges()
             changes_manager.load()
             estimated_duration = changes_manager.get_activation_time(
-                site_id, ACTIVATION_TIME_PROFILE_SYNC, 2.0
+                site_id, ACTIVATION_TIME_PROFILE_SYNC
             )
+            if estimated_duration is None:
+                estimated_duration = 2.0
             html.javascript(
                 "cmk.profile_replication.start(%s, %d, %s);"
                 % (
@@ -84,8 +86,10 @@ def user_profile_async_replication_dialog(sites: Sequence[SiteId], back_url: str
 def add_profile_replication_change(site_id: SiteId, result: bool | str) -> None:
     """Add pending change entry to make sync possible later for admins"""
     add_change(
-        "edit-users",
-        _l("Profile changed (sync failed: %s)") % result,
+        action_name="edit-users",
+        text=_l("Profile changed (sync failed: %s)") % result,
+        user_id=user.id,
         sites=[site_id],
         need_restart=False,
+        use_git=active_config.wato_use_git,
     )

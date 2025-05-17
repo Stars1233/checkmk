@@ -2,19 +2,20 @@
 # Copyright (C) 2023 Checkmk GmbH - License: GNU General Public License v2
 # This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
 # conditions defined in the file COPYING, which is part of this source code package.
-
+import json
 import sys
-from argparse import ArgumentParser
+from argparse import ArgumentParser, BooleanOptionalAction
 from argparse import Namespace as Args
 from collections.abc import Iterator
 from pathlib import Path
+from typing import NamedTuple
 
 import requests
 
 sys.path.insert(0, Path(__file__).parent.parent.parent.as_posix())
 from tests.testlib.package_manager import ABCPackageManager, code_name
 
-from cmk.ccc.version import Edition
+from cmk.ccc.version import Edition, Version
 
 from buildscripts.scripts.lib.common import flatten, load_editions_file
 from buildscripts.scripts.lib.registry import (
@@ -87,6 +88,29 @@ def build_package_artifacts(args: Args, loaded_yaml: dict) -> Iterator[tuple[str
             yield hash_file(package_name), internal_only
 
 
+def bom_file_name(edition: str, version: str) -> str:
+    return f"check-mk-{edition}-{version}-bill-of-materials.json"
+
+
+def build_bom_artifacts(args: Args, loaded_yaml: dict) -> Iterator[tuple[str, bool]]:
+    for edition in loaded_yaml["editions"]:
+        file_name = bom_file_name(edition, args.version)
+        internal_only = edition in loaded_yaml.get("internal_editions", [])
+        yield file_name, internal_only
+        yield hash_file(file_name), internal_only
+
+
+def build_bom_latest_mapping(args: Args, loaded_yaml: dict) -> dict[str, str]:
+    base_version = Version.from_str(args.version).base
+    return {
+        bom_file_name(
+            edition, f"{'' if args.version_agnostic else f'{base_version}-'}latest"
+        ): bom_file_name(edition, args.version)
+        for edition in loaded_yaml["editions"]
+        if edition not in loaded_yaml.get("internal_editions", [])
+    }
+
+
 def file_exists_on_download_server(filename: str, version: str, credentials: Credentials) -> bool:
     url = f"https://download.checkmk.com/checkmk/{version}/{filename}"
     sys.stdout.write(f"Checking for {url}...")
@@ -104,46 +128,100 @@ def file_exists_on_download_server(filename: str, version: str, credentials: Cre
     return True
 
 
+class ArtifactState(NamedTuple):
+    missing: str = "ARTIFACT_MISSING"
+    present: str = "ARTIFACT_PRESENT"
+
+
+class AssertResult(NamedTuple):
+    assertion_ok: bool
+    message: str
+
+
 def assert_presence_on_download_server(
     args: Args, internal_only: bool, artifact_name: str, credentials: Credentials
-) -> None:
+) -> AssertResult:
     if (
         not file_exists_on_download_server(artifact_name, args.version, credentials)
         != internal_only
     ):
-        raise RuntimeError(
-            f"{artifact_name} should {'not' if internal_only else ''} "
-            "be available on download server!"
+        return AssertResult(
+            assertion_ok=False,
+            message=(
+                f"{ArtifactState().missing if internal_only else ArtifactState().present}: "
+                f"{artifact_name} should {'not' if internal_only else ''} "
+                "be available on download server!"
+            ),
         )
+
+    return AssertResult(assertion_ok=True, message="")
 
 
 def assert_build_artifacts(args: Args, loaded_yaml: dict) -> None:
     credentials = get_credentials()
-    registries = get_default_registries()
+    if not args.skip_docker:
+        registries = get_default_registries()
 
+    results = []
     for artifact_name, internal_only in build_source_artifacts(args, loaded_yaml):
-        assert_presence_on_download_server(args, internal_only, artifact_name, credentials)
+        results.append(
+            assert_presence_on_download_server(args, internal_only, artifact_name, credentials)
+        )
 
     for artifact_name, internal_only in build_package_artifacts(args, loaded_yaml):
-        assert_presence_on_download_server(args, internal_only, artifact_name, credentials)
+        results.append(
+            assert_presence_on_download_server(args, internal_only, artifact_name, credentials)
+        )
+
+    for artifact_name, internal_only in build_bom_artifacts(args, loaded_yaml):
+        results.append(
+            assert_presence_on_download_server(args, internal_only, artifact_name, credentials)
+        )
 
     for artifact_name, internal_only in build_docker_artifacts(args, loaded_yaml):
-        assert_presence_on_download_server(args, internal_only, artifact_name, credentials)
+        results.append(
+            assert_presence_on_download_server(args, internal_only, artifact_name, credentials)
+        )
 
-    for image_name, edition, registry in build_docker_image_name_and_registry(
-        args, loaded_yaml, registries
-    ):
-        if not registry.image_exists(image_name, edition):
-            raise RuntimeError(f"{image_name} not found!")
+    if not args.skip_docker:
+        for image_name, edition, registry in build_docker_image_name_and_registry(
+            args, loaded_yaml, registries
+        ):
+            image_exists = registry.image_exists(image_name, edition)
+            results.append(
+                AssertResult(
+                    assertion_ok=image_exists,
+                    message=f"{image_name} not found!" if not image_exists else "",
+                )
+            )
 
-    # cloud images
-    # TODO
+    errors = [r.message for r in results if not r.assertion_ok]
+
+    print("ARTIFACTS_COUNTED: ", len(results))
+    print("ARTIFACTS_ERRORS: ", len(errors))
+
+    if errors:
+        raise RuntimeError(
+            f"The following {len(errors)} build artifacts errors were detected:\n"
+            + "\n".join([str(e) for e in errors])
+        )
+
+
+# cloud images
+# TODO
+
+
+def dump_bom_artifact_mapping(args: Args, loaded_yaml: dict) -> None:
+    print(json.dumps(build_bom_latest_mapping(args, loaded_yaml)))
 
 
 def parse_arguments() -> Args:
     parser = ArgumentParser()
 
     parser.add_argument("--editions_file", required=True)
+    parser.add_argument(
+        "--skip_docker", action="store_true", default=False, help="Skip docker image check"
+    )
 
     subparsers = parser.add_subparsers(required=True, dest="command")
 
@@ -151,6 +229,11 @@ def parse_arguments() -> Args:
     sub_assert_build_artifacts.set_defaults(func=assert_build_artifacts)
     sub_assert_build_artifacts.add_argument("--version", required=True, default=False)
     sub_assert_build_artifacts.add_argument("--use_case", required=False, default="release")
+
+    sub_print_bom_artifacts = subparsers.add_parser("dump_bom_artifact_mapping")
+    sub_print_bom_artifacts.set_defaults(func=dump_bom_artifact_mapping)
+    sub_print_bom_artifacts.add_argument("--version", required=True, default=False)
+    sub_print_bom_artifacts.add_argument("--version_agnostic", action=BooleanOptionalAction)
 
     return parser.parse_args()
 

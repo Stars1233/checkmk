@@ -6,7 +6,7 @@
 
 import tomllib
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from functools import cached_property
 from pathlib import Path
 from typing import assert_never, Final, Self
@@ -45,9 +45,7 @@ class PathConfig:
     web_dir: Path
 
     # other paths
-    installed_packages_dir: Path
     local_root: Path
-    manifests_dir: Path
 
     @classmethod
     def from_toml(cls, content: str) -> Self:
@@ -71,10 +69,11 @@ class PathConfig:
             notifications_dir=Path(raw["notifications_dir"]),
             pnp_templates_dir=Path(raw["pnp_templates_dir"]),
             web_dir=Path(raw["web_dir"]),
-            installed_packages_dir=Path(raw["installed_packages_dir"]),
             local_root=Path(raw["local_root"]),
-            manifests_dir=Path(raw["manifests_dir"]),
         )
+
+    def to_toml(self) -> str:
+        return "[paths]\n" + "\n".join(f'{k} = "{v}"' for k, v in asdict(self).items())
 
     def get_path(self, part: PackagePart) -> Path:
         match part:
@@ -238,3 +237,27 @@ class PackageOperationCallbacks:
     install: PackageOperationCallback = lambda _files: None
     uninstall: PackageOperationCallback = lambda _files: None
     release: PackageOperationCallback = lambda _files: None
+
+
+def make_path_config_template() -> PathConfig:
+    return PathConfig(
+        cmk_plugins_dir=Path("cmk/plugins"),
+        cmk_addons_plugins_dir=Path("cmk_addons/plugins"),
+        agent_based_plugins_dir=Path(),
+        agents_dir=Path("agents"),
+        alert_handlers_dir=Path(),
+        bin_dir=Path("bin"),
+        check_manpages_dir=Path(),
+        checks_dir=Path(),
+        doc_dir=Path(),
+        gui_plugins_dir=Path(),
+        inventory_dir=Path(),
+        lib_dir=Path(),
+        locale_dir=Path(),
+        mib_dir=Path(),
+        mkp_rule_pack_dir=Path(),
+        notifications_dir=Path(),
+        pnp_templates_dir=Path(),
+        web_dir=Path(),
+        local_root=Path(),
+    )

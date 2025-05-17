@@ -9,6 +9,7 @@ import re
 import subprocess
 import time
 from collections.abc import Iterator
+from pathlib import Path
 
 import pytest
 
@@ -105,12 +106,12 @@ def _get_replication_change() -> ChangeSpec:
 
 def _write_ec_rule(site: Site, rule: list | None) -> None:
     ec_rules_path = site.path("etc/check_mk/mkeventd.d/wato/rules.mk")
-    site.write_text_file(str(ec_rules_path), f"rule_packs += {rule}" if rule else "")
+    site.write_file(str(ec_rules_path), f"rule_packs += {rule}" if rule else "")
 
 
 def _activate_ec_changes(site: Site) -> None:
     replication_changes_path = site.path(f"var/check_mk/wato/replication_changes_{site.id}.mk")
-    site.write_text_file(str(replication_changes_path), str(_get_replication_change()))
+    site.write_file(str(replication_changes_path), str(_get_replication_change()))
     site.openapi.changes.activate_and_wait_for_completion(force_foreign_changes=True)
 
 
@@ -159,6 +160,22 @@ def _wait_for_queried_column(
     if strict:
         assert queried_column, f"Failed to retrieve livestatus query: {repr(query)}"
     return queried_column
+
+
+def _wait_for_event_message_in_log(
+    site: Site, message: str, log_path: Path, sleep_time: float = 2, max_count: int = 20
+) -> None:
+    count = 0
+    while (message not in site.read_file(log_path)) and count < max_count:
+        logger.info(
+            f"Waiting for the following message in log file '{log_path}': %s", repr(message)
+        )
+        time.sleep(sleep_time)
+        count += 1
+
+    assert message in site.read_file(log_path), (
+        f"Failed to retrieve event message '{message}' in log file '{log_path}'"
+    )
 
 
 def _get_snmp_trap_cmd(event_message: str) -> list:
@@ -260,7 +277,7 @@ def _enable_receivers(site: Site, restart_site: None) -> Iterator[None]:
 def _enable_snmp_trap_translation(site: Site) -> Iterator[None]:
     logger.info("Enabling SNMP trap translation...")
     ec_global_rules_path = site.path("etc/check_mk/mkeventd.d/wato/9999-test_ec.mk")
-    site.write_text_file(str(ec_global_rules_path), "translate_snmptraps = (True, {})")
+    site.write_file(str(ec_global_rules_path), "translate_snmptraps = (True, {})")
     _activate_ec_changes(site)
 
     yield
@@ -329,7 +346,7 @@ def test_ec_rule_match_snmp_trap(site: Site, setup_ec: Iterator, enable_receiver
         site, _get_snmp_trap_cmd(event_message), "Failed to send message via SNMP trap."
     )
 
-    assert event_message in site.read_file("var/log/mkeventd.log")
+    _wait_for_event_message_in_log(site, event_message, Path("var/log/mkeventd.log"))
 
     # retrieve id of matching rule via livestatus query
     queried_rule_ids = _wait_for_queried_column(site, "GET eventconsolerules\nColumns: rule_id\n")

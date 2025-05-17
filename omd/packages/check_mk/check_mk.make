@@ -17,7 +17,7 @@ CHECK_MK_LANGUAGES := de ro nl fr it ja pt_PT es
 
 CHECK_MK_TAROPTS := \
 	--owner=root --group=root --exclude=.svn --exclude=*~ \
-	--exclude=.gitignore --exclude=*.swp --exclude=.f12 \
+	--exclude=.gitignore --exclude=.editorconfig --exclude=*.swp --exclude=.f12 \
 	--exclude=__pycache__ --exclude=*.pyc
 
 CHECK_MK_WERKS_PATH := $(CHECK_MK_WORK_DIR)/werks
@@ -47,6 +47,10 @@ ifneq ($(CI),)
 	@echo "ERROR: Should have been built by source stage (top level: 'make dist')" ; exit 1
 endif
 	$(MAKE) -C $(REPO_PATH) $@
+
+.PHONY: agent_plugins_py2
+agent_plugins_py2:
+	$(MAKE) -C $(REPO_PATH)/agents/plugins/
 
 $(CHECK_MK_BUILD): $(CHECK_MK_WERKS_PATH) $(CHECK_MK_CHANGELOG_PATH)
 	$(MKDIR) $(CHECK_MK_BUILD_DIR)
@@ -82,7 +86,7 @@ ifeq ($(filter $(EDITION),saas),)
 	    --exclude "cse.py"
 endif
 
-$(CHECK_MK_INTERMEDIATE_INSTALL): $(SOURCE_BUILT_AGENTS) $(CHECK_MK_BUILD) $(PACKAGE_PYTHON3_MODULES_PYTHON_DEPS)
+$(CHECK_MK_INTERMEDIATE_INSTALL): $(SOURCE_BUILT_AGENTS) $(CHECK_MK_BUILD) $(PACKAGE_PYTHON3_MODULES_PYTHON_DEPS) agent_plugins_py2
 	$(MKDIR) $(CHECK_MK_INSTALL_DIR)/share/check_mk/werks
 	install -m 644 $(CHECK_MK_WERKS_PATH) $(CHECK_MK_INSTALL_DIR)/share/check_mk/werks
 
@@ -126,7 +130,6 @@ $(CHECK_MK_INTERMEDIATE_INSTALL): $(SOURCE_BUILT_AGENTS) $(CHECK_MK_BUILD) $(PAC
 	    $(CHECK_MK_TAROPTS) \
 	    --exclude __init__.py \
 	    --exclude check_mk_agent.spec \
-	    --exclude special/lib \
 	    --exclude plugins/Makefile \
 	    --exclude plugins/*.checksum \
 	    --exclude plugins/__init__.py \
@@ -134,7 +137,6 @@ $(CHECK_MK_INTERMEDIATE_INSTALL): $(SOURCE_BUILT_AGENTS) $(CHECK_MK_BUILD) $(PAC
 	    plugins \
 	    sap \
 	    scripts \
-	    special \
 	    z_os \
 	    check-mk-agent_$(CMK_VERSION)-1_all.deb \
 	    check-mk-agent-$(CMK_VERSION)-1.noarch.rpm \

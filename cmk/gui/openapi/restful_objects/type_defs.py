@@ -219,13 +219,19 @@ CollectionItem = dict[str, str]
 LocationType = Literal["path", "query", "header", "cookie"]
 ResultType = Literal["object", "list", "scalar", "void"]
 
+KnownContentType = Literal[
+    "application/json",
+    "application/gzip",
+]
+AcceptFieldType = KnownContentType | list[KnownContentType]
+
 
 class LinkType(TypedDict):
     rel: str
     href: str
     type: str
     method: str
-    domainType: str
+    domainType: Literal["link"]
     title: NotRequired[str]
     body_params: NotRequired[dict[str, str | None]]
 
@@ -377,6 +383,7 @@ OpenAPIParameter = TypedDict(
         "allowEmptyValue": bool,
         "example": Any,
         "schema": SchemaType | type[Schema],
+        "content": dict[str, dict[str, object]],
     },
     total=False,
 )
@@ -415,6 +422,12 @@ ResponseType = TypedDict(
 )
 
 
+class EditionLabel(TypedDict, total=True):
+    name: str
+    color: str
+    position: Literal["before", "after"]
+
+
 class CodeSample(TypedDict, total=True):
     label: str
     lang: str
@@ -423,24 +436,16 @@ class CodeSample(TypedDict, total=True):
 
 ParameterReference = str
 
-SchemaParameter = TypedDict(
-    "SchemaParameter",
-    {
-        "in": LocationType,
-        "schema": type[Schema],
-    },
-    total=True,
-)
-
 OperationSpecType = TypedDict(
     "OperationSpecType",
     {
         "x-codeSamples": list[CodeSample],
+        "x-badges": NotRequired[Sequence[EditionLabel]],
         "operationId": str,
         "tags": list[str],
         "description": str,
         "responses": ResponseType,
-        "parameters": Sequence[SchemaParameter],
+        "parameters": Sequence[OpenAPIParameter],
         "requestBody": dict[str, Any],
         "summary": str,
         "deprecated": bool,

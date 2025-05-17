@@ -135,7 +135,7 @@ def _create_default_notify_plugin() -> NotifyPlugin:
             )
         }
     }
-    NotificationParameterConfigFile().save(default_param)
+    NotificationParameterConfigFile().save(default_param, pprint_value=True)
     return method, params_id
 
 
@@ -178,11 +178,11 @@ class ConfigGeneratorBasicWATOConfig(SampleConfigGenerator):
         root_folder = folder_tree().root_folder()
         rulesets = FolderRulesets.load_folder_rulesets(root_folder)
         rulesets.replace_folder_config(root_folder, SHIPPED_RULES)
-        rulesets.save_folder()
+        rulesets.save_folder(pprint_value=False)
 
         _create_default_notify_plugin()
         notification_rules = [get_default_notification_rule()]
-        NotificationRuleConfigFile().save(notification_rules)
+        NotificationRuleConfigFile().save(notification_rules, pprint_value=True)
 
     def _initial_global_settings(self) -> dict[str, Any]:
         settings = {
@@ -203,7 +203,7 @@ class ConfigGeneratorBasicWATOConfig(SampleConfigGenerator):
 
     def _initialize_tag_config(self) -> None:
         tag_config = TagConfig.from_config(sample_tag_config())
-        TagConfigFile().save(tag_config.get_dict_format())
+        TagConfigFile().save(tag_config.get_dict_format(), pprint_value=True)
 
 
 class ConfigGeneratorAcknowledgeInitialWerks(SampleConfigGenerator):

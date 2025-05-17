@@ -14,7 +14,8 @@ from tests.testlib.unit.rest_api_client import ClientRegistry
 
 from tests.unit.cmk.web_test_app import WebTestAppForCMK
 
-from cmk.utils.hostaddress import HostName
+from cmk.ccc.hostaddress import HostName
+
 from cmk.utils.labels import HostLabel
 from cmk.utils.sectionname import SectionName
 from cmk.utils.servicename import ServiceName
@@ -27,7 +28,7 @@ from cmk.automations.results import (
     SetAutochecksV2Result,
 )
 
-from cmk.checkengine.discovery import CheckPreviewEntry
+from cmk.checkengine.discovery import CheckPreviewEntry, DiscoverySettings
 from cmk.checkengine.plugins import AutocheckEntry, CheckPluginName
 
 mock_discovery_result = ServiceDiscoveryPreviewResult(
@@ -1029,7 +1030,13 @@ def test_openapi_discovery_tabula_rasa(
     mock_set_autochecks.assert_not_called()
     assert mock_discovery.mock_calls == [
         call(
-            "refresh",
+            DiscoverySettings(
+                update_host_labels=True,
+                add_new_services=True,
+                remove_vanished_services=False,
+                update_changed_service_labels=True,
+                update_changed_service_parameters=True,
+            ),
             ["example.com"],
             scan=True,
             raise_errors=False,

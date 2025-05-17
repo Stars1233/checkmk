@@ -6,9 +6,9 @@
 from collections.abc import Callable, Mapping, Sequence
 from typing import TypedDict
 
+from cmk.ccc.hostaddress import HostName
 from cmk.ccc.site import SiteId
 
-from cmk.utils.hostaddress import HostName
 from cmk.utils.structured_data import (
     ImmutableAttributes,
     ImmutableDeltaTree,
@@ -33,7 +33,7 @@ from cmk.gui.theme.current_theme import theme
 from cmk.gui.type_defs import ColumnName, PainterParameters, Row
 from cmk.gui.utils.html import HTML
 from cmk.gui.utils.output_funnel import output_funnel
-from cmk.gui.valuespec import Checkbox, Dictionary, FixedValue, ValueSpec
+from cmk.gui.valuespec import Checkbox, Dictionary, FixedValue
 from cmk.gui.view_utils import CellSpec, CSVExportError
 
 from ._display_hints import (
@@ -80,15 +80,13 @@ def _validate_inventory_tree_uniqueness(row: Row) -> None:
 
 
 class PainterOptionShowInternalTreePaths(PainterOption):
-    @property
-    def ident(self) -> str:
-        return "show_internal_tree_paths"
-
-    @property
-    def valuespec(self) -> ValueSpec:
-        return Checkbox(
-            title=_("Show internal tree paths"),
-            default_value=False,
+    def __init__(self):
+        super().__init__(
+            ident="show_internal_tree_paths",
+            valuespec=Checkbox(
+                title=_("Show internal tree paths"),
+                default_value=False,
+            ),
         )
 
 

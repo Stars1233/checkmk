@@ -88,7 +88,16 @@ class GroupsToAttributes(TypedDict, total=True):
     groups: list[GroupsToSync]
 
 
-type GroupsToRoles = dict[str, list[tuple[str, str | None]] | Literal[True]]
+RoleSpec = tuple[str, str | None]
+
+
+class GroupsToRoles(TypedDict, total=False):
+    nested: NotRequired[Literal[True]]
+    admin: NotRequired[list[RoleSpec]]
+    agent_registration: NotRequired[list[RoleSpec]]
+    guest: NotRequired[list[RoleSpec]]
+    user: NotRequired[list[RoleSpec]]
+    no_permissions: NotRequired[list[RoleSpec]]
 
 
 class ActivePlugins(TypedDict, total=True):
@@ -337,7 +346,7 @@ def save_connection_config(connections: list[ConfigurableUserConnectionSpec]) ->
         the connections. During UI rendering, `active_config.user_connections` must
         be used.
     """
-    UserConnectionConfigFile().save(connections)
+    UserConnectionConfigFile().save(connections, pprint_value=active_config.wato_pprint_config)
 
 
 def save_snapshot_user_connection_config(
@@ -364,13 +373,13 @@ class UserConnectionConfigFile(WatoListConfigFile[ConfigurableUserConnectionSpec
             spec_class=ConfigurableUserConnectionSpec,
         )
 
-    def save(self, cfg: list[ConfigurableUserConnectionSpec]) -> None:
+    def save(self, cfg: list[ConfigurableUserConnectionSpec], pprint_value: bool) -> None:
         self._config_file_path.parent.mkdir(mode=0o770, exist_ok=True, parents=True)
         store.save_to_mk_file(
             str(self._config_file_path),
             self._config_variable,
             cfg,
-            pprint_value=active_config.wato_pprint_config,
+            pprint_value,
         )
 
         for connector_class in user_connector_registry.values():

@@ -82,7 +82,7 @@ USAGE: agent_%s --section_url [{section_name},{url}]
         content: dict[str, list[str]] = {}
         for section_name, url in sections:
             content.setdefault(section_name, [])
-            c = requests.get(url)  # nosec B113 # BNS:0b0eac
+            c = requests.get(url, timeout=900)
             content[section_name].append(c.text.replace("\n", newline_replacement))
 
         if opt_debug:
@@ -224,6 +224,15 @@ class _NullContext:
         return False
 
 
+def _check_path(filename: str) -> None:
+    """make sure we are only writing/reading traces from tmp/debug"""
+
+    p = Path(filename).resolve()
+    allowed_path = (Path.home() / "tmp" / "debug").resolve()
+    if not p.is_relative_to(allowed_path):
+        raise ValueError(f"Traces can only be stored in {allowed_path}")
+
+
 def vcrtrace(**vcr_init_kwargs):
     """Returns the class of an argparse.Action to enter a vcr context
 
@@ -261,6 +270,14 @@ def vcrtrace(**vcr_init_kwargs):
             if not filename:
                 setattr(namespace, self.dest, _NullContext())
                 return
+
+            if not sys.stdin.isatty():
+                raise argparse.ArgumentError(self, "You need to run this in a tty")
+
+            try:
+                _check_path(filename)
+            except ValueError as exc:
+                raise argparse.ArgumentError(self, str(exc)) from exc
 
             import vcr
 

@@ -9,7 +9,7 @@ import functools
 import http.client as http_client
 import json
 from collections.abc import Callable
-from typing import Any
+from typing import Any, override
 
 import cmk.ccc.plugin_registry
 from cmk.ccc.exceptions import MKException
@@ -21,6 +21,7 @@ from cmk.gui.exceptions import MKMissingDataError
 from cmk.gui.htmllib.html import html
 from cmk.gui.http import request, response
 from cmk.gui.log import logger
+from cmk.gui.utils.json import CustomObjectJSONEncoder
 
 PageHandlerFunc = Callable[[], None]
 PageResult = object
@@ -72,11 +73,6 @@ class AjaxPage(Page, abc.ABC):
     def webapi_request(self) -> dict[str, Any]:
         return request.get_request()
 
-    @abc.abstractmethod
-    def page(self) -> PageResult:
-        """Override this to implement the page functionality"""
-        raise NotImplementedError()
-
     def _handle_exc(self, method: Callable[[], PageResult]) -> None:
         try:
             method()
@@ -94,6 +90,7 @@ class AjaxPage(Page, abc.ABC):
             )
             html.write_text_permissive(str(e))
 
+    @override
     def handle_page(self) -> None:
         """The page handler, called by the page registry"""
         response.set_content_type("application/json")
@@ -115,10 +112,11 @@ class AjaxPage(Page, abc.ABC):
             )
             resp = {"result_code": 1, "result": str(e), "severity": "error"}
 
-        response.set_data(json.dumps(resp))
+        response.set_data(json.dumps(resp, cls=CustomObjectJSONEncoder))
 
 
 class PageRegistry(cmk.ccc.plugin_registry.Registry[type[Page]]):
+    @override
     def plugin_name(self, instance: type[Page]) -> str:
         return instance.ident()
 
@@ -164,8 +162,8 @@ def get_page_handler(name: str, dflt: PageHandlerFunc | None = None) -> PageHand
         # usually only defined on the superclass, which doesn't really help in debugging. The
         # instance is not shown, and it is not 100% correct, but it's better than nothing at all.
         @functools.wraps(hc.page)
-        def wrapper():
-            return hc().handle_page()
+        def wrapper() -> None:
+            hc().handle_page()
 
         return wrapper
 

@@ -73,7 +73,7 @@ dist: $(SOURCE_BUILT_AGENTS) $(SOURCE_BUILT_AGENT_UPDATER) cmk-frontend-build fr
 		fi ; \
 	    done ; \
 	else \
-	    for F in $(DIST_ARCHIVE) non-free/cmk-update-agent/{build,build-32,src} non-free/cmk-update-agent/{build,build-32,src} enterprise/agents/winbuild; do \
+	    for F in $(DIST_ARCHIVE) non-free/packages/cmk-update-agent/{build,build-32,src} non-free/packages/cmk-update-agent/{build,build-32,src} enterprise/agents/winbuild; do \
 		EXCLUDES+=" --exclude $$F" ; \
 	    done ; \
 	fi ; \
@@ -125,12 +125,14 @@ version:
 # replace any character (like 'p' or 'b') with a dot. Not completely correct,
 # but better than nothing. We have to rethink this setversion madness, anyway.
 setversion:
+	# IMPORTANT do not version bazelized packages here.  Bazel can set the
+	# version natively.
 	sed -ri 's/^(VERSION[[:space:]]*:?= *).*/\1'"$(NEW_VERSION)/" defines.make
 	sed -i 's/^__version__ = ".*"$$/__version__ = "$(NEW_VERSION)"/' packages/cmk-ccc/cmk/ccc/version.py bin/livedump
 	$(MAKE) -C agents NEW_VERSION=$(NEW_VERSION) setversion
 	sed -i 's/^ARG CMK_VERSION=.*$$/ARG CMK_VERSION="$(NEW_VERSION)"/g' docker_image/Dockerfile
 ifeq ($(ENTERPRISE),yes)
-	sed -i 's/^__version__ = ".*/__version__ = "$(NEW_VERSION)"/' non-free/cmk-update-agent/cmk_update_agent.py
+	sed -i 's/^__version__ = ".*/__version__ = "$(NEW_VERSION)"/' non-free/packages/cmk-update-agent/cmk_update_agent.py
 	sed -i 's/^VERSION = ".*/VERSION = "$(NEW_VERSION)"/' omd/packages/enterprise/bin/cmcdump
 endif
 
