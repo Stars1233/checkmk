@@ -9,9 +9,9 @@ from typing import Any
 from livestatus import lqencode
 
 from cmk.ccc import store
+from cmk.ccc.hostaddress import HostName
 
 import cmk.utils.paths
-from cmk.utils.hostaddress import HostName
 from cmk.utils.servicename import ServiceName
 
 from cmk.gui import sites
@@ -49,7 +49,7 @@ class CMCServiceObject:
 
 
 class BILayoutManagement:
-    _config_file = Path(multisite_dir()) / "bi_layouts.mk"
+    _config_file = multisite_dir() / "bi_layouts.mk"
 
     @classmethod
     def save_layouts(cls) -> None:

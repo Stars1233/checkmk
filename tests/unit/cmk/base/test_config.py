@@ -17,16 +17,14 @@ from pytest import MonkeyPatch
 
 from tests.testlib.unit.base_configuration_scenario import Scenario
 
-from tests.unit.cmk.base.emptyconfig import EMPTYCONFIG
-
 import cmk.ccc.debug
 from cmk.ccc.exceptions import MKGeneralException
+from cmk.ccc.hostaddress import HostName
 from cmk.ccc.site import SiteId
 from cmk.ccc.version import Edition, edition
 
 import cmk.utils.paths
 from cmk.utils.config_path import VersionedConfigPath
-from cmk.utils.hostaddress import HostName
 from cmk.utils.ip_lookup import IPStackConfig
 from cmk.utils.rulesets import RuleSetName
 from cmk.utils.rulesets.ruleset_matcher import RulesetMatcher, RuleSpec
@@ -2763,7 +2761,11 @@ def test_host_config_add_discovery_check(
     assert config_cache.discovery_check_parameters(xyz_host).commandline_only is result
 
 
-def test_get_config_file_paths_with_confd(folder_path_test_config: None) -> None:
+def test_get_config_file_paths_with_confd(
+    folder_path_test_config: config.LoadedConfigFragment,
+) -> None:
+    # NOTE: there are still some globals at play here, otherwise we would have to use
+    # the folder_path_test_config somewhere.
     rel_paths = [
         "%s" % p.relative_to(cmk.utils.paths.default_config_dir)
         for p in config.get_config_file_paths(with_conf_d=True)
@@ -2781,8 +2783,8 @@ def test_get_config_file_paths_with_confd(folder_path_test_config: None) -> None
     ]
 
 
-def test_load_config_folder_paths(folder_path_test_config: None) -> None:
-    config_cache = config.ConfigCache(EMPTYCONFIG)
+def test_load_config_folder_paths(folder_path_test_config: config.LoadedConfigFragment) -> None:
+    config_cache = config.ConfigCache(folder_path_test_config)
 
     assert config_cache.host_path(HostName("main-host")) == "/"
     assert config_cache.host_path(HostName("lvl0-host")) == "/wato/"
@@ -2834,11 +2836,13 @@ def test_load_config_folder_paths(folder_path_test_config: None) -> None:
 
 
 @pytest.fixture(name="folder_path_test_config")
-def folder_path_test_config_fixture(monkeypatch: MonkeyPatch) -> Iterator[None]:
+def folder_path_test_config_fixture(
+    monkeypatch: MonkeyPatch,
+) -> Iterator[config.LoadedConfigFragment]:
     config_dir = Path(cmk.utils.paths.check_mk_config_dir)
     config_dir.mkdir(parents=True, exist_ok=True)
 
-    with Path(cmk.utils.paths.main_config_file).open("w", encoding="utf-8") as f:
+    with cmk.utils.paths.main_config_file.open("w", encoding="utf-8") as f:
         f.write(
             """
 all_hosts += ['%(name)s']
@@ -2890,12 +2894,10 @@ cmc_host_rrd_config = [
     _add_host_in_folder(wato_lvl2_folder, "lvl2-host")
     _add_rule_in_folder(wato_lvl2_folder, "LVL2")
 
-    config.load(discovery_rulesets=())
-
-    yield
+    yield config.load(discovery_rulesets=()).loaded_config
 
     # Cleanup after the test. Would be better to use a dedicated test directory
-    Path(cmk.utils.paths.main_config_file).unlink()
+    cmk.utils.paths.main_config_file.unlink()
     (wato_main_folder / "hosts.mk").unlink()
     (wato_main_folder / "rules.mk").unlink()
     (wato_lvl1_folder / "hosts.mk").unlink()
@@ -2969,7 +2971,7 @@ explicit_host_conf['{setting_name}'].update({values_})
 
 
 def test_explicit_setting_loading(patch_omd_site: None) -> None:
-    main_mk_file = Path(cmk.utils.paths.main_config_file)
+    main_mk_file = cmk.utils.paths.main_config_file
     settings = [
         ("sub1", "parents", {HostName("hostA"): "setting1"}),
         ("sub2", "parents", {HostName("hostB"): "setting2"}),

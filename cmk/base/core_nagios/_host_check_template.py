@@ -3,15 +3,17 @@
 # This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
 # conditions defined in the file COPYING, which is part of this source code package.
 
+# ATTENTION. Template file from which config builds host check.
+# ATTENTION. Relative imports are strictly _forbidden_.
 
 import sys
 from contextlib import suppress
 
 import cmk.ccc.debug
+from cmk.ccc.hostaddress import HostAddress, HostName
 
 import cmk.utils.log
 from cmk.utils.config_path import LATEST_CONFIG
-from cmk.utils.hostaddress import HostAddress, HostName
 from cmk.utils.password_store import core_password_store_path
 
 from cmk.checkengine.plugin_backend import (
@@ -26,7 +28,7 @@ from cmk.base.modes.check_mk import run_checking
 
 from cmk.discover_plugins import PluginLocation
 
-# This will be replaced by the config generation, when the template is instanciated.
+# This will be replaced by the config generation, when the template is instantiated.
 CONFIG = HostCheckConfig(
     delay_precompile=False,
     src="",
@@ -92,15 +94,15 @@ def main() -> int:
 
         discovery_rulesets = extract_known_discovery_rulesets(plugins)
 
-        loaded_config = config.load_packed_config(LATEST_CONFIG, discovery_rulesets)
-        hosts_config = config.make_hosts_config()
+        loading_result = config.load_packed_config(LATEST_CONFIG, discovery_rulesets)
+        hosts_config = config.make_hosts_config(loading_result.loaded_config)
 
         config.ipaddresses = CONFIG.ipaddresses
         config.ipv6addresses = CONFIG.ipv6addresses
 
         return run_checking(
             plugins,
-            loaded_config.config_cache,
+            loading_result.config_cache,
             hosts_config,
             {},
             [CONFIG.hostname],

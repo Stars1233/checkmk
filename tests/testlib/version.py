@@ -10,6 +10,7 @@ import os
 import re
 import time
 from collections.abc import Callable
+from pathlib import Path
 from typing import Final, Self
 
 from packaging.version import Version
@@ -41,7 +42,7 @@ class CMKEditionType:
     - `pkg_edition = CMKEdition(CMKEdition.from_version_string("2.4.0.cee"))`
 
     Note:
-    Wrapping 'Edition' using inheriting would be easier but not possisble,
+    Wrapping 'Edition' using inheritance would be easier but not possisble,
     as 'enum.Enum' with existing members must not be subclassed.
     """
 
@@ -330,6 +331,10 @@ class CMKPackageInfo:
         return f"{self._version.version}.{self._edition.short}"
 
 
+def package_hash_path(version: str, edition: CMKEditionType) -> Path:
+    return Path(f"/tmp/cmk_package_hash_{version}_{edition.long}")
+
+
 def version_from_env(
     *,
     fallback_version_spec: str | None = None,
@@ -352,4 +357,4 @@ def edition_from_env(fallback: Edition = CMKEdition.CEE) -> CMKEditionType:
 
 def get_min_version() -> CMKVersion:
     """Minimal version supported for an update to the daily version of this branch."""
-    return CMKVersion(os.getenv("MIN_VERSION", "2.4.0b1"))
+    return CMKVersion(os.getenv("MIN_VERSION", "2.4.0p3"))

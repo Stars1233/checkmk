@@ -12,13 +12,13 @@ from pathlib import Path
 
 import cmk.ccc.debug
 from cmk.ccc.exceptions import OnError
+from cmk.ccc.hostaddress import HostName
 
 import cmk.utils.cleanup
 import cmk.utils.password_store
 import cmk.utils.paths
 from cmk.utils.config_path import LATEST_CONFIG
 from cmk.utils.cpu_tracking import CPUTracker
-from cmk.utils.hostaddress import HostName
 from cmk.utils.log import console
 
 from cmk.fetchers import Mode as FetchMode
@@ -127,11 +127,10 @@ def main(
 def inventory_as_check(
     parameters: HWSWInventoryParameters, hostname: HostName, plugins: AgentBasedPlugins
 ) -> ServiceState:
-    config_cache = config.load(
-        discovery_rulesets=extract_known_discovery_rulesets(plugins)
-    ).config_cache
+    loading_result = config.load(discovery_rulesets=extract_known_discovery_rulesets(plugins))
+    config_cache = loading_result.config_cache
     config_cache.ruleset_matcher.ruleset_optimizer.set_all_processed_hosts({hostname})
-    hosts_config = config.make_hosts_config()
+    hosts_config = config.make_hosts_config(loading_result.loaded_config)
     service_name_config = config_cache.make_passive_service_name_config()
     file_cache_options = FileCacheOptions()
 

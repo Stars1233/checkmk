@@ -9,24 +9,22 @@ import shutil
 import socket
 import sys
 from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, Sequence
-from contextlib import contextmanager, nullcontext, suppress
+from contextlib import contextmanager, suppress
 from pathlib import Path
 from typing import Literal
 
 import cmk.ccc.debug
 from cmk.ccc.exceptions import MKGeneralException
-from cmk.ccc.store import lock_checkmk_configuration
+from cmk.ccc.hostaddress import HostAddress, HostName, Hosts
 
 import cmk.utils.config_path
 import cmk.utils.password_store
 import cmk.utils.paths
 from cmk.utils import config_warnings, ip_lookup
 from cmk.utils.config_path import VersionedConfigPath
-from cmk.utils.hostaddress import HostAddress, HostName
 from cmk.utils.labels import Labels
 from cmk.utils.licensing.handler import LicensingHandler
 from cmk.utils.licensing.helper import get_licensed_state_file_path
-from cmk.utils.paths import configuration_lockfile
 from cmk.utils.rulesets import RuleSetName
 from cmk.utils.rulesets.ruleset_matcher import RuleSpec
 from cmk.utils.servicename import Item, ServiceName
@@ -35,6 +33,7 @@ from cmk.utils.tags import TagGroupID, TagID
 from cmk.checkengine.plugins import AgentBasedPlugins, ServiceID
 
 from cmk.base import config
+from cmk.base.cee.bakery.errorhandling import handle_bakery_exception, handle_plugin_exception
 from cmk.base.config import ConfigCache, ObjectAttributes
 from cmk.base.configlib.servicename import PassiveServiceNameConfig
 from cmk.base.nagios_utils import do_check_nagiosconfig
@@ -65,6 +64,7 @@ class MonitoringCore(abc.ABC):
         self,
         config_path: VersionedConfigPath,
         config_cache: ConfigCache,
+        hosts_config: Hosts,
         service_name_config: PassiveServiceNameConfig,
         plugins: AgentBasedPlugins,
         discovery_rules: Mapping[RuleSetName, Sequence[RuleSpec]],
@@ -77,6 +77,7 @@ class MonitoringCore(abc.ABC):
         self._create_config(
             config_path,
             config_cache,
+            hosts_config,
             service_name_config,
             ip_address_of,
             licensing_handler,
@@ -91,6 +92,7 @@ class MonitoringCore(abc.ABC):
         self,
         config_path: VersionedConfigPath,
         config_cache: ConfigCache,
+        hosts_config: Hosts,
         service_name_config: PassiveServiceNameConfig,
         ip_address_of: config.ConfiguredIPLookup[ip_lookup.CollectFailedHosts],
         licensing_handler: LicensingHandler,
@@ -124,14 +126,13 @@ def duplicate_service_warning(
 
 # TODO: Just for documentation purposes for now.
 #
-# HostCheckCommand = NewType('HostCheckCommand',
-#                            Union[Literal["smart"],
-#                                  Literal["ping"],
-#                                  Literal["ok"],
-#                                  Literal["agent"],
-#                                  Tuple[Literal["service"], TextInput],
-#                                  Tuple[Literal["tcp"], Integer],
-#                                  Tuple[Literal["custom"], TextInput]])
+# HostCheckCommand = NewType(
+#     "HostCheckCommand",
+#     Literal["smart", "ping", "ok", "agent"]
+#     | tuple[Literal["service"], TextInput]
+#     | tuple[Literal["tcp"], Integer]
+#     | tuple[Literal["custom"], TextInput],
+# )
 
 
 def _cluster_ping_command(
@@ -265,6 +266,7 @@ def check_icmp_arguments_of(
 def do_create_config(
     core: MonitoringCore,
     config_cache: ConfigCache,
+    hosts_config: Hosts,
     service_name_config: PassiveServiceNameConfig,
     plugins: AgentBasedPlugins,
     discovery_rules: Mapping[RuleSetName, Sequence[RuleSpec]],
@@ -273,7 +275,6 @@ def do_create_config(
     hosts_to_update: set[HostName] | None = None,
     *,
     duplicates: Collection[HostName],
-    skip_config_locking_for_bakery: bool = False,
 ) -> None:
     """Creating the monitoring core configuration and additional files
 
@@ -297,6 +298,7 @@ def do_create_config(
             _create_core_config(
                 core,
                 config_cache,
+                hosts_config,
                 service_name_config,
                 plugins,
                 discovery_rules,
@@ -311,16 +313,18 @@ def do_create_config(
 
     if config.bake_agents_on_restart and not config.is_wato_slave_site:
         with tracer.span("bake_on_restart"):
-            _bake_on_restart(config_cache, all_hosts, skip_config_locking_for_bakery)
+            _bake_on_restart(config_cache, all_hosts)
 
 
-def _bake_on_restart(
-    config_cache: config.ConfigCache, all_hosts: Iterable[HostName], skip_locking: bool
-) -> None:
+def _bake_on_restart(config_cache: config.ConfigCache, all_hosts: Iterable[HostName]) -> None:
     try:
         # Local import is needed, because this is not available in all environments
         from cmk.base.cee.bakery import (  # type: ignore[import-not-found, import-untyped, unused-ignore]
             agent_bakery,
+        )
+        from cmk.base.cee.bakery.load_plugins import (  # type: ignore[import-not-found, import-untyped, unused-ignore]
+            load_core_plugins,
+            load_v1_plugins,
         )
 
         from cmk.cee.bakery.type_defs import (  # type: ignore[import-not-found, import-untyped, unused-ignore]
@@ -332,19 +336,29 @@ def _bake_on_restart(
 
     assert isinstance(config_cache, config.CEEConfigCache)
 
-    with nullcontext() if skip_locking else lock_checkmk_configuration(configuration_lockfile):
-        target_configs = agent_bakery.BakeryTargetConfigs.from_config_cache(
-            config_cache, all_hosts=all_hosts, selected_hosts=None
-        )
-
-    agent_bakery.bake_agents(
-        target_configs,
-        bake_revision_mode=(
-            BakeRevisionMode.INACTIVE if config.apply_bake_revision else BakeRevisionMode.DISABLED
-        ),
-        logging_level=config.agent_bakery_logging,
-        call_site="config creation",
+    target_configs = agent_bakery.BakeryTargetConfigs.from_config_cache(
+        config_cache, all_hosts=all_hosts, selected_hosts=None
     )
+
+    try:
+        agent_bakery.bake_agents(
+            target_configs,
+            plugin_executor=agent_bakery.PluginExecutor(
+                v1_bakery_plugins=load_v1_plugins(),
+                core_bakelets=load_core_plugins(),
+                exception_handler=handle_plugin_exception,
+            ),
+            bake_revision_mode=(
+                BakeRevisionMode.INACTIVE
+                if config.apply_bake_revision
+                else BakeRevisionMode.DISABLED
+            ),
+            logging_level=config.agent_bakery_logging,
+            call_site="config creation",
+        )
+    except Exception as e:
+        # TODO: check how much of this functionality is actually needed *here*.
+        handle_bakery_exception(e)
 
 
 @contextmanager
@@ -392,6 +406,7 @@ def _backup_objects_file(core: MonitoringCore) -> Iterator[None]:
 def _create_core_config(
     core: MonitoringCore,
     config_cache: ConfigCache,
+    hosts_config: Hosts,
     service_name_config: PassiveServiceNameConfig,
     plugins: AgentBasedPlugins,
     discovery_rules: Mapping[RuleSetName, Sequence[RuleSpec]],
@@ -413,6 +428,7 @@ def _create_core_config(
         core.create_config(
             config_path,
             config_cache,
+            hosts_config,
             service_name_config,
             plugins,
             discovery_rules,

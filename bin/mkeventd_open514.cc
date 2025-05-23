@@ -11,6 +11,7 @@
    That can then simply use filedescriptor 3 and receive syslog
    messages */
 
+#include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -19,6 +20,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <string>
 #include <vector>
 
 #define SYSLOG_PORT 514
@@ -42,7 +44,7 @@ void open_syslog(int syslog_fd) {
             exit(1);
         }
         // Bind it to the port (this requires privileges)
-        struct sockaddr_in addr;
+        sockaddr_in addr{};
         addr.sin_family = AF_INET;
         addr.sin_port = htons(SYSLOG_PORT);
         addr.sin_addr.s_addr = INADDR_ANY;
@@ -70,10 +72,11 @@ void open_syslog(int syslog_fd) {
                 "ipv6 dualstack failed. Continuing in ipv6-only mode for syslog UDP socket");
         }
         // Bind it to the port (this requires privileges)
-        struct sockaddr_in6 addr;
+        sockaddr_in6 addr{};
         addr.sin6_family = AF_INET6;
         addr.sin6_port = htons(SYSLOG_PORT);
         addr.sin6_addr = in6addr_any;
+        // TODO(sp): What about sin6_scope_id?
         // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
         if (::bind(syslog_sock, reinterpret_cast<struct sockaddr *>(&addr),
                    sizeof(addr)) != 0) {
@@ -115,7 +118,7 @@ void open_syslog_tcp(int syslog_tcp_fd) {
             exit(1);
         } else {
             // Bind it to the port (this requires privileges)
-            struct sockaddr_in addr;
+            sockaddr_in addr{};
             addr.sin_family = AF_INET;
             addr.sin_port = htons(SYSLOG_PORT);
             addr.sin_addr.s_addr = INADDR_ANY;
@@ -145,10 +148,11 @@ void open_syslog_tcp(int syslog_tcp_fd) {
                 "ipv6 dualstack failed. Continuing in ipv6-only mode for syslog TCP socket");
         }
         // Bind it to the port (this requires privileges)
-        struct sockaddr_in6 addr;
+        sockaddr_in6 addr{};
         addr.sin6_family = AF_INET6;
         addr.sin6_port = htons(SYSLOG_PORT);
         addr.sin6_addr = in6addr_any;
+        // TODO(sp): What about sin6_scope_id?
         // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
         if (::bind(syslog_tcp_sock, reinterpret_cast<struct sockaddr *>(&addr),
                    sizeof(addr)) != 0) {
@@ -189,7 +193,7 @@ void open_snmptrap(int snmptrap_fd) {
             exit(1);
         } else {
             // Bind it to the port (this requires privileges)
-            struct sockaddr_in addr;
+            sockaddr_in addr{};
             addr.sin_family = AF_INET;
             addr.sin_port = htons(SNMPTRAP_PORT);
             addr.sin_addr.s_addr = INADDR_ANY;
@@ -217,10 +221,11 @@ void open_snmptrap(int snmptrap_fd) {
                 "ipv6 dualstack failed. Continuing in ipv6-only mode for snmptrap");
         }
         // Bind it to the port (this requires privileges)
-        struct sockaddr_in6 addr;
+        sockaddr_in6 addr{};
         addr.sin6_family = AF_INET6;
         addr.sin6_port = htons(SNMPTRAP_PORT);
         addr.sin6_addr = in6addr_any;
+        // TODO(sp): What about sin6_scope_id?
         // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
         if (::bind(snmptrap_sock, reinterpret_cast<struct sockaddr *>(&addr),
                    sizeof(addr)) != 0) {

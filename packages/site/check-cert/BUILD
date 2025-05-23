@@ -1,5 +1,6 @@
-load("@cargo_deps_site//:defs.bzl", "aliases", "all_crate_deps")
+load("@aspect_rules_lint//format:defs.bzl", "format_multirun")
 load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test", "rust_test_suite")
+load("@site_crates//:defs.bzl", "aliases", "all_crate_deps")
 load("//bazel/rules:file_from_flag.bzl", "file_from_flag")
 
 file_from_flag(
@@ -33,8 +34,8 @@ rust_library(
 
 rust_test(
     name = "check-cert-lib-test-internal",
+    compile_data = ["assets/certificate.der"],
     crate = ":check-cert-lib",
-    data = ["assets/certificate.der"],
 )
 
 rust_test_suite(
@@ -45,7 +46,7 @@ rust_test_suite(
         "tests/truststore.rs",
         "tests/verify.rs",
     ],
-    data = [
+    compile_data = [
         "assets/IGC_A.der",
         "assets/cert.der",
         "assets/ee-pss-sha1-cert.pem",
@@ -54,9 +55,9 @@ rust_test_suite(
     ],
     deps = [
         ":check-cert-lib",
-        "@cargo_deps_site//:assertor",
-        "@cargo_deps_site//:openssl",
-        "@cargo_deps_site//:tempfile",
+        "@site_crates//:assertor",
+        "@site_crates//:openssl",
+        "@site_crates//:tempfile",
     ],
 )
 
@@ -74,4 +75,9 @@ rust_binary(
     ),
     visibility = ["//visibility:public"],
     deps = all_crate_deps() + [":check-cert-lib"],
+)
+
+format_multirun(
+    name = "format",
+    rust = "@rules_rust//tools/upstream_wrapper:rustfmt",
 )

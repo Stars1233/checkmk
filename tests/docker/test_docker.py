@@ -25,8 +25,8 @@ from tests.testlib.docker import (
 from tests.testlib.version import (
     CMKEdition,
     CMKPackageInfo,
-    CMKVersion,
     edition_from_env,
+    get_min_version,
     version_from_env,
 )
 
@@ -332,9 +332,10 @@ def test_container_agent(checkmk: CheckmkApp) -> None:
     assert ":::6556" in checkmk.container.exec_run(["netstat", "-tln"])[-1].decode("utf-8")
 
 
+@pytest.mark.skip(reason="Minimal supported version not available yet. See CMK-23635")
 def test_update(client: docker.DockerClient) -> None:
     base_package = CMKPackageInfo(
-        CMKVersion(version_spec="2.4.0b1", branch="2.4.0", branch_version="2.4.0"),
+        get_min_version(),
         CMKEdition(CMKEdition.CRE),
     )
     update_package = CMKPackageInfo(version_from_env(), edition_from_env())
@@ -393,4 +394,4 @@ if __name__ == "__main__":
     import doctest
 
     assert not doctest.testmod().failed
-    pytest.main(["-T=docker", "-vvsx", __file__])
+    pytest.main(["-vvsx", __file__])

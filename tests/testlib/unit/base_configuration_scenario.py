@@ -10,8 +10,7 @@ ensuring a controlled environment for testing.
 
 import uuid
 from collections.abc import Mapping, Sequence
-from dataclasses import replace
-from pathlib import Path
+from dataclasses import asdict, replace
 from typing import Any
 
 from pytest import MonkeyPatch
@@ -20,10 +19,10 @@ from tests.testlib.utils import get_standard_linux_agent_output
 
 from tests.unit.cmk.base.emptyconfig import EMPTYCONFIG
 
+from cmk.ccc.hostaddress import HostAddress, HostName
 from cmk.ccc.site import SiteId
 
 import cmk.utils.tags
-from cmk.utils.hostaddress import HostAddress, HostName
 from cmk.utils.rulesets.ruleset_matcher import RuleSpec
 from cmk.utils.tags import TagGroupID, TagID
 
@@ -51,7 +50,13 @@ class Scenario:
         # It seems that we are subjected to some dark edition magic here
         # that will make this sometimes return a CMEConfigCache instance
         return config._create_config_cache(
-            replace(EMPTYCONFIG, checkgroup_parameters=self.config.get("checkgroup_parameters", {}))
+            replace(
+                EMPTYCONFIG,
+                # This only works as long as the attribute names of LoadedConfigFragment
+                # are the same as the variabele names in config.py
+                # But it's probably less confusing if we stick to that pattern anyway.
+                **{k: v for k, v in self.config.items() if k in asdict(EMPTYCONFIG)},
+            ),
         )
 
     def __init__(self, site_id: str = "unit") -> None:
@@ -113,7 +118,7 @@ class Scenario:
         linux_agent_output = get_standard_linux_agent_output()
 
         for h in test_hosts:
-            cache_path = Path(cmk.utils.paths.tcp_cache_dir, h)
+            cache_path = cmk.utils.paths.tcp_cache_dir / h
             cache_path.parent.mkdir(parents=True, exist_ok=True)
             with cache_path.open("w", encoding="utf-8") as f:
                 f.write(linux_agent_output)
@@ -219,7 +224,13 @@ class CEEScenario(Scenario):
 
     def _get_config_cache(self) -> config.CEEConfigCache:
         return config.CEEConfigCache(
-            replace(EMPTYCONFIG, checkgroup_parameters=self.config.get("checkgroup_parameters", {}))
+            replace(
+                EMPTYCONFIG,
+                # This only works as long as the attribute names of LoadedConfigFragment
+                # are the same as the variabele names in config.py
+                # But it's probably less confusing if we stick to that pattern anyway.
+                **{k: v for k, v in self.config.items() if k in asdict(EMPTYCONFIG)},
+            )
         )
 
     def apply(self, monkeypatch: MonkeyPatch) -> config.CEEConfigCache:

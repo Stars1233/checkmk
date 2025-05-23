@@ -19,10 +19,10 @@ from typing import assert_never, Final, Literal, NamedTuple
 
 from pydantic import BaseModel
 
+from cmk.ccc.hostaddress import HostName
 from cmk.ccc.store import ObjectStore, TextSerializer
 from cmk.ccc.version import __version__, Version
 
-from cmk.utils.hostaddress import HostName
 from cmk.utils.labels import HostLabel, HostLabelValueDict
 from cmk.utils.object_diff import make_diff_text
 from cmk.utils.servicename import Item, ServiceName
@@ -33,7 +33,7 @@ from cmk.automations.results import (
     SetAutochecksInput,
 )
 
-from cmk.checkengine.discovery import CheckPreviewEntry
+from cmk.checkengine.discovery import CheckPreviewEntry, DiscoverySettings
 from cmk.checkengine.plugins import AutocheckEntry, CheckPluginName
 
 import cmk.gui.watolib.changes as _changes
@@ -270,7 +270,9 @@ class Discovery:
         self._selected_services = selected_services
         self.user_need_permission: Final = user_need_permission
 
-    def do_discovery(self, discovery_result: DiscoveryResult, target_host_name: HostName) -> None:
+    def do_discovery(
+        self, discovery_result: DiscoveryResult, target_host_name: HostName, *, pprint_value: bool
+    ) -> None:
         if (
             transition := self.compute_discovery_transition(discovery_result, target_host_name)
         ) is None:
@@ -278,7 +280,9 @@ class Discovery:
 
         if transition.need_sync:
             self._save_host_service_enable_disable_rules(
-                transition.remove_disabled_rule, transition.add_disabled_rule
+                transition.remove_disabled_rule,
+                transition.add_disabled_rule,
+                pprint_value=pprint_value,
             )
 
         self._save_services(
@@ -366,10 +370,10 @@ class Discovery:
         )
 
     def _save_host_service_enable_disable_rules(
-        self, remove_disabled_rule: set[str], add_disabled_rule: set[str]
+        self, remove_disabled_rule: set[str], add_disabled_rule: set[str], *, pprint_value: bool
     ) -> None:
         EnabledDisabledServicesEditor(self._host).save_host_service_enable_disable_rules(
-            remove_disabled_rule, add_disabled_rule
+            remove_disabled_rule, add_disabled_rule, pprint_value=pprint_value
         )
 
     def _verify_permissions(self, table_target: str, entry: CheckPreviewEntry) -> None:
@@ -460,6 +464,7 @@ class Discovery:
         _changes.add_service_change(
             action_name="set-autochecks",
             text=message,
+            user_id=user.id,
             object_ref=self._host.object_ref(),
             domains=[config_domain_registry[CORE_DOMAIN]],
             domain_settings={CORE_DOMAIN: generate_hosts_to_update_settings([self._host.name()])},
@@ -469,6 +474,7 @@ class Discovery:
                 _make_host_audit_log_object(old_autochecks),
                 _make_host_audit_log_object(autochecks_table),
             ),
+            use_git=active_config.wato_use_git,
         )
 
     def _get_table_target(self, entry: CheckPreviewEntry) -> str:
@@ -557,14 +563,14 @@ class Discovery:
 
 
 @contextmanager
-def _service_discovery_context(host: Host) -> Iterator[None]:
+def _service_discovery_context(host: Host, *, pprint_value: bool) -> Iterator[None]:
     user.need_permission("wato.services")
 
     # no try/finally here.
     yield
 
     if not host.locked():
-        host.clear_discovery_failed()
+        host.clear_discovery_failed(pprint_value=pprint_value)
 
 
 def perform_fix_all(
@@ -572,11 +578,12 @@ def perform_fix_all(
     *,
     host: Host,
     raise_errors: bool,
+    pprint_value: bool,
 ) -> DiscoveryResult:
     """
     Handle fix all ('Accept All' on UI) discovery action
     """
-    with _service_discovery_context(host):
+    with _service_discovery_context(host, pprint_value=pprint_value):
         _perform_update_host_labels(discovery_result.labels_by_host)
         Discovery(
             host,
@@ -585,7 +592,7 @@ def perform_fix_all(
             update_source=None,
             selected_services=(),  # does not matter in case of "FIX_ALL"
             user_need_permission=user.need_permission,
-        ).do_discovery(discovery_result, host.name())
+        ).do_discovery(discovery_result, host.name(), pprint_value=pprint_value)
         discovery_result = get_check_table(host, DiscoveryAction.FIX_ALL, raise_errors=raise_errors)
     return discovery_result
 
@@ -596,9 +603,10 @@ def perform_host_label_discovery(
     *,
     host: Host,
     raise_errors: bool,
+    pprint_value: bool,
 ) -> DiscoveryResult:
     """Handle update host labels discovery action"""
-    with _service_discovery_context(host):
+    with _service_discovery_context(host, pprint_value=pprint_value):
         _perform_update_host_labels(discovery_result.labels_by_host)
         discovery_result = get_check_table(host, action, raise_errors=raise_errors)
     return discovery_result
@@ -613,11 +621,12 @@ def perform_service_discovery(
     host: Host,
     selected_services: Container[tuple[str, Item]],
     raise_errors: bool,
+    pprint_value: bool,
 ) -> DiscoveryResult:
     """
     Handle discovery action for Update Services, Single Update & Bulk Update
     """
-    with _service_discovery_context(host):
+    with _service_discovery_context(host, pprint_value=pprint_value):
         Discovery(
             host,
             action,
@@ -625,7 +634,7 @@ def perform_service_discovery(
             update_source=update_source,
             selected_services=selected_services,
             user_need_permission=user.need_permission,
-        ).do_discovery(discovery_result, host.name())
+        ).do_discovery(discovery_result, host.name(), pprint_value=pprint_value)
         discovery_result = get_check_table(host, action, raise_errors=raise_errors)
     return discovery_result
 
@@ -717,12 +726,14 @@ def _perform_update_host_labels(labels_by_nodes: Mapping[HostName, Sequence[Host
             len(host_labels),
         )
         _changes.add_service_change(
-            "update-host-labels",
-            message,
-            host.object_ref(),
-            [config_domain_registry[CORE_DOMAIN]],
-            {CORE_DOMAIN: generate_hosts_to_update_settings([host.name()])},
-            host.site_id(),
+            action_name="update-host-labels",
+            text=message,
+            user_id=user.id,
+            object_ref=host.object_ref(),
+            domains=[config_domain_registry[CORE_DOMAIN]],
+            domain_settings={CORE_DOMAIN: generate_hosts_to_update_settings([host.name()])},
+            site_id=host.site_id(),
+            use_git=active_config.wato_use_git,
         )
         update_host_labels(
             host.site_id(),
@@ -1011,12 +1022,14 @@ def get_check_table(host: Host, action: DiscoveryAction, *, raise_errors: bool) 
     """
     if action == DiscoveryAction.TABULA_RASA:
         _changes.add_service_change(
-            "refresh-autochecks",
-            _("Refreshed check configuration of host '%s'") % host.name(),
-            host.object_ref(),
-            [config_domain_registry[CORE_DOMAIN]],
-            {CORE_DOMAIN: generate_hosts_to_update_settings([host.name()])},
-            host.site_id(),
+            action_name="refresh-autochecks",
+            text=_("Refreshed check configuration of host '%s'") % host.name(),
+            user_id=user.id,
+            object_ref=host.object_ref(),
+            domains=[config_domain_registry[CORE_DOMAIN]],
+            domain_settings={CORE_DOMAIN: generate_hosts_to_update_settings([host.name()])},
+            site_id=host.site_id(),
+            use_git=active_config.wato_use_git,
         )
 
     if site_is_local(active_config, host.site_id()):
@@ -1037,6 +1050,7 @@ def get_check_table(host: Host, action: DiscoveryAction, *, raise_errors: bool) 
                     ("host_name", host.name()),
                     ("options", json.dumps({"ignore_errors": not raise_errors, "action": action})),
                 ],
+                debug=active_config.debug,
             )
         )
     )
@@ -1181,7 +1195,13 @@ class ServiceDiscoveryBackgroundJob(BackgroundJob):
         # TODO: In distributed sites this must not add a change on the remote site. We need to build
         # the way back to the central site and show the information there.
         local_discovery(
-            "refresh",
+            DiscoverySettings(
+                update_host_labels=True,
+                add_new_services=True,
+                remove_vanished_services=False,
+                update_changed_service_labels=True,
+                update_changed_service_parameters=True,
+            ),
             [self.host_name],
             scan=True,
             raise_errors=False,

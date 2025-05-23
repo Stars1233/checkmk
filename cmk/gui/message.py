@@ -11,15 +11,15 @@ from email.mime.text import MIMEText
 from typing import Any, Literal, NotRequired, TypedDict
 
 from cmk.ccc import store
+from cmk.ccc.user import UserId
 
 import cmk.utils.paths
 from cmk.utils.mail import default_from_address, MailString, send_mail_sendmail, set_mail_headers
-from cmk.utils.user import UserId
 
 from cmk.gui import userdb, utils
 from cmk.gui.breadcrumb import Breadcrumb, make_simple_page_breadcrumb
 from cmk.gui.config import active_config
-from cmk.gui.default_permissions import PermissionSectionGeneral
+from cmk.gui.default_permissions import permission_section_general
 from cmk.gui.exceptions import MKAuthException, MKInternalError, MKUserError
 from cmk.gui.htmllib.generator import HTMLWriter
 from cmk.gui.htmllib.header import make_header
@@ -147,7 +147,7 @@ def get_gui_messages(user_id: UserId | None = None) -> MutableSequence[Message]:
                 updated = True
 
     if updated:
-        save_gui_messages(messages)
+        save_gui_messages(messages, user_id)
 
     return messages
 
@@ -188,7 +188,7 @@ def save_gui_messages(messages: MutableSequence[Message], user_id: UserId | None
     if user_id is None:
         user_id = user.ident
     path = cmk.utils.paths.profile_dir / user_id / "messages.mk"
-    store.mkdir(path.parent)
+    path.parent.mkdir(mode=0o770, exist_ok=True)
     store.save_object_to_file(path, messages)
 
 
@@ -219,7 +219,7 @@ def _messaging_methods() -> dict[MessageMethod, dict[str, Any]]:
 
 permission_registry.register(
     Permission(
-        section=PermissionSectionGeneral,
+        section=permission_section_general,
         name="message",
         title=_l("Send user message"),
         description=_l(

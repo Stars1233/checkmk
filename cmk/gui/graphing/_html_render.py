@@ -14,10 +14,11 @@ from typing import Any
 from livestatus import MKLivestatusNotFoundError
 
 from cmk.ccc.exceptions import MKGeneralException
+from cmk.ccc.hostaddress import HostName
 from cmk.ccc.site import SiteId
 
 import cmk.utils.render
-from cmk.utils.hostaddress import HostName
+from cmk.utils.jsontype import JsonSerializable
 from cmk.utils.paths import profile_dir
 from cmk.utils.servicename import ServiceName
 
@@ -185,7 +186,7 @@ def _render_graph_html(
     return HTMLWriter.render_javascript(
         "cmk.graphs.create_graph(%s, %s, %s, %s);"
         % (
-            json.dumps(html_code),
+            json.dumps(str(html_code)),
             json.dumps(graph_artwork.model_dump()),
             json.dumps(graph_render_config.model_dump()),
             json.dumps(_graph_ajax_context(graph_artwork, graph_data_range, graph_render_config)),
@@ -612,7 +613,7 @@ class AjaxGraph(cmk.gui.pages.Page):
 def _render_ajax_graph(
     context: Mapping[str, Any],
     registered_metrics: Mapping[str, RegisteredMetric],
-) -> dict[str, Any]:
+) -> JsonSerializable:
     graph_data_range = GraphDataRange.model_validate(context["data_range"])
     graph_render_config = GraphRenderConfig.model_validate(context["render_config"])
     graph_recipe = GraphRecipe.model_validate(context["definition"])
@@ -678,7 +679,7 @@ def _render_ajax_graph(
         html_code = HTML.without_escaping(output_funnel.drain())
 
     return {
-        "html": html_code,
+        "html": str(html_code),
         "graph": graph_artwork.model_dump(),
         "context": {
             "graph_id": context["graph_id"],

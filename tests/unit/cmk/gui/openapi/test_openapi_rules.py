@@ -24,6 +24,7 @@ from cmk.utils import paths
 from cmk.utils.global_ident_type import PROGRAM_ID_QUICK_SETUP
 from cmk.utils.rulesets.definition import RuleGroup
 
+from cmk.gui.logged_in import user
 from cmk.gui.watolib.configuration_bundle_store import BundleId, ConfigBundleStore
 from cmk.gui.watolib.configuration_bundles import create_config_bundle, CreateBundleEntities
 
@@ -515,6 +516,9 @@ def fixture_locked_rule_id() -> Iterable[str]:
             "program_id": program_id,
         },
         entities=CreateBundleEntities(),
+        user_id=user.id,
+        pprint_value=False,
+        use_git=False,
     )
 
     rules_mk = os.path.join(paths.omd_root, "etc", "check_mk", "conf.d", "wato", "rules.mk")
@@ -546,7 +550,7 @@ def fixture_locked_rule_id() -> Iterable[str]:
     store = ConfigBundleStore()
     all_bundles = store.load_for_modification()
     all_bundles.pop(bundle_id)
-    store.save(all_bundles)
+    store.save(all_bundles, pprint_value=False)
 
     if content is None:
         os.remove(rules_mk)

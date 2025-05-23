@@ -5,7 +5,6 @@
 
 from dataclasses import dataclass, field
 from enum import Enum
-from pathlib import Path
 from typing import Any, Literal, TypedDict
 
 from cmk.ccc import store
@@ -69,7 +68,7 @@ class UserRolesConfigFile(WatoSingleConfigFile[Roles]):
 
     def __init__(self) -> None:
         super().__init__(
-            config_file_path=Path(multisite_dir()) / "roles.mk",
+            config_file_path=multisite_dir() / "roles.mk",
             config_variable="roles",
             spec_class=dict[RoleName, CustomUserRole | BuiltInUserRole],
         )
@@ -98,10 +97,10 @@ class UserRolesConfigFile(WatoSingleConfigFile[Roles]):
             if "basedon" in role and role["basedon"] in builtin_role_ids:
                 role["basedon"] = BuiltInUserRoleValues(role["basedon"])
 
-    def save(self, cfg: Roles) -> None:
+    def save(self, cfg: Roles, pprint_value: bool) -> None:
         active_config.roles.update(cfg)
         hooks.call("roles-saved", cfg)
-        super().save(cfg)
+        super().save(cfg, pprint_value)
 
 
 def load_roles() -> Roles:

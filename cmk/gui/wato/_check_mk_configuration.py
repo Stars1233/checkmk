@@ -2229,8 +2229,8 @@ ConfigVariableSessionManagement = ConfigVariable(
                                 display=["minutes", "hours", "days"],
                                 minvalue=60,
                                 help=_(
-                                    "Warn the user at a specificied time before"
-                                    "the maximum session duration is reached"
+                                    "Warn the user at a specificied time before "
+                                    "the maximum session duration is reached "
                                     "to aid users in preserving data.",
                                 ),
                                 default_value=900,
@@ -3914,7 +3914,13 @@ def _valuespec_automatic_rediscover_parameters() -> Dictionary:
                                 "update_everything",
                                 _("Refresh all services and host labels (tabula rasa)"),
                                 FixedValue(
-                                    value=None,
+                                    value={
+                                        "add_new_services": True,
+                                        "remove_vanished_services": True,
+                                        "update_changed_service_labels": True,
+                                        "update_changed_service_parameters": True,
+                                        "update_host_labels": True,
+                                    },
                                     title=_("Refresh all services and host labels (tabula rasa)"),
                                     totext="",
                                 ),
@@ -4148,9 +4154,17 @@ def _migrate_custom_service_configuration_update(values: dict) -> dict:
 
 def _migrate_automatic_rediscover_parameters(
     param: int | tuple[str, dict[str, bool]],
-) -> tuple[str, dict[str, bool] | None]:
-    # already migrated
+) -> tuple[str, dict[str, bool]]:
+    # already migrated to new format
     if isinstance(param, tuple):
+        if param[0] == "update_everything" and param[1] is None:
+            return param[0], {
+                "add_new_services": True,
+                "remove_vanished_services": True,
+                "update_changed_service_labels": True,
+                "update_changed_service_parameters": True,
+                "update_host_labels": True,
+            }
         return param
 
     if param == 0:
@@ -4190,7 +4204,16 @@ def _migrate_automatic_rediscover_parameters(
         )
 
     if param == 3:
-        return ("update_everything", None)
+        return (
+            "update_everything",
+            {
+                "add_new_services": True,
+                "remove_vanished_services": True,
+                "update_changed_service_labels": True,
+                "update_changed_service_parameters": True,
+                "update_host_labels": True,
+            },
+        )
 
     raise MKConfigError(f"Automatic rediscovery parameter {param} not implemented")
 
@@ -5001,7 +5024,7 @@ def _valuespec_snmp_bulk_size():
         maxvalue=100,
         default_value=10,
         help=_(
-            "This variable allows you to configure the numbr of OIDs Checkmk should request "
+            "This variable allows you to configure the number of OIDs Checkmk should request "
             "at once. This rule only applies to SNMP hosts that are configured to be bulk "
             "walk hosts.You may want to use this rule to tune SNMP performance. Be aware: A "
             "higher value is not always better. It may decrease the transactions between "

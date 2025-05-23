@@ -4,7 +4,7 @@
 
 use crate::{
     agent_receiver_api::{self, RegistrationStatusV2},
-    certs, config, constants, misc, site_spec, types,
+    certs, config, misc, site_spec, types, version,
 };
 use anyhow::{bail, Context, Result as AnyhowResult};
 use log::{error, info};
@@ -231,7 +231,7 @@ impl RegistrationEndpointCall for RegistrationCallNew<'_> {
                         root_cert: reg_new_response.root_cert,
                         agent_cert: success_resp.agent_cert,
                         connection_mode: success_resp.connection_mode,
-                    })
+                    });
                 }
             }
         }
@@ -301,7 +301,7 @@ fn proxy_registration(
     println!(
         "{}",
         serde_json::to_string(&ProxyPullData {
-            agent_controller_version: String::from(constants::VERSION),
+            agent_controller_version: String::from(version::VERSION),
             connection: config::TrustedConnection {
                 uuid: registration_input.uuid,
                 private_key: registration_input.private_key,
@@ -355,7 +355,9 @@ pub fn register_new(
             agent_labels: &config.agent_labels,
         },
     )?;
-    println!("Registration complete. It may take few minutes until the newly created host and its services are visible in the site.");
+    println!(
+        "Registration complete. It may take few minutes until the newly created host and its services are visible in the site."
+    );
     Ok(())
 }
 

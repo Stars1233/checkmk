@@ -12,9 +12,8 @@ from pydantic import BaseModel
 
 from cmk.ccc import store
 from cmk.ccc.exceptions import MKGeneralException, MKTimeout
+from cmk.ccc.hostaddress import HostName
 from cmk.ccc.site import omd_site, SiteId
-
-from cmk.utils.hostaddress import HostName
 
 from cmk.gui.background_job import (
     BackgroundJob,
@@ -207,6 +206,7 @@ class PageFetchAgentOutput(AgentOutputPage):
             [
                 ("request", repr(self._request.serialize())),
             ],
+            debug=active_config.debug,
         )
 
     def _get_job_status(self) -> JobStatusSpec:
@@ -220,6 +220,7 @@ class PageFetchAgentOutput(AgentOutputPage):
                 [
                     ("request", repr(self._request.serialize())),
                 ],
+                debug=active_config.debug,
             )
         )
 
@@ -323,9 +324,11 @@ class FetchAgentOutputBackgroundJob(BackgroundJob):
 
     def fetch_agent_output(self, job_interface: BackgroundProcessInterface) -> None:
         with job_interface.gui_context():
-            self._fetch_agent_output(job_interface)
+            self._fetch_agent_output(job_interface, debug=active_config.debug)
 
-    def _fetch_agent_output(self, job_interface: BackgroundProcessInterface) -> None:
+    def _fetch_agent_output(
+        self, job_interface: BackgroundProcessInterface, *, debug: bool
+    ) -> None:
         job_interface.send_progress_update(_("Fetching '%s'...") % self._agent_type)
 
         agent_output_result = get_agent_output(
@@ -335,6 +338,7 @@ class FetchAgentOutputBackgroundJob(BackgroundJob):
             timeout=int(active_config.reschedule_timeout)
             if self._agent_type == "agent"
             else int(active_config.snmp_walk_download_timeout),
+            debug=debug,
         )
 
         if not agent_output_result.success:
@@ -414,6 +418,7 @@ class PageDownloadAgentOutput(AgentOutputPage):
             [
                 ("request", repr(self._request.serialize())),
             ],
+            debug=active_config.debug,
         )
         assert isinstance(raw_response, bytes)
         return raw_response

@@ -15,13 +15,13 @@ from typing import Any, Literal, NamedTuple
 from pydantic import BaseModel, Field
 
 from cmk.ccc.exceptions import MKGeneralException
+from cmk.ccc.hostaddress import HostName
 from cmk.ccc.site import omd_site, SiteId
 from cmk.ccc.version import __version__, Version
 
 import cmk.utils.render
 from cmk.utils.check_utils import worst_service_state
 from cmk.utils.everythingtype import EVERYTHING
-from cmk.utils.hostaddress import HostName
 from cmk.utils.html import get_html_state_marker
 from cmk.utils.labels import HostLabelValueDict, Labels
 from cmk.utils.rulesets.definition import RuleGroup
@@ -330,6 +330,7 @@ class ModeAjaxServiceDiscovery(AjaxPage):
                 api_request.update_services, api_request.discovery_options.show_checkboxes
             ),
             raise_errors=not api_request.discovery_options.ignore_errors,
+            pprint_value=active_config.wato_pprint_config,
         )
         if self._sources_failed_on_first_attempt(previous_discovery_result, discovery_result):
             discovery_result = discovery_result._replace(
@@ -365,7 +366,9 @@ class ModeAjaxServiceDiscovery(AjaxPage):
             host,
             api_request.discovery_options,
         )
-        page_code = renderer.render(discovery_result, api_request.update_services)
+        page_code = renderer.render(
+            discovery_result, api_request.update_services, debug=active_config.debug
+        )
         datasources_code = renderer.render_datasources(discovery_result.sources)
         fix_all_code = renderer.render_fix_all(discovery_result)
 
@@ -402,6 +405,7 @@ class ModeAjaxServiceDiscovery(AjaxPage):
         selected_services: Container[tuple[str, Item]],
         *,
         raise_errors: bool,
+        pprint_value: bool,
     ) -> DiscoveryResult:
         if action == DiscoveryAction.NONE or not transactions.check_transaction():
             return initial_discovery_result(
@@ -428,6 +432,7 @@ class ModeAjaxServiceDiscovery(AjaxPage):
                     discovery_result=discovery_result,
                     host=host,
                     raise_errors=raise_errors,
+                    pprint_value=pprint_value,
                 )
             case DiscoveryAction.UPDATE_HOST_LABELS:
                 discovery_result = perform_host_label_discovery(
@@ -435,6 +440,7 @@ class ModeAjaxServiceDiscovery(AjaxPage):
                     discovery_result=discovery_result,
                     host=host,
                     raise_errors=raise_errors,
+                    pprint_value=pprint_value,
                 )
             case (
                 DiscoveryAction.SINGLE_UPDATE
@@ -452,6 +458,7 @@ class ModeAjaxServiceDiscovery(AjaxPage):
                     host=host,
                     selected_services=selected_services,
                     raise_errors=raise_errors,
+                    pprint_value=pprint_value,
                 )
             case DiscoveryAction.UPDATE_SERVICES:
                 discovery_result = perform_service_discovery(
@@ -462,6 +469,7 @@ class ModeAjaxServiceDiscovery(AjaxPage):
                     host=host,
                     selected_services=selected_services,
                     raise_errors=raise_errors,
+                    pprint_value=pprint_value,
                 )
             case _:
                 raise MKUserError("discovery", f"Unknown discovery action: {action}")
@@ -589,12 +597,14 @@ class DiscoveryPageRenderer:
         self._host = host
         self._options = options
 
-    def render(self, discovery_result: DiscoveryResult, update_services: list[str]) -> str:
+    def render(
+        self, discovery_result: DiscoveryResult, update_services: list[str], *, debug: bool
+    ) -> str:
         with output_funnel.plugged():
             self._toggle_action_page_menu_entries(discovery_result)
             enable_page_menu_entry(html, "inline_help")
             self._show_discovered_host_labels(discovery_result)
-            self._show_discovery_details(discovery_result, update_services)
+            self._show_discovery_details(discovery_result, update_services, debug=debug)
             return output_funnel.drain()
 
     def render_fix_all(self, discovery_result: DiscoveryResult) -> str:
@@ -759,7 +769,7 @@ class DiscoveryPageRenderer:
         return
 
     def _show_discovery_details(
-        self, discovery_result: DiscoveryResult, update_services: list[str]
+        self, discovery_result: DiscoveryResult, update_services: list[str], *, debug: bool
     ) -> None:
         if not discovery_result.check_table:
             if not discovery_result.is_active() and self._host.is_cluster():
@@ -799,7 +809,12 @@ class DiscoveryPageRenderer:
                 ) as table:
                     for check in sorted(checks, key=lambda e: e.description.lower()):
                         self._show_check_row(
-                            table, discovery_result, update_services, check, entry.show_bulk_actions
+                            table,
+                            discovery_result,
+                            update_services,
+                            check,
+                            entry.show_bulk_actions,
+                            debug=debug,
                         )
 
                 if entry.show_bulk_actions:
@@ -1017,6 +1032,8 @@ class DiscoveryPageRenderer:
         update_services: list[str],
         entry: CheckPreviewEntry,
         show_bulk_actions: bool,
+        *,
+        debug: bool,
     ) -> None:
         statename = "" if entry.state is None else short_service_state_name(entry.state, "")
         if statename == "":
@@ -1055,7 +1072,7 @@ class DiscoveryPageRenderer:
 
         if self._options.show_parameters:
             table.cell(_("Check parameters"), css=["expanding"])
-            self._show_check_parameters(entry)
+            self._show_check_parameters(entry, debug=debug)
 
         if entry.check_source == DiscoveryState.CHANGED:
             unchanged_labels, changed_labels, added_labels, removed_labels = (
@@ -1217,7 +1234,7 @@ class DiscoveryPageRenderer:
             )
         )
 
-    def _show_check_parameters(self, entry: CheckPreviewEntry) -> None:
+    def _show_check_parameters(self, entry: CheckPreviewEntry, *, debug: bool) -> None:
         varname = self._get_ruleset_name(entry)
         if not varname or varname not in rulespec_registry:
             return
@@ -1242,7 +1259,7 @@ class DiscoveryPageRenderer:
             paramtext = rulespec.valuespec.value_to_html(params)
             html.write_html(HTML.with_escaping(paramtext))
         except Exception as e:
-            if active_config.debug:
+            if debug:
                 err = traceback.format_exc()
             else:
                 err = "%s" % e
@@ -1790,6 +1807,7 @@ class ModeAjaxExecuteCheck(AjaxPage):
                 self._host_name,
                 self._check_type,
                 self._item,
+                debug=active_config.debug,
             )
             state = 3 if active_check_result.state is None else active_check_result.state
             output = active_check_result.output

@@ -12,7 +12,7 @@ import re
 import typing
 import uuid
 from collections.abc import Callable, Collection, Mapping, MutableMapping
-from datetime import datetime, timezone
+from datetime import datetime, UTC
 from typing import Any, Literal
 
 import marshmallow
@@ -24,16 +24,16 @@ from marshmallow_oneofschema import OneOfSchema
 
 from cmk.ccc import version
 from cmk.ccc.exceptions import MKException
+from cmk.ccc.hostaddress import HostAddress, HostName
+from cmk.ccc.user import UserId
 
 from cmk.utils import paths
-from cmk.utils.hostaddress import HostAddress, HostName
 from cmk.utils.livestatus_helpers.expressions import NothingExpression, QueryExpression
 from cmk.utils.livestatus_helpers.queries import Query
 from cmk.utils.livestatus_helpers.tables import Hostgroups, Hosts, Servicegroups
 from cmk.utils.livestatus_helpers.types import Column, Table
 from cmk.utils.regex import regex, REGEX_ID
 from cmk.utils.tags import TagConfig, TagGroup, TagGroupID
-from cmk.utils.user import UserId
 
 from cmk.gui import sites
 from cmk.gui.agent_registration import CONNECTION_MODE_FIELD
@@ -41,7 +41,7 @@ from cmk.gui.config import active_config, builtin_role_ids
 from cmk.gui.customer import customer_api, SCOPE_GLOBAL
 from cmk.gui.exceptions import MKUserError
 from cmk.gui.fields.base import BaseSchema, MultiNested, ValueTypedDictSchema
-from cmk.gui.fields.utils import tree_to_expr
+from cmk.gui.fields.utils import edition_field_description, tree_to_expr
 from cmk.gui.groups import GroupName, GroupType
 from cmk.gui.logged_in import user
 from cmk.gui.permissions import permission_registry
@@ -1019,6 +1019,8 @@ class _CustomerField(base.String):
         "invalid_global": "Invalid customer: global",
         "should_exist": "Customer missing: {customer!r}",
         "should_not_exist": "Customer {customer!r} already exists.",
+        "edition_not_supported": "Customer field not supported in this edition.",
+        "required": "This field is required for the Managed edition.",
     }
 
     def __init__(
@@ -1034,15 +1036,25 @@ class _CustomerField(base.String):
     ):
         self._should_exist = should_exist
         self._allow_global = allow_global
+        self._required = required
+        description = edition_field_description(
+            description, supported_editions={version.Edition.CME}, field_required=required
+        )
         super().__init__(
             example=example,
             description=description,
-            required=required,
+            required=False,  # since all editions are supported this must be False
             validate=validate,
             **kwargs,
         )
 
     def _validate(self, value):
+        if version.edition(paths.omd_root) is not version.Edition.CME:
+            raise self.make_error("edition_not_supported")
+
+        if self._required and not self._allow_global and not value:
+            raise self.make_error("required")
+
         super()._validate(value)
         if value == "global":
             value = SCOPE_GLOBAL
@@ -1062,9 +1074,7 @@ class _CustomerField(base.String):
 
 
 def customer_field(**kw: Any) -> _CustomerField | None:
-    if version.edition(paths.omd_root) is version.Edition.CME:
-        return _CustomerField(**kw)
-    return None
+    return _CustomerField(**kw)
 
 
 def customer_field_response(**kw: Any) -> _CustomerField | None:
@@ -1073,26 +1083,44 @@ def customer_field_response(**kw: Any) -> _CustomerField | None:
     return customer_field(**kw)
 
 
-def bake_agent_field() -> Boolean | None:
+class _BakeAgentField(Boolean):
+    """A field representing the bake agent option."""
+
+    default_error_messages = {
+        "edition_not_supported": "Bake agent field not supported in this edition.",
+    }
+
+    def __init__(
+        self,
+        description: str = "Bake agent packages for this folder even if it is empty.",
+        **kwargs: Any,
+    ):
+        description = edition_field_description(
+            description=description,
+            excluded_editions={version.Edition.CRE},
+        )
+        super().__init__(description=description, **kwargs)
+
+    def _validate(self, value):
+        if version.edition(paths.omd_root) is version.Edition.CRE:
+            raise self.make_error("edition_not_supported")
+
+        super()._validate(value)
+
+
+def bake_agent_field() -> _BakeAgentField:
     """Enterprise specific implementation of host attribute field
 
     Notes:
         * takes inspiration of the customer field implementation (which is not the best) but
         deemed acceptable as the intention is to move away from the marshmallow implementation
     """
-    if version.edition(paths.omd_root) is not version.Edition.CRE:
-        return Boolean(
-            description="Bake agent packages for this folder even if it is empty.",
-        )
-    return None
+    return _BakeAgentField()
 
 
 def agent_connection_field() -> String | None:
     """CME and CCE editions only implementation of cmk_agent_connection field"""
-    if version.edition(paths.omd_root) in [version.Edition.CME, version.Edition.CCE]:
-        return CONNECTION_MODE_FIELD
-
-    return None
+    return CONNECTION_MODE_FIELD
 
 
 def verify_group_exists(group_type: GroupType, name: GroupName) -> bool:
@@ -1262,7 +1290,7 @@ class PasswordShare(base.String):
 
 
 def from_timestamp(value: float) -> datetime:
-    return datetime.fromtimestamp(value, tz=timezone.utc)
+    return datetime.fromtimestamp(value, tz=UTC)
 
 
 def to_timestamp(value: datetime) -> float:

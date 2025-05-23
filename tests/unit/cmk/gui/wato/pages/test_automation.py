@@ -14,10 +14,10 @@ from flask import Flask
 
 import cmk.ccc.version as cmk_version
 from cmk.ccc.exceptions import MKGeneralException
+from cmk.ccc.user import UserId
 
 from cmk.utils import paths
 from cmk.utils.local_secrets import DistributedSetupSecret
-from cmk.utils.user import UserId
 
 from cmk.automations.results import ABCAutomationResult, ResultTypeRegistry, SerializedResult
 
@@ -107,7 +107,7 @@ class TestPageAutomation:
                 "headers",
                 {"x-checkmk-version": cmk_version.__version__, "x-checkmk-edition": "cee"},
             )
-            automation.PageAutomation()._execute_cmk_automation()
+            automation.PageAutomation()._execute_cmk_automation(debug=False)
             assert response.get_data() == b"((1, 2), 'this field was not sent by version N-1')"
 
     @pytest.mark.usefixtures(
@@ -123,10 +123,30 @@ class TestPageAutomation:
             m.setattr(
                 request,
                 "headers",
+                {"x-checkmk-version": "2.4.0p3", "x-checkmk-edition": "cee"},
+            )
+            automation.PageAutomation()._execute_cmk_automation(debug=False)
+            assert response.get_data() == b"((1, 2),)"
+
+    @pytest.mark.usefixtures(
+        "request_context",
+        "result_type_registry",
+        "check_mk_local_automation_serialized",
+        "setup_request",
+        "fix_secret_checking",
+        "patch_edition",
+    )
+    def test_execute_cmk_automation_previous_version_incompatible(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        with monkeypatch.context() as m:
+            m.setattr(
+                request,
+                "headers",
                 {"x-checkmk-version": "2.4.0b1", "x-checkmk-edition": "cee"},
             )
-            automation.PageAutomation()._execute_cmk_automation()
-            assert response.get_data() == b"((1, 2),)"
+            with pytest.raises(MKGeneralException, match="not compatible"):
+                automation.PageAutomation()._execute_cmk_automation(debug=False)
 
     @pytest.mark.parametrize(
         "incomp_version",
@@ -153,7 +173,7 @@ class TestPageAutomation:
                 {"x-checkmk-version": incomp_version, "x-checkmk-edition": "cee"},
             )
             with pytest.raises(MKGeneralException, match="not compatible"):
-                automation.PageAutomation()._execute_cmk_automation()
+                automation.PageAutomation()._execute_cmk_automation(debug=False)
 
     @pytest.mark.usefixtures(
         "request_context",

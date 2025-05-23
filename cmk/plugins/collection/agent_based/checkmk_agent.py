@@ -7,7 +7,7 @@ import collections
 import re
 import time
 from collections.abc import Iterable, Mapping, Sequence
-from datetime import datetime, timezone
+from datetime import datetime, UTC
 from typing import Any
 
 # The only reasonable thing to do here is use our own version parsing. It's to big to duplicate.
@@ -324,7 +324,7 @@ def _check_cmk_agent_update_certificates(parsed: CMKAgentUpdateSection) -> Check
 
         # comparing naive to aware datetimes raises anyway, but the assertion is less obscure
         assert cert_info.not_after.tzinfo is not None, "cert_info.not_after must be tz aware"
-        duration_valid = cert_info.not_after - datetime.now(timezone.utc)
+        duration_valid = cert_info.not_after - datetime.now(UTC)
 
         if duration_valid.total_seconds() < 0:
             yield Result(
@@ -405,8 +405,15 @@ def _check_cmk_agent_update(
         # is disabled explicitly in cmk.gui.view_utils:format_plugin_output
         yield Result(state=State.OK, notice=f"Update URL: {update_url}")
 
-    if host_name := section.host_name:
-        yield Result(state=State.OK, notice=f"Hostname used by cmk-update-agent: {host_name}")
+    if update_agent_host_name := section.host_name:
+        yield Result(
+            state=State.OK, notice=f"Hostname used by cmk-update-agent: {update_agent_host_name}"
+        )
+        if (checkmk_host_name := params["host_name"]) != update_agent_host_name:
+            yield Result(
+                state=State.CRIT,
+                summary=f"Hostname defined in Checkmk ({checkmk_host_name}) and cmk-update-agent configuration ({update_agent_host_name}) do not match",
+            )
 
     if aghash := section.aghash:
         yield Result(state=State.OK, notice=f"Agent configuration: {aghash}")
@@ -628,5 +635,7 @@ check_plugin_checkmk_agent = CheckPlugin(
         # We want to use that very setting to check whether it is deployed correctly.
         # Don't try this hack at home, we are trained professionals.
         "only_from": ("cmk_postprocessed", "only_from", None),
+        # This next entry will be postprocessed by the backend.
+        "host_name": ("cmk_postprocessed", "host_name", None),
     },
 )

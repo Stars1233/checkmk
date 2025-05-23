@@ -19,9 +19,9 @@ from livestatus import NetworkSocketDetails, SiteConfiguration, TLSParams
 
 import cmk.ccc.version as cmk_version
 from cmk.ccc.site import SiteId
+from cmk.ccc.user import UserId
 
 import cmk.utils.paths
-from cmk.utils.user import UserId
 
 import cmk.gui.mkeventd.wato
 from cmk.gui.config import active_config
@@ -357,6 +357,8 @@ def _get_expected_paths(
             "etc/check_mk/mkeventd.d/wato/rules.mk",
             "local",
             "var/check_mk/packages",
+            "var/check_mk/packages_local",
+            "var/check_mk/disabled_packages",
             "var/check_mk/topology",
         ]
 

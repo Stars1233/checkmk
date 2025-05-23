@@ -7,6 +7,7 @@ import abc
 import collections
 import json
 from collections.abc import Callable, Iterator
+from typing import override
 
 import cmk.ccc.version as cmk_version
 
@@ -94,6 +95,8 @@ class ABCViewRenderer(abc.ABC):
         num_columns: int,
         show_filters: list[Filter],
         unfiltered_amount_of_rows: int,
+        *,
+        debug: bool,
     ) -> None:
         raise NotImplementedError()
 
@@ -109,6 +112,7 @@ class GUIViewRenderer(ABCViewRenderer):
         self._show_buttons = show_buttons
         self._page_menu_dropdowns_callback = page_menu_dropdowns_callback
 
+    @override
     def render(
         self,
         rows: Rows,
@@ -116,6 +120,8 @@ class GUIViewRenderer(ABCViewRenderer):
         num_columns: int,
         show_filters: list[Filter],
         unfiltered_amount_of_rows: int,
+        *,
+        debug: bool,
     ) -> None:
         view_spec = self.view.spec
 
@@ -135,6 +141,7 @@ class GUIViewRenderer(ABCViewRenderer):
                 breadcrumb,
                 page_menu=self._page_menu(rows, show_filters),
                 browser_reload=html.browser_reload,
+                debug=debug,
             )
             html.begin_page_content()
 

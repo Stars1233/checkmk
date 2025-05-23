@@ -153,7 +153,7 @@ class IPNetworkCIDR(String):
             raise ValidationError("Expected an IP network in CIDR notation like '192.168.0.0/24'")
 
     def _serialize(self, value, attr, obj, **kwargs):
-        if isinstance(value, (list, tuple)) and len(value) == 2:
+        if isinstance(value, list | tuple) and len(value) == 2:
             return f"{value[0]}/{value[1]}"
         raise ValidationError(
             f"Error handling {value!r}, expected a tuple of IPv4 address and network size e.g. ('192.168.0.0', 24)"
@@ -618,7 +618,21 @@ class LockedBy(BaseSchema, CheckmkTuple):
     )
 
 
-AUTH_PROT_MAP = {
+AuthProtocolType = typing.Literal[
+    "MD5-96", "SHA-1-96", "SHA-2-224", "SHA-2-256", "SHA-2-384", "SHA-2-512"
+]
+PrivacyProtocolType = typing.Literal[
+    "CBC-DES",
+    "AES-128",
+    "3DES-EDE",
+    "AES-192",
+    "AES-256",
+    "AES-192-Blumenthal",
+    "AES-256-Blumenthal",
+]
+
+
+AUTH_PROT_MAP: Mapping[AuthProtocolType, str] = {
     "MD5-96": "md5",
     "SHA-1-96": "sha",
     "SHA-2-224": "SHA-224",
@@ -627,7 +641,7 @@ AUTH_PROT_MAP = {
     "SHA-2-512": "SHA-512",
 }
 
-PRIV_PROT_MAP = {
+PRIV_PROT_MAP: Mapping[PrivacyProtocolType, str] = {
     "CBC-DES": "DES",
     "AES-128": "AES",
     "3DES-EDE": "3DES-EDE",
@@ -638,7 +652,7 @@ PRIV_PROT_MAP = {
 }
 
 
-class MappingConverter(Converter):
+class MappingConverter[K, V](Converter):
     """Converts keys according to a mapping
 
     The direction of the mapping is defined as "INTO Checkmk":
@@ -666,17 +680,23 @@ class MappingConverter(Converter):
 
     """
 
-    def __init__(self, mapping: Mapping[str, str]) -> None:
+    __slots__ = ("mapping",)
+
+    def __init__(self, mapping: Mapping[K, V]) -> None:
         self.mapping = mapping
 
-    def to_checkmk(self, data: str) -> str:
+    def to_checkmk(self, data: K) -> V:
         return self.mapping[data]
 
-    def from_checkmk(self, data: str) -> str:
+    def from_checkmk(self, data: V) -> K:
         for key, value in self.mapping.items():
             if data == value:
                 return key
         raise KeyError(data)
+
+
+AuthProtocolConverter = MappingConverter(AUTH_PROT_MAP)
+PrivacyProtocolConverter = MappingConverter(PRIV_PROT_MAP)
 
 
 class SNMPCommunity(BaseSchema):
@@ -732,7 +752,7 @@ class SNMPv3NoAuthNoPrivacy(BaseSchema, CheckmkTuple):
 
 class SNMPv3AuthNoPrivacy(BaseSchema, CheckmkTuple):
     tuple_fields = ("type", "auth_protocol", "security_name", "auth_password")
-    converter = (None, MappingConverter(AUTH_PROT_MAP), None, None)
+    converter = (None, AuthProtocolConverter, None, None)
     cast_to_dict = True
 
     type = Constant(
@@ -766,10 +786,10 @@ class SNMPv3AuthPrivacy(BaseSchema, CheckmkTuple):
     )
     converter = (
         None,
-        MappingConverter(AUTH_PROT_MAP),
+        AuthProtocolConverter,
         None,
         None,
-        MappingConverter(PRIV_PROT_MAP),
+        PrivacyProtocolConverter,
         None,
     )
     cast_to_dict = True

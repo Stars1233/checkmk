@@ -2,6 +2,8 @@
 # Copyright (C) 2019 Checkmk GmbH - License: GNU General Public License v2
 # This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
 # conditions defined in the file COPYING, which is part of this source code package.
+# mypy: disable-error-code="explicit-override, no-any-return, no-untyped-call, no-untyped-def"
+
 """Manage the currently logged in user"""
 
 from __future__ import annotations
@@ -16,10 +18,10 @@ from livestatus import SiteConfigurations
 
 from cmk.ccc import store
 from cmk.ccc.site import SiteId
+from cmk.ccc.user import UserId
 from cmk.ccc.version import __version__, Edition, edition, Version
 
 import cmk.utils.paths
-from cmk.utils.user import UserId
 
 from cmk.gui import hooks, permissions, site_config
 from cmk.gui.config import active_config
@@ -565,13 +567,13 @@ def _confdir_for_user_id(user_id: UserId | None) -> str | None:
         return None
 
     confdir = cmk.utils.paths.profile_dir / user_id
-    store.mkdir(confdir)
+    confdir.mkdir(mode=0o770, exist_ok=True)
     return str(confdir)
 
 
 def save_user_file(name: str, data: Any, user_id: UserId) -> None:
-    path = cmk.utils.paths.profile_dir.joinpath(user_id, name + ".mk")
-    store.mkdir(path.parent)
+    path = cmk.utils.paths.profile_dir / user_id / (name + ".mk")
+    path.parent.mkdir(mode=0o770, exist_ok=True)
     store.save_object_to_file(path, data)
 
 

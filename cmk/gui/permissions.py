@@ -6,6 +6,8 @@
 
 import abc
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
+from typing import override
 
 import cmk.ccc.plugin_registry
 
@@ -13,38 +15,27 @@ from cmk.gui.type_defs import PermissionName, RoleName
 from cmk.gui.utils.speaklater import LazyString
 
 
-class PermissionSection(abc.ABC):
-    @property
-    @abc.abstractmethod
-    def name(self) -> str:
-        """The identity of a permission section.
-        One word, may contain alpha numeric characters"""
-        raise NotImplementedError()
+@dataclass(frozen=True, kw_only=True)
+class PermissionSection:
+    """The identity of a permission section.
+    One word, may contain alpha numeric characters"""
 
-    @property
-    @abc.abstractmethod
-    def title(self) -> str:
-        """Display name representing the section"""
-        raise NotImplementedError()
-
-    @property
-    def sort_index(self) -> int:
-        """Number to sort the sections with"""
-        return 50
-
-    # TODO: Is this still needed?
-    @property
-    def do_sort(self) -> bool:
-        """Whether or not to sort the permissions by title in this section"""
-        return False
+    name: str
+    """Display name representing the section"""
+    title: str
+    """Number to sort the sections with"""
+    sort_index: int = 50
+    """Whether or not to sort the permissions by title in this section"""
+    do_sort: bool = False
 
 
-class PermissionSectionRegistry(cmk.ccc.plugin_registry.Registry[type[PermissionSection]]):
-    def plugin_name(self, instance):
-        return instance().name
+class PermissionSectionRegistry(cmk.ccc.plugin_registry.Registry[PermissionSection]):
+    @override
+    def plugin_name(self, instance: PermissionSection) -> str:
+        return instance.name
 
-    def get_sorted_sections(self):
-        return sorted([s() for s in self.values()], key=lambda s: (s.sort_index, s.title))
+    def get_sorted_sections(self) -> list[PermissionSection]:
+        return sorted([s for s in self.values()], key=lambda s: (s.sort_index, s.title))
 
 
 permission_section_registry = PermissionSectionRegistry()
@@ -55,7 +46,7 @@ class Permission(abc.ABC):
 
     def __init__(
         self,
-        section: type[PermissionSection],
+        section: PermissionSection,
         name: str,
         title: str | LazyString,
         description: str | LazyString,
@@ -69,7 +60,7 @@ class Permission(abc.ABC):
         self._sort_index = 0
 
     @property
-    def section(self) -> type[PermissionSection]:
+    def section(self) -> PermissionSection:
         return self._section
 
     @property
@@ -96,7 +87,7 @@ class Permission(abc.ABC):
     @property
     def name(self) -> str:
         """The full identity of a permission (including the section identity)."""
-        return ".".join((self.section().name, self.permission_name))
+        return ".".join((self.section.name, self.permission_name))
 
     @property
     def sort_index(self) -> int:
@@ -116,16 +107,18 @@ class PermissionRegistry(cmk.ccc.plugin_registry.Registry[Permission]):
         # the order they have been added.
         self._index_counter = 0
 
-    def plugin_name(self, instance):
+    @override
+    def plugin_name(self, instance: Permission) -> str:
         return instance.name
 
-    def registration_hook(self, instance):
+    @override
+    def registration_hook(self, instance: Permission) -> None:
         instance._sort_index = self._index_counter
         self._index_counter += 1
 
-    def get_sorted_permissions(self, section):
+    def get_sorted_permissions(self, section: PermissionSection) -> list[Permission]:
         """Returns the sorted permissions of a section respecting the sorting config of the section"""
-        permissions = [p for p in self.values() if p.section == section.__class__]
+        permissions = [p for p in self.values() if p.section.name == section.name]
 
         if section.do_sort:
             return sorted(permissions, key=lambda p: (p.title, p.sort_index))
@@ -135,18 +128,17 @@ class PermissionRegistry(cmk.ccc.plugin_registry.Registry[Permission]):
 permission_registry = PermissionRegistry()
 
 
-def declare_permission_section(name, title, prio=50, do_sort=False):
-    cls = type(
-        "LegacyPermissionSection%s" % name.title(),
-        (PermissionSection,),
-        {
-            "name": name,
-            "title": title,
-            "sort_index": prio,
-            "do_sort": do_sort,
-        },
+def declare_permission_section(
+    name: str, title: str, prio: int = 50, do_sort: bool = False
+) -> None:
+    permission_section_registry.register(
+        PermissionSection(
+            name=name,
+            title=title,
+            sort_index=prio,
+            do_sort=do_sort,
+        )
     )
-    permission_section_registry.register(cls)
 
 
 def declare_permission(

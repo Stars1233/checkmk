@@ -5,7 +5,7 @@
 
 import logging
 import sys
-from collections.abc import Iterable, Sequence
+from collections.abc import Collection, Iterable, Sequence
 
 import requests
 from netapp_ontap import resources as NetAppResource
@@ -279,18 +279,33 @@ def fetch_luns(connection: HostConnection) -> Iterable[models.LunModel]:
         )
 
 
-def fetch_aggr(connection: HostConnection) -> Iterable[models.AggregateModel]:
+def _aggregates_ids(connection: HostConnection, args: Args) -> Collection:
+    # wee need to retrieve the uuid of the aggregates via the CLI passthrough
+    # because the REST API does not return, per design, the uuid of the root aggregates
+    response = requests.get(
+        url=f"{connection.origin}/api/private/cli/aggr?fields=uuid",
+        headers=connection.headers,
+        verify=False if args.no_cert_check else True,  # pylint: disable=simplifiable-if-expression
+        auth=(connection.username, connection.password),  # type: ignore[arg-type]
+        timeout=args.timeout,
+    )
+
+    records = response.json().get("records", [])
+    return {record["uuid"] for record in records}
+
+
+def fetch_aggr(connection: HostConnection, args: Args) -> Iterable[models.AggregateModel]:
     field_query = (
         "name",
         "space.block_storage.available",
         "space.block_storage.size",
     )
-    yield from (
-        models.AggregateModel.model_validate(element.to_dict())
-        for element in NetAppResource.Aggregate.get_collection(
-            connection=connection, fields=",".join(field_query)
-        )
-    )
+
+    aggregates = _aggregates_ids(connection, args)
+    for aggr_uuid in aggregates:
+        resource = NetAppResource.Aggregate(uuid=aggr_uuid)
+        resource.get(fields=",".join(field_query))
+        yield models.AggregateModel.model_validate(resource.to_dict())
 
 
 def fetch_vs_status(connection: HostConnection) -> Iterable[models.SvmModel]:
@@ -698,13 +713,13 @@ def fetch_environment(connection):
             name=element_data["name"],
             node_name=element_data["node"]["name"],
             sensor_type=element_data["type"],
-            value=element_data["value"],
+            value=element_data.get("value"),
             warning_high_threshold=element_data.get("warning_high_threshold"),
             warning_low_threshold=element_data.get("warning_low_threshold"),
             critical_high_threshold=element_data.get("critical_high_threshold"),
             critical_low_threshold=element_data.get("critical_low_threshold"),
             threshold_state=element_data["threshold_state"],
-            value_units=element_data["value_units"],
+            value_units=element_data.get("value_units"),
         )
 
     for element in NetAppResource.Sensors.get_collection(
@@ -715,7 +730,7 @@ def fetch_environment(connection):
             name=element_data["name"],
             node_name=element_data["node"]["name"],
             sensor_type=element_data["type"],
-            discrete_value=element_data["discrete_value"],
+            discrete_value=element_data.get("discrete_value"),
             discrete_state=element_data["discrete_state"],
         )
 
@@ -754,6 +769,7 @@ def fetch_snapmirror(
 ) -> Iterable[models.SnapMirrorModel]:
     field_query = (
         "state",
+        "transfer.state",
         "policy.name",
         "policy.type",
         "source.svm.name",
@@ -773,6 +789,7 @@ def fetch_snapmirror(
             policy_name=element_data["policy"]["name"],
             policy_type=element_data["policy"]["type"],
             state=element_data.get("state"),
+            transfer_state=element_data.get("transfer", {}).get("state"),
             source_svm_name=element_data["source"]["svm"]["name"],
             lag_time=element_data.get("lag_time"),
             destination=element_data["destination"]["path"],
@@ -820,7 +837,7 @@ def write_sections(connection: HostConnection, logger: logging.Logger, args: Arg
 
     write_section("disk", fetch_disks(connection), logger)
     write_section("luns", fetch_luns(connection), logger)
-    write_section("aggr", fetch_aggr(connection), logger)
+    write_section("aggr", fetch_aggr(connection, args), logger)
     write_section("vs_status", fetch_vs_status(connection), logger)
     write_section("ports", fetch_ports(connection), logger)
     interfaces = list(fetch_interfaces(connection))

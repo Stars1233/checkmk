@@ -10,13 +10,14 @@ from collections.abc import Collection, Iterator
 from typing import Final, overload
 
 from cmk.ccc.exceptions import MKGeneralException
+from cmk.ccc.hostaddress import HostName
 
 import cmk.utils.tags
-from cmk.utils.hostaddress import HostName
 
 import cmk.gui.watolib.sites as watolib_sites
 from cmk.gui import forms
 from cmk.gui.breadcrumb import Breadcrumb
+from cmk.gui.config import active_config
 from cmk.gui.exceptions import MKAuthException, MKUserError
 from cmk.gui.htmllib.html import html
 from cmk.gui.http import request
@@ -396,7 +397,9 @@ class ModeEditHost(ABCHostMode):
 
         if request.var("_update_dns_cache") and self._should_use_dns_cache():
             user.need_permission("wato.update_dns_cache")
-            update_dns_cache_result = update_dns_cache(self._host.site_id())
+            update_dns_cache_result = update_dns_cache(
+                self._host.site_id(), debug=active_config.debug
+            )
             infotext = (
                 _("Successfully updated IP addresses of %d hosts.")
                 % update_dns_cache_result.n_updated
@@ -409,11 +412,17 @@ class ModeEditHost(ABCHostMode):
             return None
 
         if request.var("delete"):  # Delete this host
-            folder.delete_hosts([self._host.name()], automation=delete_hosts)
+            folder.delete_hosts(
+                [self._host.name()],
+                automation=delete_hosts,
+                pprint_value=active_config.wato_pprint_config,
+            )
             return redirect(mode_url("folder", folder=folder.path()))
 
         if request.var("_remove_tls_registration"):
-            remove_tls_registration({self._host.site_id(): [self._host.name()]})
+            remove_tls_registration(
+                {self._host.site_id(): [self._host.name()]}, debug=active_config.debug
+            )
             return None
 
         attributes = collect_attributes("host" if not self._is_cluster() else "cluster", new=False)
@@ -422,7 +431,9 @@ class ModeEditHost(ABCHostMode):
             flash(f"Host {self._host.name()} could not be found.")
             return None
 
-        host.edit(attributes, self._get_cluster_nodes())
+        host.edit(
+            attributes, self._get_cluster_nodes(), pprint_value=active_config.wato_pprint_config
+        )
         self._host = folder.load_host(self._host.name())
 
         if request.var("_save"):
@@ -506,7 +517,6 @@ def page_menu_host_entries(mode_name: str, host: Host) -> Iterator[PageMenuEntry
                 [
                     ("mode", "test_notifications"),
                     ("host_name", host.name()),
-                    ("_test_host_notifications", 1),
                 ],
                 filename="wato.py",
             )
@@ -677,12 +687,20 @@ class CreateHostMode(ABCHostMode):
         attributes = collect_attributes(self._host_type_name(), new=True)
         cluster_nodes = self._get_cluster_nodes()
 
-        hostname = request.get_validated_type_input_mandatory(HostName, self.VAR_HOST)
-        Hostname().validate_value(hostname, self.VAR_HOST)
+        try:
+            hostname = request.get_validated_type_input_mandatory(HostName, self.VAR_HOST)
+        except MKUserError:
+            Hostname().validate_value(
+                request.get_ascii_input_mandatory(self.VAR_HOST), self.VAR_HOST
+            )
+            return redirect(mode_url("folder"))
 
         folder = folder_from_request(request.var("folder"), hostname)
         if transactions.check_transaction():
-            folder.create_hosts([(hostname, attributes, cluster_nodes)])
+            folder.create_hosts(
+                [(hostname, attributes, cluster_nodes)],
+                pprint_value=active_config.wato_pprint_config,
+            )
 
         self._host = folder.load_host(hostname)
         bakery.try_bake_agents_for_hosts([hostname])
@@ -747,9 +765,12 @@ class ModeCreateHost(CreateHostMode):
 
     @classmethod
     def _init_new_host_object(cls) -> Host:
-        host_name = request.get_validated_type_input_mandatory(
-            HostName, cls.VAR_HOST, deflt=HostName("")
-        )
+        try:
+            host_name = request.get_validated_type_input_mandatory(
+                HostName, cls.VAR_HOST, deflt=HostName("")
+            )
+        except MKUserError:
+            host_name = HostName("")
         return Host(
             folder=folder_from_request(request.var("folder"), host_name),
             host_name=host_name,
@@ -782,9 +803,12 @@ class ModeCreateCluster(CreateHostMode):
 
     @classmethod
     def _init_new_host_object(cls) -> Host:
-        host_name = request.get_validated_type_input_mandatory(
-            HostName, cls.VAR_HOST, deflt=HostName("")
-        )
+        try:
+            host_name = request.get_validated_type_input_mandatory(
+                HostName, cls.VAR_HOST, deflt=HostName("")
+            )
+        except MKUserError:
+            host_name = HostName("")
         return Host(
             folder=folder_from_request(request.var("folder"), host_name),
             host_name=host_name,

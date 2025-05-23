@@ -1,5 +1,16 @@
-load("@cargo_deps_host//:defs.bzl", "aliases", "all_crate_deps")
+load("@aspect_rules_lint//format:defs.bzl", "format_multirun")
+load("@host_crates//:defs.bzl", "aliases", "all_crate_deps")
 load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test", "rust_test_suite")
+load("//bazel/rules:file_from_flag.bzl", "file_from_flag")
+load("//bazel/rules:platform_transition_binary.bzl", "platform_transition_binary")
+
+file_from_flag(
+    name = "version.rs",
+    out = "src/version.rs",
+    content = ['pub const VERSION: &str = "{VERSION}";'],
+    replace_labels = {"VERSION": "//:cmk_version"},
+    visibility = ["//visibility:private"],
+)
 
 rust_library(
     name = "cmk-agent-ctl-lib",
@@ -32,6 +43,7 @@ rust_library(
         "src/site_spec.rs",
         "src/tls_server.rs",
         "src/types.rs",
+        ":version.rs",  # invalidates the cache
     ],
     aliases = aliases(),
     crate_name = "cmk_agent_ctl",
@@ -47,10 +59,10 @@ rust_test(
     crate = ":cmk-agent-ctl-lib",
     deps = all_crate_deps() + [
         ":cmk-agent-ctl-lib",
-        "@cargo_deps_host//:assert_cmd",
-        "@cargo_deps_host//:lazy_static",
-        "@cargo_deps_host//:predicates",
-        "@cargo_deps_host//:tempfile",
+        "@host_crates//:assert_cmd",
+        "@host_crates//:lazy_static",
+        "@host_crates//:predicates",
+        "@host_crates//:tempfile",
     ],
 )
 
@@ -69,10 +81,10 @@ rust_library(
     crate_root = "tests/common/mod.rs",
     deps = all_crate_deps() + [
         ":cmk-agent-ctl-lib",
-        "@cargo_deps_host//:assert_cmd",
-        "@cargo_deps_host//:lazy_static",
-        "@cargo_deps_host//:predicates",
-        "@cargo_deps_host//:tempfile",
+        "@host_crates//:assert_cmd",
+        "@host_crates//:lazy_static",
+        "@host_crates//:predicates",
+        "@host_crates//:tempfile",
     ],
 )
 
@@ -101,10 +113,10 @@ rust_test_suite(
         ":cmk-agent-ctl",
         ":cmk-agent-ctl-lib",
         ":cmk-agent-ctl-tests-common",
-        "@cargo_deps_host//:assert_cmd",
-        "@cargo_deps_host//:lazy_static",
-        "@cargo_deps_host//:predicates",
-        "@cargo_deps_host//:tempfile",
+        "@host_crates//:assert_cmd",
+        "@host_crates//:lazy_static",
+        "@host_crates//:predicates",
+        "@host_crates//:tempfile",
     ],
 )
 
@@ -117,6 +129,17 @@ rust_binary(
     proc_macro_deps = all_crate_deps(
         proc_macro = True,
     ),
-    visibility = ["//visibility:public"],
     deps = all_crate_deps() + [":cmk-agent-ctl-lib"],
+)
+
+platform_transition_binary(
+    name = "cmk-agent-ctl-musl",
+    binary = ":cmk-agent-ctl",
+    platform = "//bazel/platforms:x86_64-unknown-linux-musl",
+    visibility = ["//visibility:public"],
+)
+
+format_multirun(
+    name = "format",
+    rust = "@rules_rust//tools/upstream_wrapper:rustfmt",
 )

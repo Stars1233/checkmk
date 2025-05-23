@@ -1,6 +1,30 @@
 UPSTREAM_MIRROR_URL = "https://artifacts.lan.tribe29.com/repository/upstream-archives/"
 RUFF_VERSION = "0.9.6"
 
+# TODO: Re-work this with edition_deps + check for duplicate in cmk/BUILD
+edition_python_deps = {
+    "cre": [],
+    "cce": [
+        "//non-free/packages/cmk-mknotifyd",
+        "//non-free/packages/cmk-otel-collector",
+        "//non-free/packages/cmk-update-agent",
+    ],
+    "cee": [
+        "//non-free/packages/cmk-mknotifyd",
+        "//non-free/packages/cmk-update-agent",
+    ],
+    "cme": [
+        "//non-free/packages/cmk-mknotifyd",
+        "//non-free/packages/cmk-update-agent",
+        "//non-free/packages/cmk-otel-collector",
+    ],
+    "cse": [
+        "//non-free/packages/cmk-mknotifyd",
+        "//non-free/packages/cmk-update-agent",
+        "//non-free/packages/cmk-otel-collector",
+    ],
+}
+
 edition_deps = {
     # NOTES:
     # * jaeger should be added to all editions EXCEPT saas - saas has its own tracing collector
@@ -8,26 +32,30 @@ edition_deps = {
         "//omd/packages/jaeger:pkg_tar",
     ],
     "cce": [
-        "//non-free/packages/cmk-mknotifyd:cmk_mknotifyd_pkg",
+        "//non-free/packages/cmk-mknotifyd:pkg_tar",
         "//non-free/packages/cmc-protocols:pkg_tar",
         "//non-free/packages/cmk-otel-collector:pkg_tar",
+        "//non-free/packages/cmk-update-agent:pkg_tar",
         "//omd/packages/jaeger:pkg_tar",
     ],
     "cee": [
-        "//non-free/packages/cmk-mknotifyd:cmk_mknotifyd_pkg",
+        "//non-free/packages/cmk-mknotifyd:pkg_tar",
         "//non-free/packages/cmc-protocols:pkg_tar",
+        "//non-free/packages/cmk-update-agent:pkg_tar",
         "//omd/packages/jaeger:pkg_tar",
     ],
     "cme": [
-        "//non-free/packages/cmk-mknotifyd:cmk_mknotifyd_pkg",
+        "//non-free/packages/cmk-mknotifyd:pkg_tar",
         "//non-free/packages/cmc-protocols:pkg_tar",
         "//non-free/packages/cmk-otel-collector:pkg_tar",
+        "//non-free/packages/cmk-update-agent:pkg_tar",
         "//omd/packages/jaeger:pkg_tar",
     ],
     "cse": [
-        "//non-free/packages/cmk-mknotifyd:cmk_mknotifyd_pkg",
+        "//non-free/packages/cmk-mknotifyd:pkg_tar",
         "//non-free/packages/cmc-protocols:pkg_tar",
         "//non-free/packages/cmk-otel-collector:pkg_tar",
+        "//non-free/packages/cmk-update-agent:pkg_tar",
     ],
 }
 

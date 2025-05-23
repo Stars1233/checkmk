@@ -7,19 +7,25 @@ from __future__ import annotations
 
 import json
 import shutil
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import timedelta
 from pathlib import Path
-from typing import Any, Literal, TypedDict
+from typing import Literal, TypedDict
 
 import livestatus
 
 from cmk.ccc.exceptions import MKException
+from cmk.ccc.hostaddress import HostAddress, HostName
 from cmk.ccc.site import SiteId
 
 import cmk.utils.paths
-from cmk.utils.hostaddress import HostAddress, HostName
-from cmk.utils.structured_data import SDRawTree, serialize_tree
+from cmk.utils.structured_data import (
+    ImmutableTree,
+    InventoryPaths,
+    SDFilterChoice,
+    SDRawTree,
+    serialize_tree,
+)
 
 from cmk.gui import sites
 from cmk.gui.config import active_config
@@ -30,7 +36,6 @@ from cmk.gui.http import request, response
 from cmk.gui.i18n import _
 from cmk.gui.logged_in import user
 from cmk.gui.pages import PageRegistry
-from cmk.gui.type_defs import Row
 from cmk.gui.valuespec import ValueSpec
 from cmk.gui.views.icon import IconRegistry
 from cmk.gui.visuals.filter import FilterRegistry
@@ -38,32 +43,32 @@ from cmk.gui.visuals.info import VisualInfo, VisualInfoRegistry
 from cmk.gui.watolib.rulespecs import RulespecGroupRegistry, RulespecRegistry
 
 from . import _rulespec, _xml
-from ._history import get_history, load_delta_tree, load_latest_delta_tree
-from ._icon import InventoryIcon
+from ._icon import InventoryHistoryIcon, InventoryIcon
 from ._rulespec import RulespecGroupInventory
-from ._store import has_inventory
 from ._tree import (
+    get_history,
     get_short_inventory_filepath,
     InventoryPath,
-    load_filtered_and_merged_tree,
+    load_delta_tree,
+    load_latest_delta_tree,
+    load_tree,
     make_filter_choices_from_api_request_paths,
-    parse_inventory_path,
+    parse_internal_raw_path,
     TreeSource,
 )
 from ._valuespecs import vs_element_inventory_visible_raw_path, vs_inventory_path_or_keys_help
 from .filters import FilterHasInv, FilterInvHasSoftwarePackage
 
 __all__ = [
-    "get_history",
-    "get_short_inventory_filepath",
-    "has_inventory",
     "InventoryPath",
-    "load_delta_tree",
-    "load_filtered_and_merged_tree",
-    "load_latest_delta_tree",
-    "parse_inventory_path",
     "RulespecGroupInventory",
     "TreeSource",
+    "get_history",
+    "get_short_inventory_filepath",
+    "load_delta_tree",
+    "load_tree",
+    "load_latest_delta_tree",
+    "parse_internal_raw_path",
     "vs_element_inventory_visible_raw_path",
     "vs_inventory_path_or_keys_help",
 ]
@@ -82,7 +87,7 @@ def register(
     cron_job_registry.register(
         CronJob(
             name="execute_inventory_housekeeping_job",
-            callable=execute_inventory_housekeeping_job,
+            callable=InventoryHousekeeping(cmk.utils.paths.omd_root),
             interval=timedelta(hours=12),
         )
     )
@@ -91,9 +96,10 @@ def register(
     filter_registry.register(FilterInvHasSoftwarePackage())
     _rulespec.register(rulespec_group_registry, rulespec_registry)
     icon_and_action_registry.register(InventoryIcon)
+    icon_and_action_registry.register(InventoryHistoryIcon)
 
 
-def verify_permission(host_name: HostName, site: SiteId | None) -> None:
+def verify_permission(site_id: SiteId | None, host_name: HostName) -> None:
     if user.may("general.see_all"):
         return
 
@@ -102,8 +108,8 @@ def verify_permission(host_name: HostName, site: SiteId | None) -> None:
         "\nAuthUser: %s" % livestatus.lqencode(user.id) if user.id else "",
     )
 
-    if site:
-        sites.live().set_only_sites([site])
+    if site_id:
+        sites.live().set_only_sites([site_id])
 
     try:
         result = sites.live().query_summed_stats(query, "ColumnHeaders: off\n")
@@ -113,17 +119,17 @@ def verify_permission(host_name: HostName, site: SiteId | None) -> None:
             % host_name
         )
     finally:
-        if site:
+        if site_id:
             sites.live().set_only_sites()
 
     if result[0] == 0:
         raise MKAuthException(_("You are not allowed to access the host %s.") % host_name)
 
 
-def get_status_data_via_livestatus(site: SiteId | None, hostname: HostName) -> Row:
+def get_raw_status_data_via_livestatus(site: SiteId | None, host_name: HostName) -> bytes:
     query = (
         "GET hosts\nColumns: host_structured_status\nFilter: host_name = %s\n"
-        % livestatus.lqencode(hostname)
+        % livestatus.lqencode(host_name)
     )
     try:
         sites.live().set_only_sites([site] if site else None)
@@ -131,10 +137,9 @@ def get_status_data_via_livestatus(site: SiteId | None, hostname: HostName) -> R
     finally:
         sites.live().set_only_sites()
 
-    row = {"host_name": hostname}
     if result and result[0]:
-        row["host_structured_status"] = result[0][0]
-    return row
+        return result[0][0]
+    return b""
 
 
 # .
@@ -172,17 +177,15 @@ class _HostInvAPIResponse(TypedDict):
     result: str | Mapping[str, SDRawTree]
 
 
-def _inventory_of_host(host_name: HostName, api_request: dict[str, Any]) -> SDRawTree:
-    raw_site = api_request.get("site")
-    site = SiteId(raw_site) if raw_site is not None else None
-    verify_permission(host_name, site)
-
-    tree = load_filtered_and_merged_tree(get_status_data_via_livestatus(site, host_name))
-    if "paths" in api_request:
-        return serialize_tree(
-            tree.filter(make_filter_choices_from_api_request_paths(api_request["paths"]))
-        )
-    return serialize_tree(tree)
+def _inventory_of_host(
+    site_id: SiteId | None, host_name: HostName, filters: Sequence[SDFilterChoice]
+) -> ImmutableTree:
+    verify_permission(site_id, host_name)
+    tree = load_tree(
+        host_name=host_name,
+        raw_status_data_tree=get_raw_status_data_via_livestatus(site_id, host_name),
+    )
+    return tree.filter(filters) if filters else tree
 
 
 def _write_json(resp):
@@ -208,9 +211,19 @@ def page_host_inv_api() -> None:
             hosts = [host_name]
 
         result: dict[str, SDRawTree] = {}
-        for a_host_name in hosts:
-            _check_for_valid_hostname(a_host_name)
-            result[a_host_name] = _inventory_of_host(a_host_name, api_request)
+        for raw_host_name in hosts:
+            _check_for_valid_hostname(raw_host_name)
+            result[raw_host_name] = serialize_tree(
+                _inventory_of_host(
+                    SiteId(raw_site_id) if (raw_site_id := api_request.get("site")) else None,
+                    HostName(raw_host_name),
+                    (
+                        make_filter_choices_from_api_request_paths(api_request["paths"])
+                        if "paths" in api_request
+                        else []
+                    ),
+                )
+            )
 
         resp = {"result_code": 0, "result": result}
 
@@ -231,64 +244,59 @@ def page_host_inv_api() -> None:
 
 
 class InventoryHousekeeping:
-    def __init__(self) -> None:
+    def __init__(self, omd_root: Path) -> None:
         super().__init__()
-        self._inventory_path = Path(cmk.utils.paths.inventory_output_dir)
-        self._inventory_archive_path = Path(cmk.utils.paths.inventory_archive_dir)
-        self._inventory_delta_cache_path = Path(cmk.utils.paths.inventory_delta_cache_dir)
+        self.inv_paths = InventoryPaths(omd_root)
 
-    def run(self):
-        if (
-            not self._inventory_delta_cache_path.exists()
-            or not self._inventory_archive_path.exists()
-        ):
+    def __call__(self) -> None:
+        if not (self.inv_paths.delta_cache_dir.exists() and self.inv_paths.archive_dir.exists()):
             return
 
         inventory_archive_hosts = {
-            x.name for x in self._inventory_archive_path.iterdir() if x.is_dir()
+            x.name for x in self.inv_paths.archive_dir.iterdir() if x.is_dir()
         }
         inventory_delta_cache_hosts = {
-            x.name for x in self._inventory_delta_cache_path.iterdir() if x.is_dir()
+            x.name for x in self.inv_paths.delta_cache_dir.iterdir() if x.is_dir()
         }
 
         folders_to_delete = inventory_delta_cache_hosts - inventory_archive_hosts
         for foldername in folders_to_delete:
-            shutil.rmtree(str(self._inventory_delta_cache_path / foldername))
+            shutil.rmtree(str(self.inv_paths.delta_cache_host(HostName(foldername))))
 
         inventory_delta_cache_hosts -= folders_to_delete
-        for hostname in inventory_delta_cache_hosts:
-            available_timestamps = self._get_timestamps_for_host(hostname)
-            for filename in [
-                x.name
-                for x in (self._inventory_delta_cache_path / hostname).iterdir()
-                if not x.is_dir()
+        for raw_host_name in inventory_delta_cache_hosts:
+            host_name = HostName(raw_host_name)
+            available_timestamps = self._get_timestamps_for_host(host_name)
+            for file_path in [
+                x for x in self.inv_paths.delta_cache_host(host_name).iterdir() if not x.is_dir()
             ]:
                 delete = False
                 try:
-                    first, second = filename.split("_")
-                    if first not in available_timestamps or second not in available_timestamps:
+                    first, second = file_path.with_suffix("").name.split("_")
+                    if not (first in available_timestamps and second in available_timestamps):
                         delete = True
                 except ValueError:
                     delete = True
                 if delete:
-                    (self._inventory_delta_cache_path / hostname / filename).unlink()
+                    file_path.unlink()
 
-    def _get_timestamps_for_host(self, hostname):
+    def _get_timestamps_for_host(self, host_name: HostName) -> set[str]:
         timestamps = {"None"}  # 'None' refers to the histories start
+        tree_path = self.inv_paths.inventory_tree(host_name)
         try:
-            timestamps.add("%d" % (self._inventory_path / hostname).stat().st_mtime)
-        except OSError:
-            pass
+            timestamps.add(str(int(tree_path.stat().st_mtime)))
+        except FileNotFoundError:
+            # TODO CMK-23408
+            try:
+                timestamps.add(str(int(tree_path.legacy.stat().st_mtime)))
+            except FileNotFoundError:
+                pass
 
         for filename in [
-            x for x in (self._inventory_archive_path / hostname).iterdir() if not x.is_dir()
+            x for x in self.inv_paths.archive_host(host_name).iterdir() if not x.is_dir()
         ]:
-            timestamps.add(filename.name)
+            timestamps.add(filename.with_suffix("").name)
         return timestamps
-
-
-def execute_inventory_housekeeping_job() -> None:
-    cmk.gui.inventory.InventoryHousekeeping().run()
 
 
 class VisualInfoInventoryHistory(VisualInfo):

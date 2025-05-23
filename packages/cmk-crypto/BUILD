@@ -24,12 +24,14 @@ py_library(
         "cmk/crypto/secrets.py",
         "cmk/crypto/symmetric.py",
         "cmk/crypto/totp.py",
+        "cmk/crypto/x509.py",
     ],
     imports = ["."],
     visibility = ["//cmk:__pkg__"],
     deps = [
         requirement("bcrypt"),
         requirement("cryptography"),
+        requirement("pyasn1"),
         requirement("python-dateutil"),
     ],
 )
@@ -73,7 +75,7 @@ py_wheel(
     distribution = "cmk-crypto",
     strip_path_prefixes = ["packages/cmk-crypto"],
     # TODO: Duplicated from pyproject.toml
-    version = "1.0.0",
+    version = "1.1.0",
     deps = [":cmk-crypto"],
 )
 

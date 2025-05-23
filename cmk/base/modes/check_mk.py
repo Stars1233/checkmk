@@ -22,6 +22,7 @@ import cmk.ccc.debug
 import cmk.ccc.version as cmk_version
 from cmk.ccc import store
 from cmk.ccc.exceptions import MKBailOut, MKGeneralException, MKTimeout, OnError
+from cmk.ccc.hostaddress import HostAddress, HostName, Hosts
 
 import cmk.utils.cleanup
 import cmk.utils.password_store
@@ -41,18 +42,17 @@ from cmk.utils.diagnostics import (
     OPT_PERFORMANCE_GRAPHS,
 )
 from cmk.utils.everythingtype import EVERYTHING
-from cmk.utils.hostaddress import HostAddress, HostName, Hosts
 from cmk.utils.log import console, section
 from cmk.utils.paths import configuration_lockfile
 from cmk.utils.rulesets.tuple_rulesets import hosttags_match_taglist
 from cmk.utils.sectionname import SectionMap, SectionName
 from cmk.utils.structured_data import (
     ImmutableTree,
+    InventoryPaths,
+    InventoryStore,
     make_meta,
     MutableTree,
     RawIntervalFromConfig,
-    TreeOrArchiveStore,
-    TreeStore,
     UpdateResult,
 )
 from cmk.utils.tags import TagID
@@ -613,12 +613,13 @@ def mode_dump_agent(options: Mapping[str, object], hostname: HostName) -> None:
         raise MKBailOut("Unknown SNMP backend") from exc
 
     plugins = load_checks()
-    config_cache = load_config(plugins).config_cache
+    loading_result = load_config(plugins)
+    config_cache = loading_result.config_cache
     service_name_config = config_cache.make_passive_service_name_config()
     try:
         config_cache.ruleset_matcher.ruleset_optimizer.set_all_processed_hosts({hostname})
 
-        hosts_config = config.make_hosts_config()
+        hosts_config = config.make_hosts_config(loading_result.loaded_config)
         if hostname in hosts_config.clusters:
             raise MKBailOut("Can not be used with cluster hosts")
 
@@ -632,8 +633,8 @@ def mode_dump_agent(options: Mapping[str, object], hostname: HostName) -> None:
         stored_walk_path = Path(cmk.utils.paths.snmpwalks_dir)
         walk_cache_path = Path(cmk.utils.paths.var_dir) / "snmp_cache"
         section_cache_path = Path(cmk.utils.paths.var_dir)
-        file_cache_path = Path(cmk.utils.paths.data_source_cache_dir)
-        tcp_cache_path = Path(cmk.utils.paths.tcp_cache_dir)
+        file_cache_path = cmk.utils.paths.data_source_cache_dir
+        tcp_cache_path = cmk.utils.paths.tcp_cache_dir
         tls_config = TLSConfig(
             cas_dir=Path(cmk.utils.paths.agent_cas_dir),
             ca_store=Path(cmk.utils.paths.agent_cert_store),
@@ -642,7 +643,7 @@ def mode_dump_agent(options: Mapping[str, object], hostname: HostName) -> None:
         snmp_scan_config = SNMPScanConfig(
             on_error=OnError.RAISE,
             missing_sys_description=config_cache.missing_sys_description(hostname),
-            oid_cache_dir=Path(cmk.utils.paths.snmp_scan_cache_dir),
+            oid_cache_dir=cmk.utils.paths.snmp_scan_cache_dir,
         )
 
         output = []
@@ -1264,7 +1265,7 @@ def mode_flush(hosts: list[HostName]) -> None:
 
         # counters
         try:
-            os.remove(cmk.utils.paths.counters_dir + "/" + host)
+            (cmk.utils.paths.counters_dir / host).unlink()
             print_(tty.bold + tty.blue + " counters")
             flushed = True
         except OSError:
@@ -1277,7 +1278,7 @@ def mode_flush(hosts: list[HostName]) -> None:
             for f in os.listdir(cache_dir):
                 if f == host or f.startswith(host + "."):
                     try:
-                        os.remove(cache_dir + "/" + f)
+                        (cache_dir / f).unlink()
                         d += 1
                         flushed = True
                     except OSError:
@@ -1448,6 +1449,7 @@ def mode_update() -> None:
         with cmk.base.core.activation_lock(mode=config.restart_locking):
             do_create_config(
                 core=create_core(config.monitoring_core),
+                hosts_config=hosts_config,
                 config_cache=loading_result.config_cache,
                 service_name_config=loading_result.config_cache.make_passive_service_name_config(),
                 plugins=plugins,
@@ -1508,6 +1510,7 @@ def mode_restart(args: Sequence[HostName]) -> None:
     )
     cmk.base.core.do_restart(
         loading_result.config_cache,
+        hosts_config,
         loading_result.config_cache.make_passive_service_name_config(),
         ip_address_of,
         create_core(config.monitoring_core),
@@ -1564,6 +1567,7 @@ def mode_reload(args: Sequence[HostName]) -> None:
     )
     cmk.base.core.do_reload(
         loading_result.config_cache,
+        hosts_config,
         loading_result.config_cache.make_passive_service_name_config(),
         ip_address_of,
         create_core(config.monitoring_core),
@@ -2151,7 +2155,7 @@ def mode_discover(options: _DiscoveryOptions, args: list[str]) -> None:
         loading_result.config_cache.label_manager.labels_of_host,
         loading_result.loaded_config.discovery_rules,
     )
-    hosts_config = config.make_hosts_config()
+    hosts_config = config.make_hosts_config(loading_result.loaded_config)
     service_name_config = config_cache.make_passive_service_name_config()
 
     hostnames = modes.parse_hostname_list(config_cache, hosts_config, args)
@@ -2229,7 +2233,7 @@ def mode_discover(options: _DiscoveryOptions, args: list[str]) -> None:
 
         commandline_discovery(
             hostname,
-            ruleset_matcher=config_cache.ruleset_matcher,
+            clear_ruleset_matcher_caches=(config_cache.ruleset_matcher.clear_caches),
             parser=parser,
             fetcher=fetcher,
             section_plugins=SectionPluginMapper(
@@ -2324,12 +2328,11 @@ _CheckingOptions = TypedDict(
 
 def mode_check(options: _CheckingOptions, args: list[str]) -> ServiceState:
     plugins = load_checks()
-    config_cache = load_config(plugins).config_cache
-    hosts_config = config.make_hosts_config()
+    loading_result = load_config(plugins)
     return run_checking(
         plugins,
-        config_cache,
-        hosts_config,
+        loading_result.config_cache,
+        config.make_hosts_config(loading_result.loaded_config),
         options,
         args,
         password_store_file=cmk.utils.password_store.pending_password_store_path(),
@@ -2416,7 +2419,7 @@ def run_checking(
         error_handler,
         set_value_store_manager(
             ValueStoreManager(
-                hostname, AllValueStoresStore(Path(cmk.utils.paths.counters_dir, hostname))
+                hostname, AllValueStoresStore(cmk.utils.paths.counters_dir / hostname)
             ),
             store_changes=not dry_run,
         ) as value_store_manager,
@@ -2565,8 +2568,9 @@ def mode_inventory(options: _InventoryOptions, args: list[str]) -> None:
         raise MKBailOut("Unknown SNMP backend") from exc
 
     plugins = load_checks()
-    config_cache = load_config(plugins).config_cache
-    hosts_config = config.make_hosts_config()
+    loading_result = load_config(plugins)
+    config_cache = loading_result.config_cache
+    hosts_config = config.make_hosts_config(loading_result.loaded_config)
     service_name_config = config_cache.make_passive_service_name_config()
 
     if args:
@@ -2620,13 +2624,10 @@ def mode_inventory(options: _InventoryOptions, args: list[str]) -> None:
         logger=logging.getLogger("cmk.base.inventory"),
     )
 
-    store.makedirs(cmk.utils.paths.inventory_output_dir)
-    store.makedirs(cmk.utils.paths.inventory_archive_dir)
-
     section_plugins = SectionPluginMapper({**plugins.agent_sections, **plugins.snmp_sections})
     inventory_plugins = plugins.inventory_plugins
 
-    tree_store = TreeStore(Path(cmk.utils.paths.inventory_output_dir))
+    inv_store = InventoryStore(cmk.utils.paths.omd_root)
 
     for hostname in hostnames:
 
@@ -2654,7 +2655,7 @@ def mode_inventory(options: _InventoryOptions, args: list[str]) -> None:
         section.section_begin(hostname)
         section.section_step("Inventorizing")
         try:
-            previous_tree = tree_store.load(host_name=hostname)
+            previous_tree = inv_store.load_inventory_tree(host_name=hostname)
             if hostname in hosts_config.clusters:
                 check_results = inventory.inventorize_cluster(
                     config_cache.nodes(hostname),
@@ -2735,11 +2736,8 @@ def execute_active_check_inventory(
     parameters: HWSWInventoryParameters,
     raw_intervals_from_config: Sequence[RawIntervalFromConfig],
 ) -> Sequence[ActiveCheckResult]:
-    tree_or_archive_store = TreeOrArchiveStore(
-        Path(cmk.utils.paths.inventory_output_dir),
-        Path(cmk.utils.paths.inventory_archive_dir),
-    )
-    previous_tree = tree_or_archive_store.load_previous(host_name=host_name)
+    inv_store = InventoryStore(cmk.utils.paths.omd_root)
+    previous_tree = inv_store.load_previous_inventory_tree(host_name=host_name)
 
     if host_name in hosts_config.clusters:
         result = inventory.inventorize_cluster(
@@ -2769,10 +2767,11 @@ def execute_active_check_inventory(
             previous_tree=previous_tree,
         )
 
+    inv_paths = InventoryPaths(cmk.utils.paths.omd_root)
     if result.no_data_or_files:
-        AutoQueue(cmk.utils.paths.autoinventory_dir).add(host_name)
+        AutoQueue(inv_paths.auto_dir).add(host_name)
     else:
-        (AutoQueue(cmk.utils.paths.autoinventory_dir).path / str(host_name)).unlink(missing_ok=True)
+        (AutoQueue(inv_paths.auto_dir).path / str(host_name)).unlink(missing_ok=True)
 
     if not (result.processing_failed or result.no_data_or_files):
         save_tree_actions = _get_save_tree_actions(
@@ -2783,10 +2782,10 @@ def execute_active_check_inventory(
         # The order of archive or save is important:
         if save_tree_actions.do_archive:
             console.verbose("Archive current inventory tree.")
-            tree_or_archive_store.archive(host_name=host_name)
+            inv_store.archive_inventory_tree(host_name=host_name)
         if save_tree_actions.do_save:
             console.verbose("Save new inventory tree.")
-            tree_or_archive_store.save(
+            inv_store.save_inventory_tree(
                 host_name=host_name,
                 tree=result.inventory_tree,
                 meta=make_meta(do_archive=save_tree_actions.do_archive),
@@ -2834,7 +2833,7 @@ def mode_inventorize_marked_hosts(options: Mapping[str, object]) -> None:
     except ValueError as exc:
         raise MKBailOut("Unknown SNMP backend") from exc
 
-    if not (queue := AutoQueue(cmk.utils.paths.autoinventory_dir)):
+    if not (queue := AutoQueue(InventoryPaths(cmk.utils.paths.omd_root).auto_dir)):
         console.verbose("Autoinventory: No hosts marked by inventory check")
         return
 

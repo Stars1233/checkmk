@@ -25,13 +25,13 @@ from typing import assert_never
 import cmk.ccc.debug
 from cmk.ccc import store
 from cmk.ccc.exceptions import MKIPAddressLookupError
+from cmk.ccc.hostaddress import HostAddress, HostName
 
 import cmk.utils.config_path
 import cmk.utils.password_store
 import cmk.utils.paths
 from cmk.utils import tty
 from cmk.utils.config_path import VersionedConfigPath
-from cmk.utils.hostaddress import HostAddress, HostName
 from cmk.utils.ip_lookup import IPStackConfig
 from cmk.utils.log import console
 from cmk.utils.rulesets import RuleSetName
@@ -96,8 +96,7 @@ class HostCheckStore:
         compiled_filename = self.host_check_file_path(config_path, hostname)
         source_filename = self.host_check_source_file_path(config_path, hostname)
 
-        store.makedirs(compiled_filename.parent)
-
+        compiled_filename.parent.mkdir(mode=0o770, exist_ok=True, parents=True)
         store.save_text_to_file(source_filename, host_check)
 
         # compile python (either now or delayed - see host_check code for delay_precompile handling)

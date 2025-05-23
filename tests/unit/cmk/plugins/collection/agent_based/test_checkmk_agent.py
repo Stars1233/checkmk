@@ -5,7 +5,7 @@
 
 import json
 from collections.abc import Iterable, Mapping
-from datetime import datetime, timezone
+from datetime import datetime, UTC
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -324,6 +324,49 @@ def test_check_no_check_yet_pydantic() -> None:
         Result(state=State.WARN, summary="No successful connect to server yet"),
         Result(state=State.OK, notice="Update URL: foo"),
     ]
+
+
+@pytest.mark.parametrize(
+    "cmk_hostname,agent_updater_hostname,expected_result",
+    (
+        (
+            "some_hostname",
+            "some_hostname",
+            [Result(state=State.OK, notice="Hostname used by cmk-update-agent: some_hostname")],
+        ),
+        (
+            "some_other_hostname",
+            "some_hostname",
+            [
+                Result(state=State.OK, notice="Hostname used by cmk-update-agent: some_hostname"),
+                Result(
+                    state=State.CRIT,
+                    notice="Hostname defined in Checkmk (some_other_hostname) and cmk-update-agent configuration (some_hostname) do not match",
+                ),
+            ],
+        ),
+    ),
+)
+def test_check_cmk_agent_update(
+    cmk_hostname: str,
+    agent_updater_hostname: str,
+    expected_result: list[Result],
+) -> None:
+    assert [
+        *_check_cmk_agent_update(
+            {"host_name": cmk_hostname},
+            None,
+            CMKAgentUpdateSection(
+                aghash=None,
+                last_update=None,
+                pending_hash=None,
+                update_url=None,
+                last_check=None,
+                error=None,
+                host_name=agent_updater_hostname,
+            ),
+        )
+    ] == [Result(state=State.WARN, summary="No successful connect to server yet"), *expected_result]
 
 
 @pytest.mark.parametrize(
@@ -1049,7 +1092,7 @@ def test_check_plugins(
                         site_id="localhost/heute",
                         local=LocalConnectionStatus(
                             cert_info=CertInfoController(
-                                to=datetime(2028, 1, 24, 15, 20, 54, tzinfo=timezone.utc),
+                                to=datetime(2028, 1, 24, 15, 20, 54, tzinfo=UTC),
                                 issuer="Site 'heute' local CA",
                             )
                         ),
@@ -1074,7 +1117,7 @@ def test_check_plugins(
                         site_id="localhost/heute",
                         local=LocalConnectionStatus(
                             cert_info=CertInfoController(
-                                to=datetime(2023, 2, 14, 15, 20, 54, tzinfo=timezone.utc),
+                                to=datetime(2023, 2, 14, 15, 20, 54, tzinfo=UTC),
                                 issuer="Site 'heute' local CA",
                             )
                         ),
@@ -1099,7 +1142,7 @@ def test_check_plugins(
                         site_id="localhost/heute",
                         local=LocalConnectionStatus(
                             cert_info=CertInfoController(
-                                to=datetime(2023, 2, 1, 15, 20, 54, tzinfo=timezone.utc),
+                                to=datetime(2023, 2, 1, 15, 20, 54, tzinfo=UTC),
                                 issuer="Site 'heute' local CA",
                             )
                         ),
@@ -1125,7 +1168,7 @@ def test_check_plugins(
                         coordinates="localhost:8000/heute",
                         local=LocalConnectionStatus(
                             cert_info=CertInfoController(
-                                to=datetime(3021, 5, 27, 15, 20, 40, tzinfo=timezone.utc),
+                                to=datetime(3021, 5, 27, 15, 20, 40, tzinfo=UTC),
                                 issuer="Site 'heute' local CA",
                             )
                         ),
@@ -1151,7 +1194,7 @@ def test_check_plugins(
                         coordinates=None,
                         local=LocalConnectionStatus(
                             cert_info=CertInfoController(
-                                to=datetime(2028, 1, 24, 15, 20, 54, tzinfo=timezone.utc),
+                                to=datetime(2028, 1, 24, 15, 20, 54, tzinfo=UTC),
                                 issuer="Site 'heute' local CA",
                             )
                         ),

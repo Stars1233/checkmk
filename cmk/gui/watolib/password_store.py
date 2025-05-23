@@ -5,7 +5,6 @@
 
 import subprocess
 from collections.abc import Mapping
-from pathlib import Path
 
 from cmk.ccc import store
 
@@ -24,7 +23,7 @@ from cmk.gui.watolib.utils import wato_root_dir
 class PasswordStore(WatoSimpleConfigFile[Password]):
     def __init__(self) -> None:
         super().__init__(
-            config_file_path=Path(wato_root_dir()) / "passwords.mk",
+            config_file_path=wato_root_dir() / "passwords.mk",
             config_variable="stored_passwords",
             spec_class=Password,
         )
@@ -65,12 +64,12 @@ class PasswordStore(WatoSimpleConfigFile[Password]):
         )
         return cfg
 
-    def save(self, cfg: Mapping[str, Password]) -> None:
+    def save(self, cfg: Mapping[str, Password], pprint_value: bool) -> None:
         """The actual passwords are stored in a separate file for special treatment
 
         Have a look at `cmk.utils.password_store` for further information"""
         meta_data, passwords = split_password_specs(cfg)
-        super().save(meta_data)
+        super().save(meta_data, pprint_value)
         password_store.save(passwords, password_store.password_store_path())
         update_passwords_merged_file()
 

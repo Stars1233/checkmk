@@ -62,6 +62,7 @@ def main() {
                     /// we should define dependency paths for build-cmk-distro-package
                     CUSTOM_GIT_REF: effective_git_ref,
                     VERSION: version,
+                    EDITION: edition,
                     DISABLE_CACHE: disable_cache,
                 ],
                 build_params_no_check: [
@@ -105,8 +106,6 @@ def main() {
                 error("Found no source package path matching ${checkout_dir}/check-mk-${edition}-${cmk_version}.c?e*.tar.gz")
             }
         }();
-
-        print("source_package_name: ${source_package_name}");
 
         stage("Test source package") {
             sh("""

@@ -7,10 +7,10 @@ import json
 from collections.abc import Mapping, Sequence
 
 from cmk.ccc.exceptions import MKGeneralException
+from cmk.ccc.hostaddress import HostName
 from cmk.ccc.site import SiteId
 
 from cmk.utils.agent_registration import get_uuid_link_manager
-from cmk.utils.hostaddress import HostName
 
 from cmk.gui.config import active_config
 from cmk.gui.http import request
@@ -20,7 +20,9 @@ from cmk.gui.watolib.automation_commands import AutomationCommand
 from cmk.gui.watolib.automations import do_remote_automation
 
 
-def remove_tls_registration(hosts_by_site: Mapping[SiteId, Sequence[HostName]]) -> None:
+def remove_tls_registration(
+    hosts_by_site: Mapping[SiteId, Sequence[HostName]], *, debug: bool
+) -> None:
     for site_id, host_names in hosts_by_site.items():
         if not host_names:
             continue
@@ -33,6 +35,7 @@ def remove_tls_registration(hosts_by_site: Mapping[SiteId, Sequence[HostName]]) 
             get_site_config(active_config, site_id),
             "remove-tls-registration",
             [("host_names", json.dumps(host_names))],
+            debug=debug,
         )
 
 

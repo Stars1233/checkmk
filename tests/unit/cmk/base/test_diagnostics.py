@@ -3,12 +3,12 @@
 # This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
 # conditions defined in the file COPYING, which is part of this source code package.
 
-
 import csv
 import json
 import os
 import shutil
 import uuid
+from collections.abc import Callable, Sequence
 from pathlib import Path, PurePath
 from typing import NamedTuple
 from unittest.mock import mock_open, patch
@@ -20,7 +20,15 @@ from tests.unit.cmk.base.emptyconfig import EMPTYCONFIG
 
 import livestatus
 
+from cmk.ccc.hostaddress import HostName
+
 import cmk.utils.paths
+from cmk.utils.structured_data import (
+    deserialize_tree,
+    InventoryStore,
+    make_meta,
+    SDRawTree,
+)
 
 from cmk.base import diagnostics
 
@@ -522,8 +530,10 @@ CONFIG_TMPFS='on'"""
     shutil.rmtree(str(etc_omd_dir))
 
 
-def test_diagnostics_element_checkmk_overview() -> None:
-    diagnostics_element = diagnostics.CheckmkOverviewDiagnosticsElement("")
+def test_diagnostics_element_checkmk_overview(tmp_path: Path) -> None:
+    diagnostics_element = diagnostics.CheckmkOverviewDiagnosticsElement(
+        InventoryStore(tmp_path), ""
+    )
     assert diagnostics_element.ident == "checkmk_overview"
     assert diagnostics_element.title == "Checkmk Overview of Checkmk Server"
     assert diagnostics_element.description == (
@@ -536,7 +546,7 @@ def test_diagnostics_element_checkmk_overview() -> None:
 
 
 @pytest.mark.parametrize(
-    "host_list, host_tree, error",
+    "host_list, raw_tree, error",
     [
         ([], None, "No Checkmk server found"),
         ([["checkmk-server-name"]], None, "No HW/SW Inventory tree of 'checkmk-server-name' found"),
@@ -554,19 +564,25 @@ def test_diagnostics_element_checkmk_overview() -> None:
     ],
 )
 def test_diagnostics_element_checkmk_overview_error(
-    monkeypatch, tmp_path, _fake_local_connection, host_list, host_tree, error
-):
-    diagnostics_element = diagnostics.CheckmkOverviewDiagnosticsElement("")
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    _fake_local_connection: Callable,
+    host_list: Sequence[Sequence[str]],
+    raw_tree: SDRawTree | None,
+    error: str,
+) -> None:
+    inv_store = InventoryStore(tmp_path)
+    diagnostics_element = diagnostics.CheckmkOverviewDiagnosticsElement(inv_store, "")
 
     monkeypatch.setattr(livestatus, "LocalConnection", _fake_local_connection(host_list))
 
-    inventory_dir = Path(cmk.utils.paths.inventory_output_dir)
-
-    if host_tree:
+    if raw_tree:
         # Fake HW/SW Inventory tree
-        inventory_dir.mkdir(parents=True, exist_ok=True)
-        with inventory_dir.joinpath("checkmk-server-name").open("w") as f:
-            f.write(repr(host_tree))
+        inv_store.save_inventory_tree(
+            host_name=HostName("checkmk-server-name"),
+            tree=deserialize_tree(raw_tree),
+            meta=make_meta(do_archive=False),
+        )
 
     tmppath = Path(tmp_path).joinpath("tmp")
 
@@ -574,12 +590,9 @@ def test_diagnostics_element_checkmk_overview_error(
         next(diagnostics_element.add_or_get_files(tmppath))
         assert error == str(e)
 
-    if host_tree:
-        shutil.rmtree(str(inventory_dir))
-
 
 @pytest.mark.parametrize(
-    "host_list, host_tree",
+    "host_list, raw_tree",
     [
         (
             [["checkmk-server-name"]],
@@ -624,19 +637,23 @@ def test_diagnostics_element_checkmk_overview_error(
     ],
 )
 def test_diagnostics_element_checkmk_overview_content(
-    monkeypatch, tmp_path, _fake_local_connection, host_list, host_tree
-):
-    diagnostics_element = diagnostics.CheckmkOverviewDiagnosticsElement("")
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    _fake_local_connection: Callable,
+    host_list: Sequence[Sequence[str]],
+    raw_tree: SDRawTree,
+) -> None:
+    inv_store = InventoryStore(tmp_path)
+    diagnostics_element = diagnostics.CheckmkOverviewDiagnosticsElement(inv_store, "")
 
     monkeypatch.setattr(livestatus, "LocalConnection", _fake_local_connection(host_list))
 
-    inventory_dir = Path(cmk.utils.paths.inventory_output_dir)
-
-    if host_tree:
-        # Fake HW/SW Inventory tree
-        inventory_dir.mkdir(parents=True, exist_ok=True)
-        with inventory_dir.joinpath("checkmk-server-name").open("w") as f:
-            f.write(repr(host_tree))
+    # Fake HW/SW Inventory tree
+    inv_store.save_inventory_tree(
+        host_name=HostName("checkmk-server-name"),
+        tree=deserialize_tree(raw_tree),
+        meta=make_meta(do_archive=False),
+    )
 
     tmppath = Path(tmp_path).joinpath("tmp")
     filepath = next(diagnostics_element.add_or_get_files(tmppath))
@@ -677,8 +694,6 @@ def test_diagnostics_element_checkmk_overview_content(
         },
     ]:
         assert row in rows
-
-    shutil.rmtree(str(inventory_dir))
 
 
 @pytest.mark.parametrize(

@@ -16,9 +16,9 @@ from typing import Any, Final, TypedDict
 import cmk.ccc.plugin_registry
 from cmk.ccc import store
 from cmk.ccc.exceptions import MKGeneralException
+from cmk.ccc.hostaddress import HostName
 
 from cmk.utils.config_warnings import ConfigurationWarnings
-from cmk.utils.hostaddress import HostName
 
 from cmk.gui.hooks import request_memoize
 from cmk.gui.i18n import _
@@ -93,7 +93,7 @@ class ABCConfigDomain(abc.ABC):
         return _get_all_default_globals()
 
     @abc.abstractmethod
-    def config_dir(self) -> str:
+    def config_dir(self) -> Path:
         raise NotImplementedError()
 
     def config_file(self, site_specific: bool) -> str:
@@ -146,7 +146,7 @@ class ABCConfigDomain(abc.ABC):
         for varname, value in settings.items():
             output += f"{varname} = {pprint.pformat(value)}\n"
 
-        store.makedirs(os.path.dirname(filename))
+        Path(filename).parent.mkdir(mode=0o770, exist_ok=True, parents=True)
         store.save_text_to_file(filename, output)
 
     def save_site_globals(

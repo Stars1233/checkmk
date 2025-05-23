@@ -11,12 +11,12 @@ from pathlib import Path
 from typing import Literal
 
 from cmk.ccc.exceptions import OnError
+from cmk.ccc.hostaddress import HostAddress, HostName, Hosts
 
 import cmk.utils.password_store
 import cmk.utils.paths
 import cmk.utils.render
 from cmk.utils import ip_lookup, tty
-from cmk.utils.hostaddress import HostAddress, HostName, Hosts
 from cmk.utils.ip_lookup import IPStackConfig
 from cmk.utils.paths import tmp_dir
 from cmk.utils.tags import ComputedDataSources
@@ -82,7 +82,7 @@ def dump_source(source: Source) -> str:
         if snmp_config.snmp_version is SNMPVersion.V3:
             credentials_text = "Credentials: '%s'" % ", ".join(snmp_config.credentials)
         else:
-            credentials_text = "Community: %r" % snmp_config.credentials
+            credentials_text = f"Community: {snmp_config.credentials!r}"
 
         bulk = "yes" if snmp_config.use_bulkwalk else "no"
 
@@ -220,11 +220,11 @@ def dump_host(
         + "\n"
     )
 
-    oid_cache_dir = Path(cmk.utils.paths.snmp_scan_cache_dir)
+    oid_cache_dir = cmk.utils.paths.snmp_scan_cache_dir
     stored_walk_path = Path(cmk.utils.paths.snmpwalks_dir)
     walk_cache_path = Path(cmk.utils.paths.var_dir) / "snmp_cache"
-    file_cache_path = Path(cmk.utils.paths.data_source_cache_dir)
-    tcp_cache_path = Path(cmk.utils.paths.tcp_cache_dir)
+    file_cache_path = cmk.utils.paths.data_source_cache_dir
+    tcp_cache_path = cmk.utils.paths.tcp_cache_dir
     tls_config = TLSConfig(
         cas_dir=Path(cmk.utils.paths.agent_cas_dir),
         ca_store=Path(cmk.utils.paths.agent_cert_store),

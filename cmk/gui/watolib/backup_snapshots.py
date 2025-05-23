@@ -18,12 +18,11 @@ from hashlib import sha256
 from pathlib import Path
 from typing import IO, Literal, NotRequired, TypedDict, TypeVar
 
-from cmk.ccc import store
 from cmk.ccc.exceptions import MKGeneralException
+from cmk.ccc.user import UserId
 
 import cmk.utils
 import cmk.utils.paths
-from cmk.utils.user import UserId
 
 from cmk.gui.i18n import _
 from cmk.gui.log import logger
@@ -87,7 +86,7 @@ class SnapshotStatus(TypedDict):
 def create_snapshot_in_concurrent_thread(
     *,
     comment: str | None,
-    created_by: Literal[""] | UserId,
+    created_by: UserId | None,
     secret: bytes,
     max_snapshots: int,
     use_git: bool,
@@ -115,7 +114,7 @@ def create_snapshot_in_concurrent_thread(
 def create_snapshot(
     *,
     comment: str | None,
-    created_by: Literal[""] | UserId,
+    created_by: UserId | None,
     secret: bytes,
     max_snapshots: int,
     use_git: bool,
@@ -123,20 +122,20 @@ def create_snapshot(
 ) -> None:
     logger.debug("Start creating backup snapshot")
     start = time.time()
-    store.makedirs(snapshot_dir)
+    Path(snapshot_dir).mkdir(mode=0o770, exist_ok=True, parents=True)
 
     snapshot_name = "wato-snapshot-%s.tar" % time.strftime(
         "%Y-%m-%d-%H-%M-%S", time.localtime(time.time())
     )
 
     data: SnapshotData = {}
-    data["comment"] = _("Activated changes by %s.") % created_by
+    data["comment"] = _("Activated changes by %s.") % (created_by or "")
 
     if comment:
         data["comment"] += _("Comment: %s") % comment
 
     # with SuperUserContext the user.id is None; later this value will be encoded for tar
-    data["created_by"] = created_by
+    data["created_by"] = created_by or ""
     data["type"] = "automatic"
     data["snapshot_name"] = snapshot_name
 
@@ -144,8 +143,8 @@ def create_snapshot(
     _do_snapshot_maintenance(max_snapshots, debug)
 
     log_audit(
-        "snapshot-created",
-        "Created snapshot %s" % snapshot_name,
+        action="snapshot-created",
+        message="Created snapshot %s" % snapshot_name,
         use_git=use_git,
         user_id=created_by,
     )

@@ -10,17 +10,13 @@ import itertools
 import time
 from collections.abc import Callable, Container, Iterable, Iterator
 from functools import partial
-from typing import Any, cast, Literal, TypedDict
+from typing import Any, cast, Literal, override, TypedDict
 
-from cmk.ccc.version import __version__, Edition, Version
+from cmk.ccc.version import Edition
 
 from cmk.utils.man_pages import make_man_page_path_map
-from cmk.utils.werks.acknowledgement import (
-    is_acknowledged,
-    load_werk_entries,
-    sort_by_date,
-    unacknowledged_incompatible_werks,
-)
+from cmk.utils.werks import load_werk_entries
+from cmk.utils.werks.acknowledgement import is_acknowledged
 from cmk.utils.werks.acknowledgement import load_acknowledgements as werks_load_acknowledgements
 from cmk.utils.werks.acknowledgement import save_acknowledgements as werks_save_acknowledgements
 
@@ -89,6 +85,20 @@ def get_werk_by_id(werk_id: int) -> Werk:
     raise MKUserError("werk", _("This werk does not exist."))
 
 
+def sort_by_date(werks: Iterable[Werk]) -> list[Werk]:
+    return sorted(werks, key=lambda werk: werk.date, reverse=True)
+
+
+def unacknowledged_incompatible_werks() -> list[Werk]:
+    acknowledged_werk_ids = load_acknowledgements()
+    return sort_by_date(
+        werk
+        for werk in load_werk_entries()
+        if werk.compatible == Compatibility.NOT_COMPATIBLE
+        and not is_acknowledged(werk, acknowledged_werk_ids)
+    )
+
+
 class WerkTableOptions(TypedDict):
     date_range: tuple[int, int]
     compatibility: Literal["incomp_unack"]
@@ -124,6 +134,7 @@ class ChangeLogPage(Page):
     def _title(self) -> str:
         return _("Change log (Werks)")
 
+    @override
     def page(self) -> PageResult:
         breadcrumb = make_simple_page_breadcrumb(mega_menu_registry["help_links"], self._title())
 
@@ -490,7 +501,7 @@ def _werk_table_option_entries() -> list[tuple[_WerkTableOptionColumns, str, Val
                     TextInput(label=_("to:"), size=12),
                 ],
             ),
-            (Version.from_str(__version__).version_base, ""),
+            ("", ""),
         ),
         (
             "grouping",

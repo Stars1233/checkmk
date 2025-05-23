@@ -7,9 +7,8 @@ from collections.abc import Callable, Mapping
 from functools import partial
 from uuid import uuid4
 
+from cmk.ccc.hostaddress import HostName
 from cmk.ccc.site import omd_site, SiteId
-
-from cmk.utils.hostaddress import HostName
 
 from cmk.gui.i18n import _
 from cmk.gui.quick_setup.v0_unstable.definitions import (
@@ -35,10 +34,11 @@ from cmk.gui.quick_setup.v0_unstable.type_defs import (
     QuickSetupId,
 )
 from cmk.gui.watolib.check_mk_automations import diag_special_agent
-from cmk.gui.watolib.configuration_bundle_store import ConfigBundleStore
+from cmk.gui.watolib.configuration_bundle_store import ConfigBundleStore, is_locked_by_quick_setup
 from cmk.gui.watolib.hosts_and_folders import _normalize_folder_name, folder_tree, Host
+from cmk.gui.watolib.passwords import load_passwords
 
-from cmk.rulesets.v1.form_specs import Dictionary
+from cmk.rulesets.v1.form_specs import Dictionary, Password
 
 
 def validate_test_connection_custom_collect_params(
@@ -70,6 +70,47 @@ def validate_test_connection(
     )
 
 
+def validate_non_quick_setup_password(parameter_form: Dictionary) -> CallableValidator:
+    return partial(_validate_non_quick_setup_password, parameter_form)
+
+
+def _validate_non_quick_setup_password(
+    parameter_form: Dictionary,
+    _quick_setup_id: QuickSetupId,
+    all_stages_form_data: ParsedFormData,
+    _progress_logger: ProgressLogger,
+) -> GeneralStageErrors:
+    general_errors: GeneralStageErrors = []
+    possible_expected_password_keys = [
+        key
+        for key in parameter_form.elements.keys()
+        if isinstance(parameter_form.elements[key].parameter_form, Password)
+    ]
+
+    for form_data in all_stages_form_data.values():
+        if not isinstance(form_data, dict):
+            continue
+
+        for form_spec_id, form_spec_value in form_data.items():
+            if not (
+                form_spec_id in possible_expected_password_keys
+                and form_spec_value[0] == "cmk_postprocessed"
+                and form_spec_value[1] == "stored_password"
+            ):
+                continue
+
+            pw_from_store = load_passwords()[form_spec_value[2][0]]
+            if ("locked_by" in pw_from_store) and (
+                is_locked_by_quick_setup(pw_from_store["locked_by"])
+            ):
+                general_errors.append(
+                    f'Password with title "{pw_from_store["title"]}" is locked by a Quick '
+                    "Setup and cannot be used."
+                )
+
+    return general_errors
+
+
 def _validate_test_connection(
     rulespec_name: str,
     parameter_form: Dictionary,
@@ -92,19 +133,30 @@ def _validate_test_connection(
     output = diag_special_agent(
         SiteId(site_id) if site_id else omd_site(),
         _create_diag_special_agent_input(
-            rulespec_name=rulespec_name, host_name=host_name, passwords=passwords, params=params
+            rulespec_name=rulespec_name,
+            host_name=host_name,
+            passwords=passwords,
+            params=params,
         ),
     )
     progress_logger.update_progress_step_status("test_connection", StepStatus.COMPLETED)
     progress_logger.log_new_progress_step(
         "evaluate_connection_result", "Evaluate test connection result"
     )
+
     for result in output.results:
         if result.return_code != 0:
+            # Pass on either the first line of output for known connection test errors or the last
+            # line in all other cases
+            output_lines: list[str] = result.response.split("\n")
+            relevant_output = (
+                output_lines[0]
+                if output_lines[0].startswith("Agent exited with code 2: Connection failed")
+                else output_lines[-1]
+            )
             if error_message:
                 general_errors.append(error_message)
-            # Do not show long output
-            general_errors.append(result.response.split("\n")[-1])
+            general_errors.append(relevant_output)
     progress_logger.update_progress_step_status("evaluate_connection_result", StepStatus.COMPLETED)
     return general_errors
 

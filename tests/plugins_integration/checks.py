@@ -36,7 +36,6 @@ class CheckConfig:
         self,
         mode: CheckModes = CheckModes.DEFAULT,
         skip_cleanup: bool = False,
-        dump_types: list[str] | None = None,
         data_dir_integration: Path | None = None,
         dump_dir_integration: Path | None = None,
         response_dir_integration: Path | None = None,
@@ -44,7 +43,6 @@ class CheckConfig:
         dump_dir_siteless: Path | None = None,
         response_dir_siteless: str | None = None,
         diff_dir: Path | None = None,
-        host_names: list[str] | None = None,
         check_names: list[str] | None = None,
         api_services_cols: list[str] | None = None,
     ) -> None:
@@ -66,14 +64,8 @@ class CheckConfig:
         self.response_dir_siteless = response_dir_siteless or (self.data_dir_siteless / "responses")
 
         self.diff_dir = diff_dir or Path(os.getenv("DIFF_DIR", "/tmp"))
-        self.host_names = host_names or [
-            _.strip() for _ in str(os.getenv("HOST_NAMES", "")).split(",") if _.strip()
-        ]
         self.check_names = check_names or [
             _.strip() for _ in str(os.getenv("CHECK_NAMES", "")).split(",") if _.strip()
-        ]
-        self.dump_types = dump_types or [
-            _.strip() for _ in str(os.getenv("DUMP_TYPES", "agent,snmp")).split(",") if _.strip()
         ]
 
         # these SERVICES table columns will be returned via the get_host_services() openapi call
@@ -128,7 +120,6 @@ def get_host_names(
     site: Site | None = None, dump_dir: Path | None = None, piggyback: bool = False
 ) -> list[str]:
     """Return the list of agent/snmp hosts via filesystem or site.openapi."""
-    host_names = []
     dump_dir = (dump_dir or config.dump_dir_integration) / ("piggyback" if piggyback else "")
     if site:
         hosts = [_ for _ in site.openapi.hosts.get_all() if _.get("id") not in (None, "", site.id)]
@@ -165,18 +156,7 @@ def get_host_names(
                 logger.error('Could not access dump file "%s"!', dump_file_name)
             except UnicodeDecodeError:
                 logger.error('Could not decode dump file "%s"!', dump_file_name)
-    if not config.dump_types or "agent" in config.dump_types:
-        host_names += agent_host_names
-    if not config.dump_types or "snmp" in config.dump_types:
-        host_names += snmp_host_names
-    host_names = [
-        _
-        for _ in host_names
-        if not config.host_names
-        or _ in config.host_names
-        or any(re.fullmatch(pattern, _) for pattern in config.host_names)
-    ]
-    return host_names
+    return agent_host_names + snmp_host_names
 
 
 def read_disk_dump(host_name: str, piggyback: bool = False) -> str:
@@ -366,7 +346,7 @@ def setup_site(site: Site, dump_path: Path, dump_dirs: Sequence[Path] | None = N
                 == 0
             )
 
-    for dump_type in config.dump_types:
+    for dump_type in ["agent", "snmp"]:
         host_folder = f"/{dump_type}"
         if site.openapi.folders.get(host_folder):
             logger.info('Host folder "%s" already exists!', host_folder)
@@ -385,14 +365,28 @@ def setup_site(site: Site, dump_path: Path, dump_dirs: Sequence[Path] | None = N
 
 
 @contextmanager
-def setup_host(site: Site, host_name: str, skip_cleanup: bool = False) -> Iterator:
+def setup_host(
+    site: Site,
+    host_name: str,
+    skip_cleanup: bool = False,
+    management_board: bool = False,
+) -> Iterator:
     logger.info('Creating host "%s"...', host_name)
     host_attributes = {
         "ipaddress": "127.0.0.1",
         "tag_agent": ("no-agent" if "snmp" in host_name else "cmk-agent"),
     }
-    if "snmp" in host_name:
+
+    if management_board:
+        host_attributes.update(
+            {
+                "tag_agent": "no-agent",
+                "management_protocol": "snmp",
+            }
+        )
+    elif "snmp" in host_name:
         host_attributes["tag_snmp_ds"] = "snmp-v2"
+
     site.openapi.hosts.create(
         hostname=host_name,
         folder="/snmp" if "snmp" in host_name else "/agent",

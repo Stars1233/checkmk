@@ -26,17 +26,13 @@ include $(BUILD_BASE_DIR)/build-helper-files.make
 
 PACKAGES := \
     erlang \
-    libgsf \
     cpp-libs \
-    lcab \
     msitools \
     apache-omd \
-    xinetd \
     check_mk \
     nagios \
     monitoring-plugins \
     check-cert \
-    nrpe \
     omd \
     pnp4nagios \
     heirloom-mailx \

@@ -17,7 +17,8 @@ from pytest_mock import MockerFixture
 
 from tests.testlib.unit.base_configuration_scenario import Scenario
 
-from cmk.utils.hostaddress import HostName
+from cmk.ccc.hostaddress import HostName
+
 from cmk.utils.livestatus_helpers.testing import MockLiveStatusConnection
 from cmk.utils.paths import default_config_dir
 from cmk.utils.rulesets.ruleset_matcher import RuleSpec
@@ -64,7 +65,9 @@ TEST_HOSTS = [
 
 @pytest.fixture(name="setup_hosts")
 def fixture_setup_hosts() -> None:
-    folder_tree().root_folder().create_hosts([(hostname, {}, None) for hostname in TEST_HOSTS])
+    folder_tree().root_folder().create_hosts(
+        [(hostname, {}, None) for hostname in TEST_HOSTS], pprint_value=False
+    )
 
 
 @pytest.fixture(name="setup_rules")
@@ -124,7 +127,9 @@ def fixture_setup_rules() -> None:
         ),
     )
     (Path(default_config_dir) / "main.mk").touch()
-    FolderRulesets({"automatic_host_removal": ruleset}, folder=root_folder).save_folder()
+    FolderRulesets({"automatic_host_removal": ruleset}, folder=root_folder).save_folder(
+        pprint_value=False
+    )
 
 
 @pytest.fixture(name="setup_livestatus_mock")
