@@ -3,7 +3,7 @@
 # This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
 # conditions defined in the file COPYING, which is part of this source code package.
 
-import typing as t
+from collections.abc import Mapping
 
 from cmk.gui.i18n import _
 from cmk.gui.plugins.wato.utils import (
@@ -13,11 +13,11 @@ from cmk.gui.plugins.wato.utils import (
 )
 from cmk.gui.valuespec import CascadingDropdown, Dictionary, Integer, Percentage, Tuple, ValueSpec
 
-ParamsTuple = t.Tuple[float, float]  # absolute levels only  # version 1
+ParamsTuple = tuple[float, float]  # absolute levels only  # version 1
 ParamsDictValue = ParamsTuple
-ParamsDict = t.Mapping[str, ParamsDictValue]  # absolute and relative levels  # version 2
-ParamsDictOptionalValue = t.Union[str, t.Tuple[str, ParamsDictValue]]
-ParamsDictOptional = t.Mapping[str, ParamsDictOptionalValue]  # levels can be removed  # version 3
+ParamsDict = Mapping[str, ParamsDictValue]  # absolute and relative levels  # version 2
+ParamsDictOptionalValue = str | tuple[str, ParamsDictValue]
+ParamsDictOptional = Mapping[str, ParamsDictOptionalValue]  # levels can be removed  # version 3
 
 
 def _optional(title: str, valuespec: ValueSpec) -> CascadingDropdown:

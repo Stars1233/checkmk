@@ -8,7 +8,7 @@ import time
 from collections.abc import Iterable, Mapping, Sequence
 from fnmatch import fnmatch
 from pathlib import Path
-from typing import Literal
+from typing import Literal, override
 
 import cmk.ccc.version as cmk_version
 
@@ -99,10 +99,10 @@ from .registry import PainterRegistry
 def register(
     painter_option_registry: PainterOptionRegistry, painter_registry: PainterRegistry
 ) -> None:
-    painter_option_registry.register(PainterOptionTimestampFormat)
-    painter_option_registry.register(PainterOptionTimestampDate)
-    painter_option_registry.register(PainterOptionMatrixOmitUniform)
-    painter_option_registry.register(PainterOptionShowInternalGraphAndMetricIds)
+    painter_option_registry.register(PainterOptionTimestampFormat())
+    painter_option_registry.register(PainterOptionTimestampDate())
+    painter_option_registry.register(PainterOptionMatrixOmitUniform())
+    painter_option_registry.register(PainterOptionShowInternalGraphAndMetricIds())
     painter_registry.register(PainterSiteIcon)
     painter_registry.register(PainterSitenamePlain)
     painter_registry.register(PainterSitealias)
@@ -321,25 +321,23 @@ def register(
 
 
 class PainterOptionShowInternalGraphAndMetricIds(PainterOption):
-    @property
-    def ident(self) -> str:
-        return "show_internal_graph_and_metric_ids"
-
-    @property
-    def valuespec(self) -> ValueSpec:
-        return Checkbox(
-            title=_("Show internal graph and metric IDs"),
-            default_value=False,
+    def __init__(self) -> None:
+        super().__init__(
+            ident="show_internal_graph_and_metric_ids",
+            valuespec=Checkbox(
+                title=_("Show internal graph and metric IDs"),
+                default_value=False,
+            ),
         )
 
 
 class PainterOptionTimestampFormat(PainterOption):
-    @property
-    def ident(self) -> str:
-        return "ts_format"
+    def __init__(self) -> None:
+        super().__init__(ident="ts_format")
 
+    @override
     @property
-    def valuespec(self) -> DropdownChoice:
+    def valuespec(self) -> ValueSpec:
         return DropdownChoice(
             title=_("Time stamp format"),
             default_value=self.config.default_ts_format,
@@ -355,28 +353,21 @@ class PainterOptionTimestampFormat(PainterOption):
 
 
 class PainterOptionTimestampDate(PainterOption):
-    @property
-    def ident(self) -> str:
-        return "ts_date"
-
-    @property
-    def valuespec(self) -> DropdownChoice:
-        return DateFormat()
+    def __init__(self) -> None:
+        super().__init__(ident="ts_date", valuespec=DateFormat())
 
 
 class PainterOptionMatrixOmitUniform(PainterOption):
-    @property
-    def ident(self) -> str:
-        return "matrix_omit_uniform"
-
-    @property
-    def valuespec(self) -> DropdownChoice:
-        return DropdownChoice(
-            title=_("Find differences..."),
-            choices=[
-                (False, _("Always show all rows")),
-                (True, _("Omit rows where all columns are identical")),
-            ],
+    def __init__(self) -> None:
+        super().__init__(
+            ident="matrix_omit_uniform",
+            valuespec=DropdownChoice(
+                title=_("Find differences..."),
+                choices=[
+                    (False, _("Always show all rows")),
+                    (True, _("Omit rows where all columns are identical")),
+                ],
+            ),
         )
 
 
@@ -422,7 +413,7 @@ def _paint_future_time(
     # (year 2262 or 0x7fffffffffffffff nanoseconds after 1970, but we leave some headroom below).
     # Although this is inconsistent, the latter is arguably more correct. In any case, the usage of
     # magic numbers is a quite a hack...
-    if not (0 < timestamp < 0x200000000):
+    if not 0 < timestamp < 0x200000000:
         return "", "-"
     return paint_age(
         timestamp,
@@ -1727,11 +1718,12 @@ def _paint_custom_notes(what: str, row: Row, *, config: Config) -> CellSpec:
     host = row["host_name"]
     svc = row.get("service_description")
     if what == "service":
-        notes_dir = cmk.utils.paths.default_config_dir + "/notes/services"
-        dirs = match_path_entries_with_item([Path(notes_dir)], host)
+        dirs = match_path_entries_with_item(
+            [cmk.utils.paths.default_config_dir / "notes/services"], host
+        )
         item = svc
     else:
-        dirs = [Path(cmk.utils.paths.default_config_dir) / "notes/hosts"]
+        dirs = [cmk.utils.paths.default_config_dir / "notes/hosts"]
         item = host
 
     assert isinstance(item, str)

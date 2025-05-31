@@ -8,19 +8,20 @@ import enum
 import os
 import subprocess
 import sys
-from collections.abc import Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager, suppress
 from typing import Literal
 
 import cmk.ccc.debug
 from cmk.ccc import store
 from cmk.ccc.exceptions import MKBailOut, MKGeneralException
+from cmk.ccc.hostaddress import HostName, Hosts
 
 import cmk.utils.paths
 from cmk.utils import ip_lookup, tty
-from cmk.utils.hostaddress import HostName
 from cmk.utils.rulesets import RuleSetName
 from cmk.utils.rulesets.ruleset_matcher import RuleSpec
+from cmk.utils.servicename import ServiceName
 
 from cmk.checkengine.plugins import AgentBasedPlugins
 
@@ -57,6 +58,7 @@ class CoreAction(enum.Enum):
 
 def do_reload(
     config_cache: ConfigCache,
+    hosts_config: Hosts,
     service_name_config: PassiveServiceNameConfig,
     ip_address_of: ConfiguredIPLookup[ip_lookup.CollectFailedHosts],
     core: MonitoringCore,
@@ -64,12 +66,14 @@ def do_reload(
     *,
     all_hosts: Iterable[HostName],
     discovery_rules: Mapping[RuleSetName, Sequence[RuleSpec]],
-    hosts_to_update: set[HostName] | None = None,
+    hosts_to_update: set[HostName] | None,
+    service_depends_on: Callable[[HostName, ServiceName], Sequence[ServiceName]],
     locking_mode: _LockingMode,
     duplicates: Sequence[HostName],
 ) -> None:
     do_restart(
         config_cache,
+        hosts_config,
         service_name_config,
         ip_address_of,
         core,
@@ -78,6 +82,7 @@ def do_reload(
         all_hosts=all_hosts,
         discovery_rules=discovery_rules,
         hosts_to_update=hosts_to_update,
+        service_depends_on=service_depends_on,
         locking_mode=locking_mode,
         duplicates=duplicates,
     )
@@ -85,6 +90,7 @@ def do_reload(
 
 def do_restart(
     config_cache: ConfigCache,
+    host_config: Hosts,
     service_name_config: PassiveServiceNameConfig,
     ip_address_of: ConfiguredIPLookup[ip_lookup.CollectFailedHosts],
     core: MonitoringCore,
@@ -94,23 +100,24 @@ def do_restart(
     discovery_rules: Mapping[RuleSetName, Sequence[RuleSpec]],
     action: CoreAction = CoreAction.RESTART,
     hosts_to_update: set[HostName] | None = None,
+    service_depends_on: Callable[[HostName, ServiceName], Sequence[ServiceName]],
     locking_mode: _LockingMode,
     duplicates: Sequence[HostName],
-    skip_config_locking_for_bakery: bool = False,
 ) -> None:
     try:
         with activation_lock(mode=locking_mode):
             core_config.do_create_config(
                 core=core,
                 config_cache=config_cache,
+                hosts_config=host_config,
                 service_name_config=service_name_config,
                 plugins=plugins,
                 discovery_rules=discovery_rules,
                 ip_address_of=ip_address_of,
                 all_hosts=all_hosts,
                 hosts_to_update=hosts_to_update,
+                service_depends_on=service_depends_on,
                 duplicates=duplicates,
-                skip_config_locking_for_bakery=skip_config_locking_for_bakery,
             )
             do_core_action(action, monitoring_core=core.name())
 
@@ -132,7 +139,7 @@ def activation_lock(mode: Literal["abort", "wait"] | None) -> Iterator[None]:
         yield None  # No locking at all
         return
 
-    lock_file = cmk.utils.paths.default_config_dir + "/main.mk"
+    lock_file = str(cmk.utils.paths.default_config_dir / "main.mk")
 
     if mode == "abort":
         with store.try_locked(lock_file) as result:

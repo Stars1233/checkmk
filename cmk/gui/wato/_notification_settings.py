@@ -63,12 +63,12 @@ ConfigVariableNotificationFallbackFormat = ConfigVariable(
             (
                 "asciimail",
                 _("ASCII email"),
-                notification_parameter_registry["asciimail"]().spec,
+                notification_parameter_registry["asciimail"].spec(),
             ),
             (
                 "mail",
                 _("HTML email"),
-                notification_parameter_registry["mail"]().spec,
+                notification_parameter_registry["mail"].spec(),
             ),
         ],
     ),
@@ -131,7 +131,7 @@ ConfigVariableNotificationLogging = ConfigVariable(
             "the notifications into the notification log. This information are logged "
             "into the file <tt>%s</tt>"
         )
-        % site_neutral_path(cmk.utils.paths.log_dir + "/notify.log"),
+        % site_neutral_path(cmk.utils.paths.log_dir / "notify.log"),
         choices=[
             (20, _("Minimal logging")),
             (15, _("Normal logging")),

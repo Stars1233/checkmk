@@ -1,4 +1,3 @@
-load("@aspect_rules_lint//format:defs.bzl", "format_multirun")
 load("@aspect_rules_py//py:defs.bzl", "py_library", "py_pytest_main", "py_test")
 load("@cmk_requirements//:requirements.bzl", "requirement")
 load("@rules_python//python:packaging.bzl", "py_wheel")
@@ -51,6 +50,14 @@ py_library(
 py_library(
     name = "exceptions",
     srcs = ["cmk/ccc/exceptions.py"],
+    imports = ["."],
+    visibility = ["//visibility:public"],
+    deps = ["_init"],
+)
+
+py_library(
+    name = "hostaddress",
+    srcs = ["cmk/ccc/hostaddress.py"],
     imports = ["."],
     visibility = ["//visibility:public"],
     deps = ["_init"],
@@ -110,6 +117,14 @@ py_library(
 )
 
 py_library(
+    name = "user",
+    srcs = ["cmk/ccc/user.py"],
+    imports = ["."],
+    visibility = ["//visibility:public"],
+    deps = ["_init"],
+)
+
+py_library(
     name = "version",
     srcs = ["cmk/ccc/version.py"],
     imports = ["."],
@@ -126,11 +141,13 @@ _ALL = [
     "daemon",
     "debug",
     "exceptions",
+    "hostaddress",
     "i18n",
     "plugin-registry",
     "profile",
     "site",
     "store",
+    "user",
     "version",
 ]
 
@@ -166,6 +183,21 @@ py_test(
 )
 
 py_test(
+    name = "hostaddress-tests",
+    size = "small",
+    srcs = [
+        "__test__.py",
+        "tests/test_hostaddress.py",
+    ],
+    main = "__test__.py",
+    deps = [
+        "__test__",
+        "hostaddress",
+        requirement("pytest"),
+    ],
+)
+
+py_test(
     name = "site-tests",
     size = "small",
     srcs = [
@@ -180,9 +212,20 @@ py_test(
     ],
 )
 
-format_multirun(
-    name = "format",
-    python = "@aspect_rules_lint//format:ruff",
+py_test(
+    name = "store-tests",
+    size = "small",
+    srcs = [
+        "__test__.py",
+        "tests/test_store.py",
+    ],
+    main = "__test__.py",
+    deps = [
+        "__test__",
+        "debug",
+        "store",
+        requirement("pytest"),
+    ],
 )
 
 py_wheel(

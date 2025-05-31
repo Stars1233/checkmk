@@ -43,7 +43,7 @@ class Password(TypedDict):
 
 def password_store_path() -> Path:
     """file where the user-managed passwords are stored."""
-    return Path(cmk.utils.paths.var_dir, "stored_passwords")
+    return cmk.utils.paths.var_dir / "stored_passwords"
 
 
 def core_password_store_path(config_path: ConfigPath) -> Path:
@@ -56,7 +56,7 @@ def core_password_store_path(config_path: ConfigPath) -> Path:
 
 def pending_password_store_path() -> Path:
     """file where user-managed passwords and the ones extracted from the configuration are merged."""
-    return Path(cmk.utils.paths.var_dir, "passwords_merged")
+    return cmk.utils.paths.var_dir / "passwords_merged"
 
 
 def save(passwords: Mapping[str, str], store_path: Path) -> None:
@@ -108,21 +108,28 @@ def ad_hoc_password_id() -> str:
     return f"{_PASSWORD_ID_PREFIX}{uuid4()}"
 
 
-def extract(password_id: PasswordId) -> str | None:
-    """Translate the password store reference to the actual password"""
+def extract(password_id: PasswordId) -> str:
+    """Translate the password store reference to the actual password. This function is likely
+    to be used by third party plugins and should not be moved / changed in behaviour."""
     staging_path = pending_password_store_path()
-    if not isinstance(password_id, tuple):
-        return load(staging_path).get(password_id)
-
-    # In case we get a tuple, assume it was coming from a ValueSpec "IndividualOrStoredPassword"
-    pw_type, pw_id = password_id
-    if pw_type == "password":
-        return pw_id
-    if pw_type == "store":
-        # TODO: Is this None really intended? Shouldn't we better raise an exception?
-        return load(staging_path).get(pw_id)
-
-    raise MKGeneralException("Unknown password type.")
+    match password_id:
+        case str():
+            if (pw := load(staging_path).get(password_id)) is None:
+                raise MKGeneralException(
+                    f"Password not found in '{staging_path}'. Please check the password store."
+                )
+            return pw
+        # In case we get a tuple, assume it was coming from a ValueSpec "IndividualOrStoredPassword"
+        case ("password", pw):
+            return pw
+        case ("store", pw_id):
+            if (pw := load(staging_path).get(pw_id)) is None:
+                raise MKGeneralException(
+                    f"Password not found in '{staging_path}'. Please check the password store."
+                )
+            return pw
+        case _:
+            raise MKGeneralException("Unknown password type.")
 
 
 def lookup(pw_file: Path, pw_id: str) -> str:

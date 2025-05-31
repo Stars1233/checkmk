@@ -15,10 +15,10 @@ from tests.unit.cmk.gui.users import create_and_destroy_user
 from livestatus import SiteConfigurations
 
 from cmk.ccc.site import SiteId
+from cmk.ccc.user import UserId
 
 import cmk.utils.paths
 from cmk.utils.rulesets.definition import RuleGroup
-from cmk.utils.user import UserId
 
 from cmk.gui import permissions
 from cmk.gui.config import (
@@ -254,7 +254,7 @@ def test_monitoring_user(request_context: None, monitoring_user: LoggedInUser) -
     assert monitoring_user.alias == "Test user"
     assert monitoring_user.email == "test_user_test@checkmk.com"
     assert monitoring_user.confdir
-    assert monitoring_user.confdir.endswith("/web/test")
+    assert str(monitoring_user.confdir).endswith("/web/test")
 
     assert monitoring_user.role_ids == ["user"]
     assert monitoring_user.get_attribute("roles") == ["user"]

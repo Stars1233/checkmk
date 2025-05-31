@@ -17,6 +17,7 @@ from livestatus import LocalConnection, SiteConfiguration
 
 from cmk.ccc.exceptions import MKGeneralException
 from cmk.ccc.site import omd_site, SiteId
+from cmk.ccc.user import UserId
 from cmk.ccc.version import __version__, Version
 
 from cmk.utils.paths import (
@@ -29,7 +30,6 @@ from cmk.utils.paths import (
     local_web_dir,
 )
 from cmk.utils.rulesets.definition import RuleGroup, RuleGroupType
-from cmk.utils.user import UserId
 
 import cmk.gui.userdb.ldap_connector as ldap
 import cmk.gui.utils
@@ -1371,7 +1371,7 @@ class ACTestDeprecatedRuleSets(ACTest):
         site_id = omd_site()
         unknown_check_parameter_rule_sets = [
             f"{RuleGroupType.CHECKGROUP_PARAMETERS.value}:{r}"
-            for r in find_unknown_check_parameter_rule_sets().result
+            for r in find_unknown_check_parameter_rule_sets(debug=active_config.debug).result
         ]
         if deprecated_rule_sets := [
             r
@@ -1420,10 +1420,10 @@ class ACTestUnknownCheckParameterRuleSets(ACTest):
 
     def execute(self) -> Iterator[ACSingleResult]:
         site_id = omd_site()
-        if rule_sets := find_unknown_check_parameter_rule_sets().result:
+        if rule_sets := find_unknown_check_parameter_rule_sets(debug=active_config.debug).result:
             for rule_set in rule_sets:
                 yield ACSingleResult(
-                    state=ACResultState.CRIT,
+                    state=ACResultState.WARN,
                     text=(
                         _("Found configured rules of unknown check parameter rule set %r.")
                         % rule_set

@@ -39,8 +39,6 @@ def main() {
         sh('echo  "${DOCKER_PASSPHRASE}" | docker login "${DOCKER_REGISTRY}" -u "${DOCKER_USERNAME}" --password-stdin');
     }
 
-    time_stage_started = test_gerrit_helper.log_stage_duration(time_stage_started);
-
     /// Add description to the build
     test_gerrit_helper.desc_init();
     test_gerrit_helper.desc_add_line("${GERRIT_CHANGE_SUBJECT}");
@@ -50,7 +48,6 @@ def main() {
         dir("${checkout_dir}") {
             sh("rm -rf ${result_dir}; mkdir ${result_dir}");
         }
-        time_stage_started = test_gerrit_helper.log_stage_duration(time_stage_started);
     }
 
     stage("Create stages") {
@@ -65,9 +62,9 @@ def main() {
                       buildscripts/scripts/stages.yml
                 """);
             }
-            time_stage_started = test_gerrit_helper.log_stage_duration(time_stage_started);
         }
 
+        time_stage_started = new Date();
         analyse_mapping["Preparation"] = [
             stepName: "Preparation",
             duration: groovy.time.TimeCategory.minus(new Date(), time_job_started),
@@ -116,12 +113,6 @@ def main() {
                                 EDITION: "enterprise",
                             ];
                             break;
-                        case "Python Werks Commands":
-                            relative_job_name = "${branch_base_folder}/cv/test-werks-commands";
-                            build_params << [
-                                CUSTOM_GIT_REF: GERRIT_PATCHSET_REVISION,
-                            ];
-                            break;
                         default:
                             relative_job_name = "${branch_base_folder}/cv/test-gerrit-single";
                             build_params << [
@@ -132,12 +123,22 @@ def main() {
                                 CIPARAM_ENV_VAR_LIST_STR: env_var_list_str,
                                 CIPARAM_SEC_VAR_LIST_STR: sec_var_list_str,
                                 CIPARAM_GIT_FETCH_TAGS: item.GIT_FETCH_TAGS,
+                                CIPARAM_GIT_FETCH_NOTES: item.GIT_FETCH_NOTES,
                                 CIPARAM_COMMAND: independent_command,
                                 CIPARAM_RESULT_CHECK_FILE_PATTERN: item.RESULT_CHECK_FILE_PATTERN,
                                 CIPARAM_BAZEL_LOCKS_AMOUNT: item.BAZEL_LOCKS_AMOUNT,
                             ];
                             break;
                     }
+                    // preparing the mapping entry here before the smart_build call
+                    // ensures the stage is always listed in the job overview independant of the result
+                    // or failures during execution or similar
+                    analyse_mapping["${item.NAME}"] = [
+                        stepName: item.NAME,
+                        duration: groovy.time.TimeCategory.minus(new Date(), time_stage_started),
+                        status: "failure",
+                    ];
+
                     build_instance = smart_build(
                         // see global-defaults.yml, needs to run in minimal container
                         use_upstream_build: true,
@@ -219,7 +220,6 @@ def main() {
 
     inside_container_minimal(safe_branch_name: safe_branch_name) {
         def results_of_parallel = parallel(stepsForParallel);
-        println("completed parallel with: ${results_of_parallel.values()}");
         currentBuild.result = results_of_parallel.values().every { it } ? "SUCCESS" : "FAILURE";
     }
 

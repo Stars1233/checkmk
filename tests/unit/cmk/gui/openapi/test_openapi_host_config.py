@@ -19,26 +19,30 @@ from tests.testlib.unit.rest_api_client import ClientRegistry
 from tests.unit.cmk.web_test_app import WebTestAppForCMK
 
 from cmk.ccc import version
+from cmk.ccc.hostaddress import HostName
 from cmk.ccc.site import SiteId
 
 from cmk.utils import paths
 from cmk.utils.global_ident_type import PROGRAM_ID_QUICK_SETUP
-from cmk.utils.hostaddress import HostName
+from cmk.utils.tags import BuiltinTagConfig
 
 from cmk.automations.results import DeleteHostsResult
 
 from cmk.gui.exceptions import MKUserError
+from cmk.gui.logged_in import user
+from cmk.gui.openapi.endpoints._common.host_attribute_schemas import (
+    BaseHostAttribute,
+    BaseHostTagGroup,
+)
 from cmk.gui.type_defs import CustomHostAttrSpec
 from cmk.gui.watolib.configuration_bundle_store import BundleId, ConfigBundleStore
-from cmk.gui.watolib.configuration_bundles import (
-    create_config_bundle,
-    CreateBundleEntities,
+from cmk.gui.watolib.configuration_bundles import create_config_bundle, CreateBundleEntities
+from cmk.gui.watolib.custom_attributes import CustomAttrSpecs, save_custom_attrs_to_mk_file
+from cmk.gui.watolib.host_attributes import (
+    BuiltInHostAttributes,
+    BuiltInHostTagGroups,
+    HostAttributes,
 )
-from cmk.gui.watolib.custom_attributes import (
-    CustomAttrSpecs,
-    save_custom_attrs_to_mk_file,
-)
-from cmk.gui.watolib.host_attributes import HostAttributes
 from cmk.gui.watolib.hosts_and_folders import Folder, folder_tree, Host
 
 managedtest = pytest.mark.skipif(
@@ -60,12 +64,16 @@ def quick_setup_config_bundle() -> Iterator[tuple[BundleId, str]]:
             "program_id": program_id,
         },
         entities=CreateBundleEntities(),
+        user_id=user.id,
+        pprint_value=False,
+        use_git=False,
+        debug=False,
     )
     yield bundle_id, program_id
     store = ConfigBundleStore()
     all_bundles = store.load_for_modification()
     all_bundles.pop(bundle_id)
-    store.save(all_bundles)
+    store.save(all_bundles, pprint_value=False)
 
 
 def test_openapi_missing_host(clients: ClientRegistry) -> None:
@@ -122,7 +130,7 @@ def test_openapi_add_host_bake_agent_parameter(
     clients.HostConfig.create(host_name="foobar", bake_agent=bake_agent)
 
     if called:
-        suppress_bake_agents_in_background.assert_called_once_with(["foobar"])
+        suppress_bake_agents_in_background.assert_called_once_with(["foobar"], debug=False)
     else:
         suppress_bake_agents_in_background.assert_not_called()
 
@@ -223,7 +231,7 @@ def test_openapi_add_cluster_bake_agent_parameter(
     clients.HostConfig.create(host_name="foobar", bake_agent=bake_agent).assert_status_code(200)
 
     if called:
-        suppress_bake_agents_in_background.assert_called_once_with(["foobar"])
+        suppress_bake_agents_in_background.assert_called_once_with(["foobar"], debug=False)
     else:
         suppress_bake_agents_in_background.assert_not_called()
     suppress_bake_agents_in_background.reset_mock()
@@ -233,7 +241,7 @@ def test_openapi_add_cluster_bake_agent_parameter(
     ).assert_status_code(200)
 
     if called:
-        suppress_bake_agents_in_background.assert_called_once_with(["bazfoo"])
+        suppress_bake_agents_in_background.assert_called_once_with(["bazfoo"], debug=False)
     else:
         suppress_bake_agents_in_background.assert_not_called()
 
@@ -274,7 +282,9 @@ def test_openapi_bulk_add_hosts_bake_agent_parameter(
     assert len(resp.json["value"]) == 2
 
     if called:
-        suppress_bake_agents_in_background.assert_called_once_with(["foobar", "sample"])
+        suppress_bake_agents_in_background.assert_called_once_with(
+            ["foobar", "sample"], debug=False
+        )
     else:
         suppress_bake_agents_in_background.assert_not_called()
 
@@ -455,7 +465,8 @@ def test_openapi_bulk_hosts(
 
     # adding invalid attribute should fail
     clients.HostConfig.bulk_edit(
-        entries=[{"host_name": "foobar", "attributes": {"foobaz": "bar"}}], expect_ok=False
+        entries=[{"host_name": "foobar", "attributes": {"foobaz": "bar"}}],
+        expect_ok=False,
     ).assert_status_code(400)
 
     # delete host with bulk delete
@@ -482,7 +493,8 @@ def test_openapi_bulk_with_failed(
         return _attributes
 
     monkeypatch.setattr(
-        "cmk.gui.watolib.hosts_and_folders.Folder.verify_and_update_host_details", _raise
+        "cmk.gui.watolib.hosts_and_folders.Folder.verify_and_update_host_details",
+        _raise,
     )
 
     resp = clients.HostConfig.bulk_create(
@@ -685,7 +697,9 @@ def test_openapi_host_rename(
     automation.assert_called_once()
 
 
-def test_openapi_host_rename_wait_for_completion_without_job(clients: ClientRegistry) -> None:
+def test_openapi_host_rename_wait_for_completion_without_job(
+    clients: ClientRegistry,
+) -> None:
     clients.HostConfig.rename_wait_for_completion(
         expect_ok=False, follow_redirects=False
     ).assert_status_code(404)
@@ -893,7 +907,9 @@ def test_openapi_host_move_to_non_valid_folder(clients: ClientRegistry) -> None:
         folder="/",
     )
     clients.HostConfig.move(
-        host_name="TestHost1", target_folder="/folder-that-does-not-exist", expect_ok=False
+        host_name="TestHost1",
+        target_folder="/folder-that-does-not-exist",
+        expect_ok=False,
     ).assert_status_code(400)
 
 
@@ -1037,7 +1053,9 @@ def test_openapi_host_with_labels(clients: ClientRegistry) -> None:
     assert resp.json["extensions"]["attributes"]["labels"] == {"label": "value"}
 
 
-def test_openapi_host_with_invalid_snmp_community_option(clients: ClientRegistry) -> None:
+def test_openapi_host_with_invalid_snmp_community_option(
+    clients: ClientRegistry,
+) -> None:
     clients.HostConfig.create(
         folder="/",
         host_name="example.com",
@@ -1081,11 +1099,15 @@ def test_openapi_host_with_non_existing_site(
     assert resp.json["extensions"]["attributes"]["site"] == "Unknown Site: a_non_existing_site"
 
 
-def test_openapi_bulk_create_permission_missmatch_regression(clients: ClientRegistry) -> None:
+def test_openapi_bulk_create_permission_missmatch_regression(
+    clients: ClientRegistry,
+) -> None:
     clients.HostConfig.bulk_create(entries=[])
 
 
-def test_openapi_host_config_attributes_as_string_crash_regression(clients: ClientRegistry) -> None:
+def test_openapi_host_config_attributes_as_string_crash_regression(
+    clients: ClientRegistry,
+) -> None:
     attributes = "{'ipaddress':'192.168.0.123'}"  # note that this is a str
     resp = clients.HostConfig.create(
         folder="/",
@@ -1130,7 +1152,9 @@ def test_openapi_host_config_ipmi_credentials_empty(
 
 @managedtest
 @pytest.mark.usefixtures("with_host")
-def test_openapi_host_config_show_host_disregards_contact_groups(clients: ClientRegistry) -> None:
+def test_openapi_host_config_show_host_disregards_contact_groups(
+    clients: ClientRegistry,
+) -> None:
     """This test makes sure a user cannot see the config of a host that is not assigned to their contact groups."""
     clients.ContactGroup.create("no_hosts_in_here", alias="no_hosts_in_here")
     clients.ContactGroup.create("all_hosts_in_here", alias="all_hosts_in_here")
@@ -1158,7 +1182,9 @@ def test_openapi_host_config_show_host_disregards_contact_groups(clients: Client
 
 
 @managedtest
-def test_openapi_list_hosts_does_not_show_inaccessible_hosts(clients: ClientRegistry) -> None:
+def test_openapi_list_hosts_does_not_show_inaccessible_hosts(
+    clients: ClientRegistry,
+) -> None:
     clients.ContactGroup.create(name="does_not_see_everything", alias="does_not_see_everything")
     clients.User.create(
         username="unable_to_see_all_host",
@@ -1243,7 +1269,10 @@ def test_move_to_folder_with_different_contact_group(clients: ClientRegistry) ->
         fullname="user1_fullname",
         customer="provider",
         contactgroups=["test_contact_group"],
-        auth_option={"auth_type": "password", "password": "asflkjas^asf@adf%5Ah!@%^sfadf"},
+        auth_option={
+            "auth_type": "password",
+            "password": "asflkjas^asf@adf%5Ah!@%^sfadf",
+        },
         roles=["user"],
     )
 
@@ -1316,7 +1345,10 @@ def test_move_from_folder_with_different_contact_group(clients: ClientRegistry) 
         fullname="user1_fullname",
         customer="provider",
         contactgroups=["test_contact_group"],
-        auth_option={"auth_type": "password", "password": "asflkjas^asf@adf%5Ah!@%^sfadf"},
+        auth_option={
+            "auth_type": "password",
+            "password": "asflkjas^asf@adf%5Ah!@%^sfadf",
+        },
         roles=["user"],
     )
 
@@ -1367,7 +1399,10 @@ def test_move_host_different_contact_group(clients: ClientRegistry) -> None:
         fullname="user1_fullname",
         customer="provider",
         contactgroups=["test_contact_group_1"],
-        auth_option={"auth_type": "password", "password": "asflkjas^asf@adf%5Ah!@%^sfadf"},
+        auth_option={
+            "auth_type": "password",
+            "password": "asflkjas^asf@adf%5Ah!@%^sfadf",
+        },
         roles=["user"],
     )
 
@@ -1532,7 +1567,12 @@ def test_openapi_host_config_effective_attributes_includes_all_host_attributes_r
                 "set_ip_address": True,
                 "time_allowed": [{"end": "23:59:59", "start": "00:00:00"}],
             },
-            "network_scan_result": {"end": None, "output": "", "start": None, "state": "running"},
+            "network_scan_result": {
+                "end": None,
+                "output": "",
+                "start": None,
+                "state": "running",
+            },
             "parents": [],
             "site": "NO_SITE",
             "snmp_community": None,
@@ -1578,7 +1618,12 @@ def test_openapi_host_config_effective_attributes_includes_all_host_attributes_r
                 "set_ip_address": True,
                 "time_allowed": [{"end": "23:59:59", "start": "00:00:00"}],
             },
-            "network_scan_result": {"end": None, "output": "", "start": None, "state": "running"},
+            "network_scan_result": {
+                "end": None,
+                "output": "",
+                "start": None,
+                "state": "running",
+            },
             "parents": [],
             "site": "NO_SITE",
             "snmp_community": None,
@@ -1731,7 +1776,9 @@ def test_update_host_parent_must_exist(clients: ClientRegistry) -> None:
     clients.HostConfig.create(host_name="test_host")
     clients.HostConfig.create(host_name="parent_host", attributes={"parents": ["test_host"]})
     resp = clients.HostConfig.edit(
-        host_name="test_host", update_attributes={"parents": ["non-existent"]}, expect_ok=False
+        host_name="test_host",
+        update_attributes={"parents": ["non-existent"]},
+        expect_ok=False,
     )
     resp.assert_status_code(400)
     assert resp.json["detail"] == "These fields have problems: update_attributes"
@@ -1745,7 +1792,9 @@ def test_update_host_parent_must_exist(clients: ClientRegistry) -> None:
 def test_update_host_parent_must_be_list_of_strings(clients: ClientRegistry) -> None:
     clients.HostConfig.create(host_name="test_host")
     resp = clients.HostConfig.edit(
-        host_name="test_host", update_attributes={"parents": "wrong-type"}, expect_ok=False
+        host_name="test_host",
+        update_attributes={"parents": "wrong-type"},
+        expect_ok=False,
     )
     resp.assert_status_code(400)
     assert resp.json["detail"] == "These fields have problems: update_attributes"
@@ -1787,8 +1836,35 @@ class TestHostsFilters:
     def test_openapi_not_matching_site_filter(self, clients: ClientRegistry) -> None:
         clients.HostConfig.bulk_create(
             entries=[
-                {"host_name": "host1", "folder": "/", "attributes": {"site": "NO_SITE"}},
+                {
+                    "host_name": "host1",
+                    "folder": "/",
+                    "attributes": {"site": "NO_SITE"},
+                },
             ]
         )
         resp = clients.HostConfig.get_all(search={"site": "INVALID_SITE"})
         assert not resp.json["value"]
+
+
+def test_openapi_built_in_host_attributes_in_sync() -> None:
+    known_exceptions = ["meta_data", "network_scan_result"]
+    if version.edition(paths.omd_root) is version.Edition.CRE:
+        known_exceptions.append("bake_agent_package")
+    if version.edition(paths.omd_root) not in [
+        version.Edition.CME,
+        version.Edition.CCE,
+    ]:
+        known_exceptions.append("cmk_agent_connection")
+
+    assert set(BuiltInHostAttributes.__annotations__) == set(
+        list(BaseHostAttribute().fields.keys()) + known_exceptions
+    )
+
+
+def test_openapi_built_in_tag_groups_in_sync() -> None:
+    built_in_tag_group_keys = {
+        "tag_" + tag_group.id for tag_group in BuiltinTagConfig().get_tag_groups()
+    }
+    assert built_in_tag_group_keys == set(BuiltInHostTagGroups.__annotations__)
+    assert built_in_tag_group_keys == set(BaseHostTagGroup().fields.keys())

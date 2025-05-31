@@ -29,14 +29,15 @@ from livestatus import (
 
 from cmk.ccc import version
 from cmk.ccc.site import omd_site, SiteId
+from cmk.ccc.user import UserId
 
 from cmk.utils import paths
-from cmk.utils.user import UserId
 
 from cmk.gui.config import active_config, prepare_raw_site_config
 from cmk.gui.customer import customer_api
 from cmk.gui.i18n import _
-from cmk.gui.site_config import is_replication_enabled, site_is_local
+from cmk.gui.logged_in import user
+from cmk.gui.site_config import get_site_config, is_replication_enabled, site_is_local
 from cmk.gui.watolib.activate_changes import clear_site_replication_status
 from cmk.gui.watolib.audit_log import LogMessage
 from cmk.gui.watolib.automations import do_site_login
@@ -480,7 +481,7 @@ class ConfigurationConnection:
             direct_login_to_web_gui_allowed=internal_config["user_login"],
             user_sync=UserSync.from_internal(
                 internal_config=internal_config.get(
-                    "user_sync", "all" if site_is_local(active_config, site_id) else "disabled"
+                    "user_sync", "all" if site_is_local(internal_config, site_id) else "disabled"
                 )
             ),
             replicate_event_console=internal_config["replicate_ec"],
@@ -580,32 +581,36 @@ class SitesApiMgr:
             raise SiteDoesNotExistException
         return existing_site
 
-    def delete_a_site(self, site_id: SiteId) -> None:
+    def delete_a_site(self, site_id: SiteId, *, pprint_value: bool, use_git: bool) -> None:
         if self.all_sites.get(site_id):
-            self.site_mgmt.delete_site(site_id)
+            self.site_mgmt.delete_site(site_id, pprint_value=pprint_value, use_git=use_git)
         raise SiteDoesNotExistException
 
-    def login_to_site(self, site_id: SiteId, username: str, password: str) -> None:
+    def login_to_site(
+        self, site_id: SiteId, username: str, password: str, *, pprint_value: bool, debug: bool
+    ) -> None:
         site = self.get_a_site(site_id)
         try:
-            site["secret"] = do_site_login(site, UserId(username), password)
+            site["secret"] = do_site_login(site, UserId(username), password, debug=debug)
         except Exception as exc:
             raise LoginException(str(exc))
 
-        self.site_mgmt.save_sites(self.all_sites)
-        trigger_remote_certs_creation(site_id, site)
+        self.site_mgmt.save_sites(self.all_sites, activate=True, pprint_value=pprint_value)
+        trigger_remote_certs_creation(site_id, site, force=False, debug=debug)
 
-    def logout_of_site(self, site_id: SiteId) -> None:
+    def logout_of_site(self, site_id: SiteId, *, pprint_value: bool) -> None:
         site = self.get_a_site(site_id)
         if "secret" in site:
             del site["secret"]
-            self.site_mgmt.save_sites(self.all_sites)
+            self.site_mgmt.save_sites(self.all_sites, activate=True, pprint_value=pprint_value)
 
-    def validate_and_save_site(self, site_id: SiteId, site_config: SiteConfiguration) -> None:
+    def validate_and_save_site(
+        self, site_id: SiteId, site_config: SiteConfiguration, *, pprint_value: bool
+    ) -> None:
         self.site_mgmt.validate_configuration(site_id, site_config, self.all_sites)
         sites = prepare_raw_site_config(SiteConfigurations({site_id: site_config}))
         self.all_sites.update(sites)
-        self.site_mgmt.save_sites(self.all_sites)
+        self.site_mgmt.save_sites(self.all_sites, activate=True, pprint_value=pprint_value)
 
     def get_connected_sites_to_update(
         self,
@@ -622,14 +627,24 @@ class SitesApiMgr:
         return self.site_mgmt.get_broker_connections()
 
     def validate_and_save_broker_connection(
-        self, connection_id: ConnectionId, broker_connection: BrokerConnection, is_new: bool
+        self,
+        connection_id: ConnectionId,
+        broker_connection: BrokerConnection,
+        *,
+        is_new: bool,
+        pprint_value: bool,
     ) -> tuple[SiteId, SiteId]:
         return self.site_mgmt.validate_and_save_broker_connection(
-            connection_id, broker_connection, is_new
+            connection_id,
+            broker_connection,
+            is_new=is_new,
+            pprint_value=pprint_value,
         )
 
-    def delete_broker_connection(self, connection_id: ConnectionId) -> tuple[SiteId, SiteId]:
-        return self.site_mgmt.delete_broker_connection(connection_id)
+    def delete_broker_connection(
+        self, connection_id: ConnectionId, pprint_value: bool
+    ) -> tuple[SiteId, SiteId]:
+        return self.site_mgmt.delete_broker_connection(connection_id, pprint_value)
 
 
 def add_changes_after_editing_broker_connection(
@@ -645,12 +660,14 @@ def add_changes_after_editing_broker_connection(
     )
 
     add_change(
-        "edit-sites",
-        change_message,
+        action_name="edit-sites",
+        text=change_message,
+        user_id=user.id,
         need_sync=True,
         need_restart=True,
         sites=[omd_site()] + sites,
         domains=[ConfigDomainGUI()],
+        use_git=active_config.wato_use_git,
     )
 
     return change_message
@@ -671,8 +688,9 @@ def add_changes_after_editing_site_connection(
 
     sites_to_update = list((connected_sites or set()) | {site_id})
     add_change(
-        "edit-sites",
-        change_message,
+        action_name="edit-sites",
+        text=change_message,
+        user_id=user.id,
         sites=sites_to_update,
         # This was ABCConfigDomain.enabled_domains() before. Since e.g. apache config domain takes
         # significant more time to restart than the other domains, we now try to be more specific
@@ -704,14 +722,24 @@ def add_changes_after_editing_site_connection(
                 # "mknotifyd",
             }
         ],
+        use_git=active_config.wato_use_git,
     )
 
     # In case a site is not being replicated anymore, confirm all changes for this site!
-    if not replication_enabled and not site_is_local(active_config, site_id):
+    if not replication_enabled and not site_is_local(
+        get_site_config(active_config, site_id), site_id
+    ):
         clear_site_replication_status(site_id)
 
     if site_id != omd_site():
         # On central site issue a change only affecting the GUI
-        add_change("edit-sites", change_message, sites=[omd_site()], domains=[ConfigDomainGUI()])
+        add_change(
+            action_name="edit-sites",
+            text=change_message,
+            user_id=user.id,
+            sites=[omd_site()],
+            domains=[ConfigDomainGUI()],
+            use_git=active_config.wato_use_git,
+        )
 
     return change_message

@@ -38,14 +38,13 @@ from typing import (
 
 import cmk.ccc.debug
 import cmk.ccc.version as cmk_version
-from cmk.ccc import store
 from cmk.ccc.exceptions import MKGeneralException, MKIPAddressLookupError
+from cmk.ccc.hostaddress import HostAddress, HostName, Hosts
 from cmk.ccc.site import omd_site, SiteId
 
 import cmk.utils
 import cmk.utils.check_utils
 import cmk.utils.cleanup
-import cmk.utils.config_path
 import cmk.utils.paths
 import cmk.utils.tags
 import cmk.utils.translations
@@ -55,7 +54,6 @@ from cmk.utils.caching import cache_manager
 from cmk.utils.check_utils import maincheckify, section_name_of
 from cmk.utils.config_path import ConfigPath
 from cmk.utils.host_storage import apply_hosts_file_to_object, get_host_storage_loaders
-from cmk.utils.hostaddress import HostAddress, HostName, Hosts
 from cmk.utils.http_proxy_config import http_proxy_config_from_user_setting, HTTPProxyConfig
 from cmk.utils.ip_lookup import IPStackConfig
 from cmk.utils.labels import LabelManager, Labels, LabelSources
@@ -556,7 +554,7 @@ def handle_ip_lookup_failure(host_name: HostName, exc: Exception) -> None:
 def get_default_config() -> dict[str, Any]:
     """Provides a dictionary containing the Check_MK default configuration"""
     return {
-        key: copy.deepcopy(value) if isinstance(value, (dict, list)) else value
+        key: copy.deepcopy(value) if isinstance(value, dict | list) else value
         for key, value in default_config.__dict__.items()
         if key[0] != "_"
     }
@@ -605,6 +603,10 @@ class LoadedConfigFragment:
     use_new_descriptions_for: Container[str]
     nagios_illegal_chars: str
     cmc_illegal_chars: str
+    all_hosts: Sequence[str]
+    clusters: Mapping[HostAddress, Sequence[HostAddress]]
+    shadow_hosts: ShadowHosts
+    service_dependencies: Sequence[tuple]
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
@@ -699,6 +701,10 @@ def _perform_post_config_loading_actions(
         use_new_descriptions_for=use_new_descriptions_for,
         nagios_illegal_chars=nagios_illegal_chars,
         cmc_illegal_chars=cmc_illegal_chars,
+        all_hosts=all_hosts,
+        clusters=clusters,
+        shadow_hosts=shadow_hosts,
+        service_dependencies=service_dependencies,
     )
 
     config_cache = _create_config_cache(loaded_config).initialize()
@@ -787,7 +793,6 @@ def _load_config(with_conf_d: bool) -> set[str]:
         _load_config_file(experimental_config, global_dict)
 
     host_storage_loaders = get_host_storage_loaders(config_storage_format)
-    config_dir_path = Path(cmk.utils.paths.check_mk_config_dir)
     for path in get_config_file_paths(with_conf_d):
         try:
             # Make the config path available as a global variable to be used
@@ -797,7 +802,7 @@ def _load_config(with_conf_d: bool) -> set[str]:
             current_path: str | None = None
             folder_path: str | None = None
             with contextlib.suppress(ValueError):
-                relative_path = path.relative_to(config_dir_path)
+                relative_path = path.relative_to(cmk.utils.paths.check_mk_config_dir)
                 current_path = f"/{relative_path}"
                 folder_path = str(relative_path.parent)
             global_dict["FOLDER_PATH"] = folder_path
@@ -878,13 +883,13 @@ def _collect_parameter_rulesets_from_globals(
 
 # Create list of all files to be included during configuration loading
 def get_config_file_paths(with_conf_d: bool) -> list[Path]:
-    list_of_files = [Path(cmk.utils.paths.main_config_file)]
+    list_of_files = [cmk.utils.paths.main_config_file]
     if with_conf_d:
-        all_files = Path(cmk.utils.paths.check_mk_config_dir).rglob("*")
+        all_files = cmk.utils.paths.check_mk_config_dir.rglob("*")
         list_of_files += sorted(
             [p for p in all_files if p.suffix in {".mk"}], key=cmk.utils.key_config_paths
         )
-    for path in [Path(cmk.utils.paths.final_config_file), Path(cmk.utils.paths.local_config_file)]:
+    for path in [cmk.utils.paths.final_config_file, cmk.utils.paths.local_config_file]:
         if path.exists():
             list_of_files.append(path)
     return list_of_files
@@ -1078,7 +1083,7 @@ def set_use_core_config(
     orig_autochecks_dir: Final = cmk.utils.paths.autochecks_dir
     orig_discovered_host_labels_dir: Final = cmk.utils.paths.discovered_host_labels_dir
     try:
-        cmk.utils.paths.autochecks_dir = str(autochecks_dir)
+        cmk.utils.paths.autochecks_dir = autochecks_dir
         cmk.utils.paths.discovered_host_labels_dir = discovered_host_labels_dir
         yield
     finally:
@@ -1106,14 +1111,6 @@ def strip_tags(tagged_hostlist: Iterable[str]) -> Sequence[HostName]:
     with contextlib.suppress(KeyError):
         return cache[cache_id]
     return cache.setdefault(cache_id, [HostName(h.split("|", 1)[0]) for h in tagged_hostlist])
-
-
-def _get_shadow_hosts() -> ShadowHosts:
-    try:
-        # Only available with CEE
-        return shadow_hosts  # type: ignore[name-defined,unused-ignore]
-    except NameError:
-        return {}
 
 
 # .
@@ -1161,37 +1158,38 @@ def _make_service_description_cb(
 # b) It only affects the Nagios core - CMC does not implement service dependencies
 # c) This function implements some specific regex replacing match+replace which makes it incompatible to
 #    regular service rulesets. Therefore service_extra_conf() can not easily be used :-/
-def service_depends_on(
-    config_cache: ConfigCache, hostname: HostName, servicedesc: ServiceName
-) -> list[ServiceName]:
-    """Return a list of services this service depends upon"""
-    deps = []
-    for entry in service_dependencies:
-        entry, rule_options = tuple_rulesets.get_rule_options(entry)
-        if rule_options.get("disabled"):
-            continue
+@dataclasses.dataclass(frozen=True)
+class ServiceDependsOn:
+    tag_list: Callable[[HostName], Sequence[TagID]]
+    service_dependencies: Sequence[tuple]  # :-(
 
-        if len(entry) == 3:
-            depname, hostlist, patternlist = entry
-            tags: list[TagID] = []
-        elif len(entry) == 4:
-            depname, tags, hostlist, patternlist = entry
-        else:
-            raise MKGeneralException(
-                "Invalid entry '%r' in service dependencies: must have 3 or 4 entries" % entry
-            )
-
-        if tuple_rulesets.hosttags_match_taglist(
-            config_cache.tag_list(hostname), tags
-        ) and tuple_rulesets.in_extraconf_hostlist(hostlist, hostname):
-            for pattern in patternlist:
-                if matchobject := regex(pattern).search(servicedesc):
-                    try:
-                        item = matchobject.groups()[-1]
-                        deps.append(depname % item)
-                    except Exception:
-                        deps.append(depname)
-    return deps
+    def __call__(self, hostname: HostName, servicedesc: ServiceName) -> list[ServiceName]:
+        """Return a list of services this service depends on"""
+        deps = []
+        for entry in self.service_dependencies:
+            entry, rule_options = tuple_rulesets.get_rule_options(entry)
+            if rule_options.get("disabled"):
+                continue
+            if len(entry) == 3:
+                depname, hostlist, patternlist = entry
+                tags: list[TagID] = []
+            elif len(entry) == 4:
+                depname, tags, hostlist, patternlist = entry
+            else:
+                raise MKGeneralException(
+                    "Invalid entry '%r' in service dependencies: must have 3 or 4 entries" % entry
+                )
+            if tuple_rulesets.hosttags_match_taglist(
+                self.tag_list(hostname), tags
+            ) and tuple_rulesets.in_extraconf_hostlist(hostlist, hostname):
+                for pattern in patternlist:
+                    if matchobject := regex(pattern).search(servicedesc):
+                        try:
+                            item = matchobject.groups()[-1]
+                            deps.append(depname % item)
+                        except (IndexError, TypeError):
+                            deps.append(depname)
+        return deps
 
 
 # .
@@ -1273,9 +1271,7 @@ service_rule_groups = {"temperature"}
 #   '----------------------------------------------------------------------'
 
 
-def load_all_plugins(
-    checks_dir: str,
-) -> AgentBasedPlugins:
+def load_all_pluginX(checks_dir: Path) -> AgentBasedPlugins:
     with tracer.span("load_legacy_check_plugins"):
         with tracer.span("discover_legacy_check_plugins"):
             filelist = find_plugin_files(checks_dir)
@@ -1298,7 +1294,7 @@ def load_and_convert_legacy_checks(
         filelist,
         FileLoader(
             precomile_path=cmk.utils.paths.precompiled_checks_dir,
-            makedirs=store.makedirs,
+            makedirs=lambda path: Path(path).mkdir(mode=0o770, parents=True, exist_ok=True),
         ),
         raise_errors=cmk.ccc.debug.enabled(),
     )
@@ -1487,17 +1483,17 @@ def get_ssc_host_config(
 #   +----------------------------------------------------------------------+
 
 
-def make_hosts_config() -> Hosts:
+def make_hosts_config(loaded_config: LoadedConfigFragment) -> Hosts:
     return Hosts(
-        hosts=strip_tags(all_hosts),
-        clusters=strip_tags(clusters),
-        shadow_hosts=list(_get_shadow_hosts()),
+        hosts=strip_tags(loaded_config.all_hosts),
+        clusters=strip_tags(loaded_config.clusters),
+        shadow_hosts=list(loaded_config.shadow_hosts),
     )
 
 
-def _make_clusters_nodes_maps() -> tuple[
-    Mapping[HostName, Sequence[HostName]], Mapping[HostName, Sequence[HostName]]
-]:
+def _make_clusters_nodes_maps(
+    clusters: Mapping[HostName, Sequence[HostName]],
+) -> tuple[Mapping[HostName, Sequence[HostName]], Mapping[HostName, Sequence[HostName]]]:
     clusters_of_cache: dict[HostName, list[HostName]] = {}
     nodes_cache: dict[HostName, Sequence[HostName]] = {}
     for cluster, hosts in clusters.items():
@@ -1605,7 +1601,7 @@ class ConfigCache:
         (
             self._clusters_of_cache,
             self._nodes_cache,
-        ) = _make_clusters_nodes_maps()
+        ) = _make_clusters_nodes_maps(self._loaded_config.clusters)
 
         # TODO: remove this from the config cache. It is a completely
         # self-contained object that should be passed around (if it really
@@ -1617,7 +1613,7 @@ class ConfigCache:
         ] = {}
         self._check_mk_check_interval: dict[HostName, float] = {}
 
-        self.hosts_config = make_hosts_config()
+        self.hosts_config = make_hosts_config(self._loaded_config)
 
         tag_to_group_map = ConfigCache.get_tag_to_group_map()
         self._collect_hosttags(tag_to_group_map)
@@ -1849,7 +1845,7 @@ class ConfigCache:
             checking_sections = frozenset(
                 agent_based_register.filter_relevant_raw_sections(
                     consumers=[
-                        plugins.check_plugins[n]
+                        p
                         for n in self.check_table(
                             hostname,
                             plugins.check_plugins,
@@ -1858,7 +1854,8 @@ class ConfigCache:
                             filter_mode=FilterMode.INCLUDE_CLUSTERED,
                             skip_ignored=True,
                         ).needed_check_names()
-                        if n in plugins.check_plugins
+                        if (p := agent_based_register.get_check_plugin(n, plugins.check_plugins))
+                        is not None
                     ],
                     sections=itertools.chain(
                         plugins.agent_sections.values(), plugins.snmp_sections.values()
@@ -1952,12 +1949,13 @@ class ConfigCache:
         plugins: Mapping[CheckPluginName, CheckPlugin],
         service_configurer: ServiceConfigurer,
         service_name_config: PassiveServiceNameConfig,
+        service_depends_on: Callable[[HostAddress, ServiceName], Sequence[ServiceName]],
     ) -> Sequence[ConfiguredService]:
         services = self._sorted_services(hostname, plugins, service_configurer, service_name_config)
         if is_cmc():
             return services
 
-        unresolved = [(s, set(service_depends_on(self, hostname, s.description))) for s in services]
+        unresolved = [(s, set(service_depends_on(hostname, s.description))) for s in services]
 
         resolved: list[ConfiguredService] = []
         while unresolved:
@@ -2552,7 +2550,9 @@ class ConfigCache:
             passwords,
             password_store_file,
             ExecutableFinder(
-                cmk.utils.paths.local_special_agents_dir, cmk.utils.paths.special_agents_dir
+                # NOTE: we can't ignore these, they're an API promise.
+                cmk.utils.paths.local_special_agents_dir,
+                cmk.utils.paths.special_agents_dir,
             ),
         )
         for agentname, params_seq in host_special_agents:
@@ -2722,7 +2722,7 @@ class ConfigCache:
                     tag_to_group_map, self._hosttags[hostname]
                 )
 
-        for shadow_host_name, shadow_host_spec in list(_get_shadow_hosts().items()):
+        for shadow_host_name, shadow_host_spec in shadow_hosts.items():
             self._hosttags[shadow_host_name] = tuple(
                 set(shadow_host_spec.get("custom_variables", {}).get("TAGS", TagID("")).split())
             )
@@ -3119,7 +3119,7 @@ class ConfigCache:
                 fetcher_type=FetcherType.PIGGYBACK,
                 host_name=host_name,
                 ident="piggyback",
-                section_cache_path=Path(cmk.utils.paths.var_dir),
+                section_cache_path=cmk.utils.paths.var_dir,
             ).exists()
         )
 
@@ -3419,21 +3419,6 @@ class ConfigCache:
         hostname: HostName,
         ip_address_of: IPLookup,
     ) -> ObjectAttributes:
-        def _set_addresses(
-            attrs: ObjectAttributes,
-            addresses: list[HostAddress] | None,
-            what: Literal["4", "6"],
-        ) -> None:
-            key_base = f"_ADDRESSES_{what}"
-            if not addresses:
-                # If other addresses are not available, set to empty string in order to avoid unresolved macros
-                attrs[key_base] = ""
-                return
-            attrs[key_base] = " ".join(addresses)
-            for nr, address in enumerate(addresses):
-                key = f"{key_base}_{nr + 1}"
-                attrs[key] = address
-
         attrs = self.extra_host_attributes(hostname)
 
         # Pre 1.6 legacy attribute. We have changed our whole code to use the
@@ -3455,41 +3440,38 @@ class ConfigCache:
 
         ip_stack_config = ConfigCache.ip_stack_config(hostname)
 
-        # Now lookup configured IP addresses
-        v4address: str | None = None
-        if IPStackConfig.IPv4 in ip_stack_config:
-            v4address = ip_address_of(hostname, socket.AddressFamily.AF_INET)
+        v4address = (
+            ip_address_of(hostname, socket.AddressFamily.AF_INET)
+            if IPStackConfig.IPv4 in ip_stack_config
+            else None
+        )
+        attrs["_ADDRESS_4"] = "" if v4address is None else v4address
 
-        if v4address is None:
-            v4address = ""
-        attrs["_ADDRESS_4"] = v4address
+        v6address = (
+            ip_address_of(hostname, socket.AddressFamily.AF_INET6)
+            if IPStackConfig.IPv6 in ip_stack_config
+            else None
+        )
+        attrs["_ADDRESS_6"] = "" if v6address is None else v6address
 
-        v6address: str | None = None
-        if IPStackConfig.IPv6 in ip_stack_config:
-            v6address = ip_address_of(hostname, socket.AddressFamily.AF_INET6)
-        if v6address is None:
-            v6address = ""
-        attrs["_ADDRESS_6"] = v6address
-
-        if self.default_address_family(hostname) is socket.AF_INET6:
-            attrs["address"] = attrs["_ADDRESS_6"]
-            attrs["_ADDRESS_FAMILY"] = "6"
-        else:
-            attrs["address"] = attrs["_ADDRESS_4"]
-            attrs["_ADDRESS_FAMILY"] = "4"
+        ipv6_is_default = self.default_address_family(hostname) is socket.AF_INET6
+        attrs["address"] = attrs["_ADDRESS_6"] if ipv6_is_default else attrs["_ADDRESS_4"]
+        attrs["_ADDRESS_FAMILY"] = "6" if ipv6_is_default else "4"
 
         add_ipv4addrs, add_ipv6addrs = self.additional_ipaddresses(hostname)
-        _set_addresses(attrs, add_ipv4addrs, "4")
-        _set_addresses(attrs, add_ipv6addrs, "6")
 
-        # Add the optional WATO folder path
-        path = host_paths.get(hostname)
-        if path:
+        attrs["_ADDRESSES_4"] = " ".join(add_ipv4addrs)
+        for n, address in enumerate(add_ipv4addrs, start=1):
+            attrs[f"_ADDRESSES_4_{n}"] = address
+
+        attrs["_ADDRESSES_6"] = " ".join(add_ipv6addrs)
+        for n, address in enumerate(add_ipv6addrs, start=1):
+            attrs[f"_ADDRESSES_6_{n}"] = address
+
+        if path := host_paths.get(hostname):
             attrs["_FILENAME"] = path
 
-        # Add custom user icons and actions
-        actions = self.icons_and_actions(hostname)
-        if actions:
+        if actions := self.icons_and_actions(hostname):
             attrs["_ACTIONS"] = ",".join(actions)
 
         if cmk_version.edition(cmk.utils.paths.omd_root) is cmk_version.Edition.CME:
@@ -3644,7 +3626,7 @@ class ConfigCache:
     @staticmethod
     def replace_macros(s: str, macros: ObjectMacros) -> str:
         for key, value in macros.items():
-            if isinstance(value, (numbers.Integral, float)):
+            if isinstance(value, numbers.Integral | float):
                 value = str(value)  # e.g. in _EC_SL (service level)
 
             # TODO: Clean this up
@@ -4158,7 +4140,7 @@ class FetcherFactory:
                 host_name,
                 fetcher_type=FetcherType.SNMP,
                 ident="snmp",
-                section_cache_path=Path(cmk.utils.paths.var_dir),
+                section_cache_path=cmk.utils.paths.var_dir,
             ),
             snmp_config=snmp_config,
             stored_walk_path=fetcher_config.stored_walk_path,
@@ -4429,21 +4411,6 @@ class CEEConfigCache(ConfigCache):
     def cmc_real_time_checks() -> object:
         return cmc_real_time_checks  # type: ignore[name-defined,unused-ignore]
 
-    def agent_config(self, host_name: HostName, default: Mapping[str, Any]) -> Mapping[str, Any]:
-        def _impl() -> Mapping[str, Any]:
-            return {
-                **boil_down_agent_rules(
-                    defaults=default,
-                    rulesets=self.matched_agent_config_entries(host_name),
-                ),
-                "is_ipv6_primary": (self.default_address_family(host_name) is socket.AF_INET6),
-            }
-
-        with contextlib.suppress(KeyError):
-            return self.__agent_config[host_name]
-
-        return self.__agent_config.setdefault(host_name, _impl())
-
     def rrd_config_of_service(
         self, host_name: HostName, service_name: ServiceName
     ) -> RRDObjectConfig | None:
@@ -4561,17 +4528,39 @@ class CEEConfigCache(ConfigCache):
         )
         return out[0] if out else None
 
+    @staticmethod
+    def _agent_config_rulesets() -> Iterable[tuple[str, Any]]:
+        return list(agent_config.items()) + [
+            ("agent_port", agent_ports),
+            ("agent_encryption", agent_encryption),
+            ("agent_exclude_sections", agent_exclude_sections),
+        ]
+
+    def agent_config(self, host_name: HostName, default: Mapping[str, Any]) -> Mapping[str, Any]:
+        def _impl() -> Mapping[str, Any]:
+            return {
+                **boil_down_agent_rules(
+                    defaults=default,
+                    rulesets=self.matched_agent_config_entries(host_name),
+                ),
+                "is_ipv6_primary": (self.default_address_family(host_name) is socket.AF_INET6),
+            }
+
+        with contextlib.suppress(KeyError):
+            return self.__agent_config[host_name]
+
+        return self.__agent_config.setdefault(host_name, _impl())
+
     def matched_agent_config_entries(self, hostname: HostName) -> dict[str, Any]:
         return {
             varname: self.ruleset_matcher.get_host_values(
                 hostname, ruleset, self.label_manager.labels_of_host
             )
-            for varname, ruleset in CEEConfigCache._agent_config_rulesets()
+            for varname, ruleset in self._agent_config_rulesets()
         }
 
-    @staticmethod
     def generic_agent_config_entries(
-        *, defaults: Mapping[str, object]
+        self, *, defaults: Mapping[str, object]
     ) -> Iterable[tuple[str, Mapping[str, object]]]:
         yield from (
             (
@@ -4579,8 +4568,8 @@ class CEEConfigCache(ConfigCache):
                 boil_down_agent_rules(
                     defaults=defaults,
                     rulesets={
-                        varname: CEEConfigCache._get_values_for_generic_agent(ruleset, match_path)
-                        for varname, ruleset in CEEConfigCache._agent_config_rulesets()
+                        varname: self._get_values_for_generic_agent(ruleset, match_path)
+                        for varname, ruleset in self._agent_config_rulesets()
                     },
                 ),
             )
@@ -4623,14 +4612,6 @@ class CEEConfigCache(ConfigCache):
             entries.append(rule["value"])
 
         return entries
-
-    @staticmethod
-    def _agent_config_rulesets() -> Iterable[tuple[str, Any]]:
-        return list(agent_config.items()) + [
-            ("agent_port", agent_ports),
-            ("agent_encryption", agent_encryption),
-            ("agent_exclude_sections", agent_exclude_sections),
-        ]
 
 
 class CMEConfigCache(CEEConfigCache):

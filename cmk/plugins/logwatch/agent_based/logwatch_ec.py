@@ -24,9 +24,9 @@ from typing import Any, Literal, Protocol
 from urllib.parse import quote as url_quote
 
 import cmk.ccc.debug  # pylint: disable=cmk-module-layer-violation
+from cmk.ccc.hostaddress import HostName  # pylint: disable=cmk-module-layer-violation
 
 import cmk.utils.paths  # pylint: disable=cmk-module-layer-violation
-from cmk.utils.hostaddress import HostName  # pylint: disable=cmk-module-layer-violation
 
 import cmk.ec.export as ec  # pylint: disable=cmk-module-layer-violation
 from cmk.ec.event import (  # pylint: disable=cmk-module-layer-violation
@@ -769,7 +769,5 @@ class MessageForwarder:
 
     @staticmethod
     def _get_spool_path(hostname: str, item: str | None) -> Path:
-        result = Path(cmk.utils.paths.var_dir, "logwatch_spool", hostname)
-        if item is not None:
-            result = result / "item_{}".format(url_quote(item, safe=""))
-        return result
+        result = cmk.utils.paths.var_dir / "logwatch_spool" / hostname
+        return result if item is None else (result / f"item_{url_quote(item, safe='')}")

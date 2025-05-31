@@ -79,7 +79,7 @@ def repr2(obj: object) -> str:
     """
     if isinstance(obj, dict):
         return "{" + ", ".join(f"{repr2(k)}: {repr2(v)}" for k, v in obj.items()) + "}"
-    if isinstance(obj, (list, tuple)):
+    if isinstance(obj, list | tuple):
         return "[" + ", ".join(repr2(x) for x in obj) + "]"
     if isinstance(obj, str):
         return f"u'{obj}'"
@@ -747,7 +747,7 @@ def _show_columns(query: str) -> bool:
 
 def _default_tables() -> dict[TableName, ResultList]:
     # Just that parse_check_mk_version is happy we replace the dashes with dots.
-    _today = str(dt.datetime.now(tz=dt.timezone.utc).date()).replace("-", ".")
+    _today = str(dt.datetime.now(tz=dt.UTC).date()).replace("-", ".")
     _program_start_timestamp = int(time.time())
     return {
         "status": [

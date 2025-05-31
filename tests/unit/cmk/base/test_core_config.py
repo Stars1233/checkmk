@@ -6,7 +6,6 @@
 
 import shutil
 from collections.abc import Mapping
-from pathlib import Path
 
 import pytest
 from pytest import MonkeyPatch
@@ -14,12 +13,11 @@ from pytest import MonkeyPatch
 from tests.testlib.unit.base_configuration_scenario import Scenario
 
 import cmk.ccc.version as cmk_version
+from cmk.ccc.hostaddress import HostAddress, HostName
 
-import cmk.utils.config_path
 import cmk.utils.paths
 from cmk.utils import ip_lookup, password_store
 from cmk.utils.config_path import ConfigPath, LATEST_CONFIG
-from cmk.utils.hostaddress import HostAddress, HostName
 from cmk.utils.labels import Labels, LabelSources
 from cmk.utils.tags import TagGroupID, TagID
 
@@ -76,15 +74,18 @@ def test_do_create_config_nagios(
     core_config.do_create_config(
         create_core("nagios"),
         core_scenario,
+        core_scenario.hosts_config,
         core_scenario.make_passive_service_name_config(),
         AgentBasedPlugins.empty(),
         discovery_rules={},
         ip_address_of=ip_address_of,
         all_hosts=[HostName("test-host")],
+        hosts_to_update=None,
+        service_depends_on=lambda *a: (),
         duplicates=(),
     )
 
-    assert Path(cmk.utils.paths.nagios_objects_file).exists()
+    assert cmk.utils.paths.nagios_objects_file.exists()
     assert config.PackedConfigStore.from_serial(LATEST_CONFIG).path.exists()
 
 
@@ -105,11 +106,14 @@ def test_do_create_config_nagios_collects_passwords(
     core_config.do_create_config(
         create_core("nagios"),
         core_scenario,
+        core_scenario.hosts_config,
         core_scenario.make_passive_service_name_config(),
         AgentBasedPlugins.empty(),
         discovery_rules={},
         ip_address_of=ip_address_of,
         all_hosts=[HostName("test-host")],
+        hosts_to_update=None,
+        service_depends_on=lambda *a: (),
         duplicates=(),
     )
 

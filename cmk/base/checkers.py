@@ -20,6 +20,7 @@ import livestatus
 
 import cmk.ccc.debug
 from cmk.ccc.exceptions import MKTimeout, OnError
+from cmk.ccc.hostaddress import HostAddress, HostName
 
 import cmk.utils.paths
 import cmk.utils.resulttype as result
@@ -27,7 +28,6 @@ from cmk.utils import password_store, tty
 from cmk.utils.agentdatatype import AgentRawData
 from cmk.utils.check_utils import ParametersTypeAlias
 from cmk.utils.cpu_tracking import CPUTracker, Snapshot
-from cmk.utils.hostaddress import HostAddress, HostName
 from cmk.utils.ip_lookup import IPStackConfig
 from cmk.utils.log import console
 from cmk.utils.misc import pnp_cleanup
@@ -188,7 +188,7 @@ class CMKParser:
         """Parse fetched data."""
         console.debug(f"{tty.yellow}+{tty.normal} PARSE FETCHER RESULTS")
         output: list[tuple[SourceInfo, result.Result[HostSections, Exception]]] = []
-        section_cache_path = Path(cmk.utils.paths.var_dir)
+        section_cache_path = cmk.utils.paths.var_dir
         # Special agents can produce data for the same check_plugin_name on the same host, in this case
         # the section lines need to be extended
         for source, raw_data in fetched:
@@ -297,7 +297,7 @@ class SpecialAgentFetcher:
         ]
     ]:
         max_age = MaxAge.zero()
-        file_cache_path = Path(cmk.utils.paths.data_source_cache_dir)
+        file_cache_path = cmk.utils.paths.data_source_cache_dir
 
         return _fetch_all(
             [
@@ -393,10 +393,9 @@ class CMKFetcher:
                 for node in self.config_cache.nodes(host_name)
             ]
 
-        stored_walk_path = Path(cmk.utils.paths.snmpwalks_dir)
-        walk_cache_path = Path(cmk.utils.paths.var_dir) / "snmp_cache"
-        file_cache_path = Path(cmk.utils.paths.data_source_cache_dir)
-        tcp_cache_path = Path(cmk.utils.paths.tcp_cache_dir)
+        walk_cache_path = cmk.utils.paths.var_dir / "snmp_cache"
+        file_cache_path = cmk.utils.paths.data_source_cache_dir
+        tcp_cache_path = cmk.utils.paths.tcp_cache_dir
         tls_config = TLSConfig(
             cas_dir=Path(cmk.utils.paths.agent_cas_dir),
             ca_store=Path(cmk.utils.paths.agent_cert_store),
@@ -417,13 +416,13 @@ class CMKFetcher:
                                 current_host_name
                             ),
                             on_error=self.on_error if not is_cluster else OnError.RAISE,
-                            oid_cache_dir=Path(cmk.utils.paths.snmp_scan_cache_dir),
+                            oid_cache_dir=cmk.utils.paths.snmp_scan_cache_dir,
                         ),
                         selected_sections=(
                             self.selected_sections if not is_cluster else NO_SELECTION
                         ),
                         backend_override=self.snmp_backend_override,
-                        stored_walk_path=stored_walk_path,
+                        stored_walk_path=cmk.utils.paths.snmpwalks_dir,
                         walk_cache_path=walk_cache_path,
                     ),
                     is_cluster=current_host_name in hosts_config.clusters,

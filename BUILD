@@ -38,6 +38,90 @@ string_flag(
 )
 
 string_flag(
+    name = "cmk_distro",
+    build_setting_default = "UNSET",
+    values = [
+        "almalinux-8",
+        "almalinux-9",
+        "cma-4",
+        "debian-11",
+        "debian-12",
+        "sles-15sp3",
+        "sles-15sp4",
+        "sles-15sp5",
+        "sles-15sp6",
+        "ubuntu-22.04",
+        "ubuntu-24.04",
+    ],
+)
+
+config_setting(
+    name = "almalinux_8",
+    flag_values = {":cmk_distro": "almalinux-8"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "almalinux_9",
+    flag_values = {":cmk_distro": "almalinux-9"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "cma_4",
+    flag_values = {":cmk_distro": "cma-4"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "debian_11",
+    flag_values = {":cmk_distro": "debian-11"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "debian_12",
+    flag_values = {":cmk_distro": "debian-12"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "sles_15sp3",
+    flag_values = {":cmk_distro": "sles-15sp3"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "sles_15sp4",
+    flag_values = {":cmk_distro": "sles-15sp4"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "sles_15sp5",
+    flag_values = {":cmk_distro": "sles-15sp5"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "sles_15sp6",
+    flag_values = {":cmk_distro": "sles-15sp6"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "ubuntu_22.04",
+    flag_values = {":cmk_distro": "ubuntu-22.04"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "ubuntu_24.04",
+    flag_values = {":cmk_distro": "ubuntu-24.04"},
+    visibility = ["//visibility:public"],
+)
+
+string_flag(
     # For a discussion of Linux Standard Base (LSB) vs Filesystem Hierarchy Standard (FHS),
     # see https://lists.linux-foundation.org/pipermail/lsb-discuss/2011-February/006674.html
     #
@@ -182,7 +266,7 @@ write_file(
         "@//:gpl+enterprise_repo": [
             "add_packages(repo_path.joinpath('non-free'))",
             # needed for composition tests: they want to 'import cmk_update_agent' via the .venv
-            "sys.path.insert(0, str(repo_path.joinpath('non-free/cmk-update-agent')))",
+            "sys.path.insert(0, str(repo_path.joinpath('non-free/packages/cmk-update-agent')))",
         ],
     }),
 )
@@ -195,6 +279,7 @@ create_venv(
     whls = [
         "@rrdtool_native//:rrdtool_python_wheel",
         "//packages/cmk-werks:wheel_entrypoint_only",
+        "//packages/cmk-mkp-tool:wheel_entrypoint_only",
     ] + select({
         "@//:gpl_repo": [],
         "@//:gpl+enterprise_repo": [
@@ -244,4 +329,14 @@ gazelle(
 
 gazelle(
     name = "gazelle",
+)
+
+alias(
+    name = "format",
+    actual = "//bazel/tools:format",
+)
+
+alias(
+    name = "format.check",
+    actual = "//bazel/tools:format.check",
 )

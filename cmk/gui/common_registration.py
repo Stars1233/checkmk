@@ -50,6 +50,7 @@ from cmk.gui.data_source import DataSourceRegistry
 from cmk.gui.main_menu import MegaMenuRegistry
 from cmk.gui.nodevis import nodevis
 from cmk.gui.openapi import registration as openapi_registration
+from cmk.gui.openapi.framework.registry import VersionedEndpointRegistry
 from cmk.gui.openapi.restful_objects.endpoint_family import EndpointFamilyRegistry
 from cmk.gui.openapi.restful_objects.registry import EndpointRegistry
 from cmk.gui.pages import PageRegistry
@@ -59,7 +60,7 @@ from cmk.gui.permissions import PermissionRegistry, PermissionSectionRegistry
 from cmk.gui.quick_setup import registration as quick_setup_registration
 from cmk.gui.quick_setup.v0_unstable._registry import QuickSetupRegistry
 from cmk.gui.sidebar import SnapinRegistry
-from cmk.gui.type_defs import TopicMenuItem
+from cmk.gui.type_defs import TopicMenuTopicEntries
 from cmk.gui.userdb import register_config_file as user_connections_config
 from cmk.gui.userdb import register_userroles_config_file as register_userroles
 from cmk.gui.userdb import registration as userdb_registration
@@ -141,6 +142,7 @@ def register(
     host_attribute_topic_registry: HostAttributeTopicRegistry,
     replication_path_registry: ReplicationPathRegistry,
     endpoint_registry: EndpointRegistry,
+    versioned_endpoint_registry: VersionedEndpointRegistry,
     endpoint_family_registry: EndpointFamilyRegistry,
     user_connector_registry: UserConnectorRegistry,
     layout_registry: LayoutRegistry,
@@ -151,9 +153,9 @@ def register(
     user_attribute_registry: UserAttributeRegistry,
     quick_setup_registry: QuickSetupRegistry,
     help_info_line: Callable[[], str],
-    help_learning_items: Callable[[], list[TopicMenuItem]],
-    help_developer_items: Callable[[], list[TopicMenuItem]],
-    help_about_checkmk_items: Callable[[], list[TopicMenuItem]],
+    help_learning_items: Callable[[], TopicMenuTopicEntries],
+    help_developer_items: Callable[[], TopicMenuTopicEntries],
+    help_about_checkmk_items: Callable[[], TopicMenuTopicEntries],
 ) -> None:
     hooks.register_thread_cache_cleanup()
     pagetypes.register(mega_menu_registry)
@@ -184,6 +186,8 @@ def register(
         rulespec_registry,
         icon_and_action_registry,
         cron_job_registry,
+        endpoint_family_registry,
+        versioned_endpoint_registry,
     )
     dashboard_registration.register(
         permission_section_registry,
@@ -280,7 +284,12 @@ def register(
     graphing.register(page_registry, config_variable_registry, autocompleter_registry)
     agent_registration.register(permission_section_registry)
     weblib.register(page_registry)
-    openapi_registration.register(endpoint_registry, endpoint_family_registry, job_registry)
+    openapi_registration.register(
+        endpoint_registry,
+        versioned_endpoint_registry,
+        endpoint_family_registry,
+        job_registry,
+    )
 
     register_userroles(config_file_registry)
     groups_io.register(config_file_registry)

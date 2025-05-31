@@ -9,7 +9,7 @@ from __future__ import annotations
 import contextlib
 import json
 import re
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, contextmanager, nullcontext
 from enum import auto, Enum
 from typing import Any, Final, Literal, NamedTuple
@@ -155,7 +155,7 @@ class Table:
         isopen: bool = True,
     ):
         super().__init__()
-        self.next_func = lambda: None
+        self.next_func: Callable[[], None] = lambda: None
         self.next_header: str | None = None
 
         # Use our pagename as table id if none is specified
@@ -682,15 +682,18 @@ def _filter_rows(rows: TableRows, search_term: str) -> TableRows:
             # Filter out buttons
             if cell.css is not None and "buttons" in cell.css:
                 continue
+
+            cell_string = str(cell.content)
             # The inpage search of the folder page adds href with
             # "search=searchterm" to cell.content and would always match => remove for matching
             if "inpage_search_form" in cell.content:
-                cell_string = str(cell.content).replace("search=" + search_term, "")
-                if match_regex.search(cell_string) is not None:
-                    filtered_rows.append(row)
-                    break
-                continue
-            if match_regex.search(str(cell.content)):
+                cell_string = (
+                    str(cell.content)
+                    .replace("search=" + search_term, "")
+                    .replace("search%253D" + search_term, "")  # url encoded string
+                )
+
+            if match_regex.search(cell_string):
                 filtered_rows.append(row)
                 break  # skip other cells when matched
     return filtered_rows

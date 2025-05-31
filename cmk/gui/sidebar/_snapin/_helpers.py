@@ -17,6 +17,7 @@ from cmk.gui.htmllib.generator import HTMLWriter
 from cmk.gui.htmllib.html import html
 from cmk.gui.i18n import _
 from cmk.gui.logged_in import user
+from cmk.gui.main_menu import get_main_menu_items_prefixed_by_segment
 from cmk.gui.sites import filter_available_site_choices
 from cmk.gui.type_defs import Choices, Icon, TopicMenuItem, TopicMenuTopic, Visual
 from cmk.gui.utils.html import HTML
@@ -115,7 +116,9 @@ def snapin_site_choice(ident: str, choices: list[tuple[SiteId, str]]) -> list[Si
     return only_sites
 
 
-def make_topic_menu(visuals: Sequence[tuple[str, tuple[str, Visual]]]) -> list[TopicMenuTopic]:
+def make_topic_menu(
+    visuals: Sequence[tuple[str, tuple[str, Visual]]],
+) -> list[TopicMenuTopic]:
     topics = {p.name(): p for p in pagetypes.PagetypeTopics.load().permitted_instances_sorted()}
 
     by_topic: dict[pagetypes.PagetypeTopics, TopicMenuTopic] = {}
@@ -145,12 +148,12 @@ def make_topic_menu(visuals: Sequence[tuple[str, tuple[str, Visual]]]) -> list[T
                 name=topic.name(),
                 title=topic.title(),
                 max_entries=topic.max_entries(),
-                items=[],
+                entries=[],
                 icon=topic.icon_name(),
                 hide=topic.hide(),
             ),
         )
-        topic_menu_topic.items.append(
+        topic_menu_topic.entries.append(
             TopicMenuItem(
                 name=name,
                 title=visual_title(
@@ -164,9 +167,9 @@ def make_topic_menu(visuals: Sequence[tuple[str, tuple[str, Visual]]]) -> list[T
             )
         )
 
-    # Sort the items of all topics
+    # Sort the entries of all topics
     for topic_menu in by_topic.values():
-        topic_menu.items.sort(key=lambda i: (i.sort_index, i.title))
+        topic_menu.entries.sort(key=lambda i: (i.sort_index, i.title))
 
     # Return the sorted topics
     return [
@@ -206,7 +209,7 @@ def show_topic_menu(
 
 
 def _show_topic(treename: str, topic: TopicMenuTopic, show_item_icons: bool) -> None:
-    if not topic.items:
+    if not topic.entries:
         return
 
     with foldable_container(
@@ -216,12 +219,14 @@ def _show_topic(treename: str, topic: TopicMenuTopic, show_item_icons: bool) -> 
         title=topic.title,
         indent=True,
     ):
-        for item in topic.items:
+        for item in get_main_menu_items_prefixed_by_segment(topic):
             if show_item_icons:
                 html.open_li(class_=["sidebar"] + (["show_more_mode"] if item.is_show_more else []))
                 iconlink(item.title, item.url, item.icon or "icon_missing")
                 html.close_li()
             else:
                 bulletlink(
-                    item.title, item.url, onclick="return cmk.sidebar.wato_views_clicked(this)"
+                    item.title,
+                    item.url,
+                    onclick="return cmk.sidebar.wato_views_clicked(this)",
                 )

@@ -14,11 +14,11 @@ from collections.abc import Collection, Iterator
 
 from livestatus import SiteConfiguration
 
+from cmk.ccc.hostaddress import HostName
 from cmk.ccc.site import SiteId
 from cmk.ccc.version import Edition, edition, edition_has_enforced_licensing
 
 from cmk.utils import paths, render
-from cmk.utils.hostaddress import HostName
 from cmk.utils.licensing.registry import get_licensing_user_effect
 from cmk.utils.licensing.usage import get_license_usage_report_validity, LicenseUsageReportValidity
 from cmk.utils.setup_search_index import request_index_rebuild
@@ -246,10 +246,12 @@ class ModeRevertChanges(WatoMode, activate_changes.ActivateChanges):
 
         # All sites and domains can be affected by a restore: Better restart everything.
         _changes.add_change(
-            "changes-discarded",
-            msg,
+            action_name="changes-discarded",
+            text=msg,
+            user_id=user.id,
             domains=ABCConfigDomain.enabled_domains(),
             need_restart=True,
+            use_git=active_config.wato_use_git,
         )
 
         _extract_snapshot(file_to_restore)

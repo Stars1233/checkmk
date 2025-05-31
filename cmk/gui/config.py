@@ -176,10 +176,10 @@ def load_config() -> None:
         _load_config_file_to(str(experimental_config), raw_config)
 
     # First load main file
-    _load_config_file_to(cmk.utils.paths.default_config_dir + "/multisite.mk", raw_config)
+    _load_config_file_to(str(cmk.utils.paths.default_config_dir / "multisite.mk"), raw_config)
 
     # Load also recursively all files below multisite.d
-    conf_dir = cmk.utils.paths.default_config_dir + "/multisite.d"
+    conf_dir = cmk.utils.paths.default_config_dir / "multisite.d"
     filelist = []
     if os.path.isdir(conf_dir):
         for root, _directories, files in os.walk(conf_dir):
@@ -233,7 +233,7 @@ def make_config_object(raw_config: dict[str, Any]) -> Config:
             bases=(Config,),
         )
 
-    return cls(**raw_config)
+    return cls(**raw_config)  # type: ignore[no-any-return]
 
 
 def execute_post_config_load_hooks() -> None:
@@ -277,7 +277,7 @@ def _get_default_config_from_module_plugins() -> dict[str, Any]:
         if k[0] == "_" or k in ("CREConfig", "CEEConfig", "CMEConfig"):
             continue
 
-        if isinstance(v, (dict, list)):
+        if isinstance(v, dict | list):
             v = copy.deepcopy(v)
 
         default_config[k] = v

@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, override
 
 import cmk.ccc.plugin_registry
 from cmk.ccc.exceptions import MKGeneralException
@@ -36,7 +36,7 @@ from cmk.gui.utils.urls import make_confirm_delete_link, makeactionuri, makeuri_
 def register(
     permission_section_registry: PermissionSectionRegistry, permission_registry: PermissionRegistry
 ) -> None:
-    permission_section_registry.register(PermissionSectionBackgroundJobs)
+    permission_section_registry.register(PERMISSION_SECTION_BACKGROUND_JOBS)
     permission_registry.register(PermissionManageJobs)
     permission_registry.register(PermissionStopJobs)
     permission_registry.register(PermissionDeleteJobs)
@@ -45,18 +45,14 @@ def register(
     permission_registry.register(PermissionDeleteForeignJobs)
 
 
-class PermissionSectionBackgroundJobs(PermissionSection):
-    @property
-    def name(self) -> str:
-        return "background_jobs"
-
-    @property
-    def title(self) -> str:
-        return _("Background jobs")
+PERMISSION_SECTION_BACKGROUND_JOBS = PermissionSection(
+    name="background_jobs",
+    title=_("Background jobs"),
+)
 
 
 PermissionManageJobs = Permission(
-    section=PermissionSectionBackgroundJobs,
+    section=PERMISSION_SECTION_BACKGROUND_JOBS,
     name="manage_jobs",
     title=_l("Manage background jobs"),
     description=_l("Allows you to see the job overview page."),
@@ -64,7 +60,7 @@ PermissionManageJobs = Permission(
 )
 
 PermissionStopJobs = Permission(
-    section=PermissionSectionBackgroundJobs,
+    section=PERMISSION_SECTION_BACKGROUND_JOBS,
     name="stop_jobs",
     title=_l("Stop background jobs"),
     description=_l(
@@ -74,7 +70,7 @@ PermissionStopJobs = Permission(
 )
 
 PermissionDeleteJobs = Permission(
-    section=PermissionSectionBackgroundJobs,
+    section=PERMISSION_SECTION_BACKGROUND_JOBS,
     name="delete_jobs",
     title=_l("Delete background jobs"),
     description=_l(
@@ -84,7 +80,7 @@ PermissionDeleteJobs = Permission(
 )
 
 PermissionSeeForeignJobs = Permission(
-    section=PermissionSectionBackgroundJobs,
+    section=PERMISSION_SECTION_BACKGROUND_JOBS,
     name="see_foreign_jobs",
     title=_l("See foreign background jobs"),
     description=_l("Allows you to see jobs of other users."),
@@ -92,7 +88,7 @@ PermissionSeeForeignJobs = Permission(
 )
 
 PermissionStopForeignJobs = Permission(
-    section=PermissionSectionBackgroundJobs,
+    section=PERMISSION_SECTION_BACKGROUND_JOBS,
     name="stop_foreign_jobs",
     title=_l("Stop foreign background jobs"),
     description=_l("Allows you to stop jobs of other users. Note: some jobs cannot be stopped."),
@@ -100,7 +96,7 @@ PermissionStopForeignJobs = Permission(
 )
 
 PermissionDeleteForeignJobs = Permission(
-    section=PermissionSectionBackgroundJobs,
+    section=PERMISSION_SECTION_BACKGROUND_JOBS,
     name="delete_foreign_jobs",
     title=_l("Delete foreign background jobs"),
     description=_l("Allows you to delete jobs of other users. Note: some jobs cannot be deleted"),
@@ -119,12 +115,14 @@ class GUIBackgroundJobManager(background_job.BackgroundJobManager):
     def __init__(self) -> None:
         super().__init__(logger=log.logger.getChild("background-job.manager"))
 
+    @override
     def get_running_job_ids(
         self, job_class: type[background_job.BackgroundJob]
     ) -> list[background_job.JobId]:
         job_ids = super().get_running_job_ids(job_class)
         return self._filter_available_jobs(job_ids)
 
+    @override
     def get_all_job_ids(
         self, job_class: type[background_job.BackgroundJob] | None = None
     ) -> list[background_job.JobId]:

@@ -10,9 +10,9 @@ from pathlib import Path
 from stat import filemode
 from typing import TypedDict
 
-from ._installed import Installer
 from ._mkp import PackagePart
 from ._parts import PathConfig, ui_title
+from ._type_defs import PackageID
 
 
 def _all_local_files(path_config: PathConfig) -> Mapping[PackagePart | None, set[Path]]:
@@ -37,6 +37,12 @@ def _all_local_files(path_config: PathConfig) -> Mapping[PackagePart | None, set
         if resolved not in resolved_to_abstracted or resolved_to_abstracted[resolved] == resolved:
             resolved_to_abstracted[resolved] = path
 
+    return categorize_files(resolved_to_abstracted, path_config)
+
+
+def categorize_files(
+    resolved_to_abstracted: Mapping[Path, Path], path_config: PathConfig
+) -> Mapping[PackagePart | None, set[Path]]:
     categorized_files: dict[PackagePart | None, set[Path]] = {}
     for resolved_full_path, user_full_path in resolved_to_abstracted.items():
         if (package_part := path_config.get_part(resolved_full_path)) is not None:
@@ -54,7 +60,10 @@ def _all_local_files(path_config: PathConfig) -> Mapping[PackagePart | None, set
 def _relative_path(
     package_part: PackagePart, resolved_full_path: Path, path_config: PathConfig
 ) -> Path:
-    return resolved_full_path.relative_to(path_config.resolved_paths[package_part])
+    rpath = resolved_full_path.relative_to(path_config.resolved_paths[package_part])
+    if package_part is PackagePart.LIB and (rpath_str := str(rpath)).startswith("python3/cmk/"):
+        return Path(f"check_mk/{rpath_str[11:]}")
+    return rpath
 
 
 def all_rule_pack_files(ec_path: Path) -> set[Path]:
@@ -86,10 +95,10 @@ class FileMetaInfo(TypedDict):
     mode: str
 
 
-def files_inventory(installer: Installer, path_config: PathConfig) -> Sequence[FileMetaInfo]:
+def files_inventory(
+    package_map: Mapping[PackagePart, Mapping[Path, PackageID]], path_config: PathConfig
+) -> Sequence[FileMetaInfo]:
     """return an overview of all relevant files found on disk"""
-    package_map = installer.get_packaged_files()
-
     files_and_packages = sorted(
         (
             (part, file, package_map[part].get(file) if part else None)

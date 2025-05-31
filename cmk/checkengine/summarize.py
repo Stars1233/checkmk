@@ -18,9 +18,9 @@ from cmk.ccc.exceptions import (
     MKSNMPError,
     MKTimeout,
 )
+from cmk.ccc.hostaddress import HostAddress, HostName
 
 import cmk.utils.resulttype as result
-from cmk.utils.hostaddress import HostAddress, HostName
 from cmk.utils.sectionname import SectionName
 
 from cmk.checkengine.checkresults import ActiveCheckResult
@@ -84,12 +84,7 @@ def summarize_failure(exit_spec: ExitSpec, exc: Exception) -> Sequence[ActiveChe
     def extract_status(exc: Exception) -> int:
         if isinstance(
             exc,
-            (
-                MKAgentError,
-                MKFetcherError,
-                MKIPAddressLookupError,
-                MKSNMPError,
-            ),
+            MKAgentError | MKFetcherError | MKIPAddressLookupError | MKSNMPError,
         ):
             return exit_spec.get("connection", 2)
         if isinstance(exc, MKTimeout):

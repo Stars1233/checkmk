@@ -14,10 +14,10 @@ from typing import Any, Final, Literal, Self, TypedDict
 
 from cmk.ccc import store
 from cmk.ccc.exceptions import MKGeneralException
+from cmk.ccc.hostaddress import HostName
 from cmk.ccc.site import SiteId
 
 import cmk.utils.paths
-from cmk.utils.hostaddress import HostName
 from cmk.utils.sectionname import SectionName
 from cmk.utils.servicename import ServiceName
 
@@ -172,10 +172,10 @@ class LabelsSerializer:
 class DiscoveredHostLabelsStore:
     """Managing persistence of discovered labels"""
 
-    def __init__(self, hostname: HostName) -> None:
+    def __init__(self, node_name: HostName) -> None:
         super().__init__()
         self._store = store.ObjectStore(
-            path=cmk.utils.paths.discovered_host_labels_dir / f"{hostname}.mk",
+            path=cmk.utils.paths.discovered_host_labels_dir / f"{node_name}.mk",
             serializer=LabelsSerializer(),
         )
         self.file_path: Final = self._store.path

@@ -40,6 +40,8 @@ from cmk import trace
 
 
 class AbstractWSGIApp(abc.ABC):
+    __slots__ = ("debug",)
+
     def __init__(self, debug: bool = False) -> None:
         self.debug = debug
 
@@ -62,7 +64,7 @@ def ensure_authentication(func: pages.PageHandlerFunc) -> Callable[[], Response]
             if not authenticated:
                 return _handle_not_authenticated()
 
-            if isinstance(session.user, (LoggedInRemoteSite, LoggedInSuperUser)):
+            if isinstance(session.user, LoggedInRemoteSite | LoggedInSuperUser):
                 func()
                 return response
 

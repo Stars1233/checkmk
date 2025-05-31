@@ -40,9 +40,10 @@ from ._openapi import register as openapi_register
 from ._sidebar_snapin import SidebarSnapinEventConsole
 from .autocompleters import service_levels_autocompleter, syslog_facilities_autocompleter
 from .icon import MkeventdIcon
-from .permission_section import PermissionSectionEventConsole
 
 __all__ = ["register"]
+
+from .permission_section import PERMISSION_SECTION_EVENT_CONSOLE
 
 
 def register(
@@ -94,7 +95,7 @@ def register(
         notification_parameter_registry,
         replication_path_registry,
     )
-    permission_section_registry.register(PermissionSectionEventConsole)
+    permission_section_registry.register(PERMISSION_SECTION_EVENT_CONSOLE)
     autocompleter_registry.register_autocompleter(
         "syslog_facilities", syslog_facilities_autocompleter
     )

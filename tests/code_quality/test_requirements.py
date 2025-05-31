@@ -121,15 +121,10 @@ def test_all_packages_pinned(loaded_requirements: dict[str, str]) -> None:
     # Test implements process as described in:
     # https://wiki.lan.tribe29.com/books/how-to/page/creating-a-new-beta-branch#bkmrk-pin-dev-dependencies
     unpinned_packages = [req for req in loaded_requirements.keys() if not loaded_requirements[req]]
-    try:
-        assert not unpinned_packages, (
-            "The following packages are not pinned: %s. "
-            "For the sake of reproducibility, all packages must be pinned to a version!"
-        ) % " ,".join(unpinned_packages)
-    except AssertionError:
-        env_branch = f"{branch_from_env(env_var='GERRIT_BRANCH', fallback='fallback')}"
-        base_branch = current_base_branch_name()
-        logging.getLogger().warning(f"Base branch: {base_branch}, env_branch: {env_branch}")
+    assert not unpinned_packages, (
+        "The following packages are not pinned: %s. "
+        "For the sake of reproducibility, all packages must be pinned to a version!"
+    ) % " ,".join(unpinned_packages)
 
 
 def is_python_file(file_path: Path) -> bool:
@@ -171,12 +166,17 @@ def iter_sourcefiles(basepath: Path) -> Iterable[Path]:
 
 
 def iter_relevant_files(basepath: Path) -> Iterable[Path]:
-    exclusions = (
+    exclusions = [
         basepath / "agents",  # There are so many optional imports...
         basepath / "node_modules",
         basepath / "omd/license_sources",  # update_licenses.py contains imports
         basepath / "tests",
-    )
+    ]
+    if is_enterprise_repo():
+        # Not deployed with the Checkmk site Python environment, but required by tests in the
+        # cmk-update-agent package
+        exclusions.append(basepath / "non-free/packages/cmk-update-agent")
+
     exclusions_from_exclusions = (basepath / "agents/plugins/mk_jolokia.py",)
 
     for source_file_path in iter_sourcefiles(basepath):
@@ -424,3 +424,15 @@ def test_runtime_requirements_are_a_strict_subset_of_all_requirements() -> None:
     assert runtime.issubset(reqs), (
         f"The following dependencies are incorrectly pinned: {dict(runtime - reqs)}"
     )
+
+
+def test_constraints() -> None:
+    """Make sure all constraints have a ticket to be removed"""
+    offenses = []
+    with (repo_path() / "constraints.txt").open() as constraint_file:
+        req = requirements.parse(constraint_file)
+        for r in req:
+            if re.search(r"\bCMK-\d{5}\b", r.line):
+                continue
+            offenses.append(f"Constraint for {r.name} has no ticket to be removed")
+    assert not offenses, "\n".join(offenses)

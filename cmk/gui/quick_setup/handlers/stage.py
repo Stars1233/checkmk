@@ -13,10 +13,11 @@ from typing import Any
 
 from pydantic import BaseModel, ValidationError
 
+from livestatus import SiteConfiguration
+
 from cmk.ccc import store
 from cmk.ccc.exceptions import MKGeneralException
 from cmk.ccc.i18n import _
-from cmk.ccc.site import SiteId
 
 from cmk.gui.background_job import (
     BackgroundJob,
@@ -75,9 +76,8 @@ from cmk.gui.quick_setup.v0_unstable.widgets import (
     FormSpecId,
     Widget,
 )
-from cmk.gui.site_config import get_site_config
 from cmk.gui.watolib.automation_commands import AutomationCommand
-from cmk.gui.watolib.automations import do_remote_automation
+from cmk.gui.watolib.automations import do_remote_automation, MKAutomationException
 
 from cmk.rulesets.v1.form_specs import FormSpec
 
@@ -202,6 +202,7 @@ def recap_stage(
     stages_raw_formspecs: Sequence[RawFormData],
     quick_setup_formspec_map: FormspecMap,
     progress_logger: ProgressLogger,
+    debug: bool,
 ) -> Sequence[Widget]:
     parsed_formspec = form_spec_parse(stages_raw_formspecs, quick_setup_formspec_map)
     recap_widgets: list[Widget] = []
@@ -212,6 +213,7 @@ def recap_stage(
                 stage_index,
                 parsed_formspec,
                 progress_logger,
+                debug,
             )
         )
     return recap_widgets
@@ -226,7 +228,7 @@ class StageActionResult(BaseModel, frozen=False):
 
     @classmethod
     def load_from_job_result(cls, job_id: str) -> "StageActionResult":
-        work_dir = str(Path(BackgroundJobDefines.base_dir) / job_id)
+        work_dir = Path(BackgroundJobDefines.base_dir) / job_id
         if not os.path.exists(work_dir):
             raise MKInternalError(None, _("Stage action result not found"))
         content = store.load_text_from_file(cls._file_path(work_dir))
@@ -237,25 +239,24 @@ class StageActionResult(BaseModel, frozen=False):
                 None, f"Error reading stage action result with content: {content}"
             ) from e
 
-    def save_to_file(self, work_dir: str) -> None:
+    def save_to_file(self, work_dir: Path) -> None:
         store.save_text_to_file(self._file_path(work_dir), self.model_dump_json())
 
     @staticmethod
-    def _file_path(work_dir: str) -> str:
-        return os.path.join(
-            work_dir,
-            "validation_and_recap_result.json",
-        )
+    def _file_path(work_dir: Path) -> Path:
+        return work_dir / "validation_and_recap_result.json"
 
 
 def verify_custom_validators_and_recap_stage(
+    *,
     quick_setup: QuickSetup,
     stage_index: StageIndex,
     stage_action_id: ActionId,
     input_stages: Sequence[dict],
     form_spec_map: FormspecMap,
     built_stages: Sequence[QuickSetupStage],
-    progress_logger: ProgressLogger | None = None,
+    progress_logger: ProgressLogger | None,
+    debug: bool,
 ) -> StageActionResult:
     if progress_logger is None:
         progress_logger = InfoLogger()
@@ -283,6 +284,7 @@ def verify_custom_validators_and_recap_stage(
         stages_raw_formspecs=[RawFormData(stage["form_data"]) for stage in input_stages],
         quick_setup_formspec_map=form_spec_map,
         progress_logger=progress_logger,
+        debug=debug,
     )
     return response
 
@@ -332,7 +334,7 @@ class QuickSetupStageActionBackgroundJob(BackgroundJob):
         with job_interface.gui_context():
             localize(self._language)
             try:
-                self._run_quick_setup_stage_action(job_interface)
+                self._run_quick_setup_stage_action(job_interface, debug=active_config.debug)
             except Exception as e:
                 job_interface.get_logger().debug(
                     "Exception raised while the Quick setup stage action: %s", e
@@ -343,9 +345,11 @@ class QuickSetupStageActionBackgroundJob(BackgroundJob):
                     background_job_exception=BackgroundJobException(
                         message=exception_message, traceback=traceback.format_exc()
                     )
-                ).save_to_file(job_interface.get_work_dir())
+                ).save_to_file(Path(job_interface.get_work_dir()))
 
-    def _run_quick_setup_stage_action(self, job_interface: BackgroundProcessInterface) -> None:
+    def _run_quick_setup_stage_action(
+        self, job_interface: BackgroundProcessInterface, *, debug: bool
+    ) -> None:
         job_interface.send_progress_update(_("Starting Quick stage action..."))
 
         register_config_setups(quick_setup_registry)
@@ -362,10 +366,11 @@ class QuickSetupStageActionBackgroundJob(BackgroundJob):
             form_spec_map=form_spec_map,
             built_stages=built_stages_up_to_index,
             progress_logger=JobBasedProgressLogger(job_interface),
+            debug=debug,
         )
 
         job_interface.send_progress_update(_("Saving the result..."))
-        action_result.save_to_file(job_interface.get_work_dir())
+        action_result.save_to_file(Path(job_interface.get_work_dir()))
         job_interface.send_result_message("Job finished.")
 
 
@@ -469,11 +474,14 @@ def get_stage_structure(
 
 def start_quick_setup_stage_action_job_on_remote(
     site_id: str,
+    site_config: SiteConfiguration,
     quick_setup_id: QuickSetupId,
     action_id: ActionId,
     stage_index: StageIndex,
     user_input_stages: Sequence[dict],
     language: str,
+    *,
+    debug: bool,
 ) -> str:
     job_uuid = str(uuid.uuid4())
     args = QuickSetupStageActionJobArgs(
@@ -484,15 +492,22 @@ def start_quick_setup_stage_action_job_on_remote(
         user_input_stages=user_input_stages,
         language=language,
     )
-    job_id = str(
-        do_remote_automation(
-            get_site_config(active_config, SiteId(site_id)),
-            "start-quick-setup-stage-action",
-            [
-                ("args", args.model_dump_json()),
-            ],
+    try:
+        job_id = str(
+            do_remote_automation(
+                site_config,
+                "start-quick-setup-stage-action",
+                [
+                    ("args", args.model_dump_json()),
+                ],
+                debug=debug,
+            )
         )
-    )
+    except (MKAutomationException, MKUserError) as e:
+        raise MKUserError(
+            None,
+            _("Failed to start the stage action on remote site %s: %s") % (site_id, e),
+        ) from e
     return job_id
 
 

@@ -12,7 +12,6 @@ import re
 import traceback
 from collections.abc import Callable, Mapping, Sequence
 from html import unescape
-from pathlib import Path
 from typing import Any, Literal
 
 from cmk.ccc.exceptions import MKGeneralException
@@ -293,7 +292,7 @@ class Painter(abc.ABC):
         If the data of a painter can not be exported as CSV (like trees), then this method
         raises a 'CSVExportError'.
         """
-        if isinstance(data := self._compute_data(row, cell), (str, HTML)):
+        if isinstance(data := self._compute_data(row, cell), str | HTML):
             return data
         raise ValueError("Data must be of type 'str' or 'HTML' but is %r" % type(data))
 
@@ -517,7 +516,7 @@ class Cell:
 
         try:
             tdclass, content = self.render_content(row)
-            assert isinstance(content, (str, HTML))
+            assert isinstance(content, str | HTML)
         except Exception:
             logger.exception("Failed to render painter '%s' (Row: %r)", self._painter_name, row)
             raise
@@ -534,7 +533,7 @@ class Cell:
 
         # Add the optional mouseover tooltip
         if content and self.has_tooltip():
-            assert isinstance(content, (str, HTML))
+            assert isinstance(content, str | HTML)
             tooltip_cell = Cell(
                 ColumnSpec(self.tooltip_painter_name()), None, self._registered_painters
             )
@@ -557,7 +556,7 @@ class Cell:
             themes = theme.icon_themes()
             for file_path in [
                 cmk.utils.paths.local_web_dir / "htdocs" / filename,
-                Path(cmk.utils.paths.web_dir, "htdocs", filename),
+                cmk.utils.paths.web_dir / "htdocs" / filename,
             ]:
                 for path_in_theme in (str(file_path).replace(t, "facelift") for t in themes):
                     if os.path.exists(path_in_theme):
@@ -571,7 +570,7 @@ class Cell:
                 css_classes = ""
             if rendered_txt is None:
                 return css_classes.split(), ""
-            assert isinstance(rendered_txt, (str, HTML))
+            assert isinstance(rendered_txt, str | HTML)
 
             txt = rendered_txt.strip()
             content: PDFCellContent = ""
@@ -614,7 +613,7 @@ class Cell:
         except PythonExportError:
             return "NOT_PYTHON_EXPORTABLE"
 
-        if isinstance(content, (str, HTML)):
+        if isinstance(content, str | HTML):
             # TODO At the moment we have to keep this str/HTML handling because export_for_python
             # falls back to render. As soon as all painters have explicit export_for_* methods,
             # we can remove this...
@@ -648,7 +647,7 @@ class Cell:
         except JSONExportError:
             return "NOT_JSON_EXPORTABLE"
 
-        if isinstance(content, (str, HTML)):
+        if isinstance(content, str | HTML):
             # TODO At the moment we have to keep this str/HTML handling because export_for_json
             # falls back to render. As soon as all painters have explicit export_for_* methods,
             # we can remove this...
@@ -681,7 +680,7 @@ class Cell:
         colspan: int | None = None,
     ) -> bool:
         tdclass, content = self.render(row, link_renderer)
-        assert isinstance(content, (str, HTML))
+        assert isinstance(content, str | HTML)
         html.td(content, class_=tdclass, colspan=colspan)
         return content != ""
 

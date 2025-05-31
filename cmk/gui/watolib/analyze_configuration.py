@@ -263,20 +263,22 @@ def _perform_tests_for_site(
     request_: Request,
     site_id: SiteId,
     categories: Sequence[str] | None,
+    debug: bool,
 ) -> _TestResult:
     # Executes the tests on the site. This method is executed in a dedicated
     # thread (One per site)
     logger.debug("[%s] Starting" % site_id)
     try:
-        if site_is_local(active_config, site_id):
+        if site_is_local(site_config := get_site_config(active_config, site_id), site_id):
             automation = AutomationCheckAnalyzeConfig()
             ac_test_results = automation.execute(_TCheckAnalyzeConfig(categories=categories))
         else:
             raw_ac_test_results = do_remote_automation(
-                get_site_config(active_config, site_id),
+                site_config,
                 "check-analyze-config",
                 [("categories", json.dumps(categories))],
                 timeout=request_.request_timeout - 10,
+                debug=debug,
             )
             assert isinstance(raw_ac_test_results, list)
             ac_test_results = [ACTestResult.from_repr(r) for r in raw_ac_test_results]
@@ -321,17 +323,23 @@ def perform_tests(
     active_config: Config,
     request_: Request,
     test_sites: SiteConfigurations,
-    categories: Sequence[str] | None = None,  # 'None' means 'No filtering'
+    *,
+    categories: Sequence[str] | None,  # 'None' means 'No filtering'
+    debug: bool,
 ) -> Mapping[SiteId, Sequence[ACTestResult]]:
     logger.debug("Executing tests for %d sites" % len(test_sites))
     if not test_sites:
         return {}
 
     pool = ThreadPool(processes=len(test_sites))
+
+    def run(site_id: SiteId) -> _TestResult:
+        return _perform_tests_for_site(logger, active_config, request_, site_id, categories, debug)
+
     active_tasks = {
         site_id: pool.apply_async(
-            func=copy_request_context(_perform_tests_for_site),
-            args=(logger, active_config, request_, site_id, categories),
+            func=copy_request_context(run),
+            args=(site_id,),
             error_callback=_error_callback,
         )
         for site_id in test_sites
