@@ -33,7 +33,7 @@ from cmk.gui.http import request
 from cmk.gui.i18n import _
 from cmk.gui.log import logger
 from cmk.gui.logged_in import user
-from cmk.gui.main_menu import mega_menu_registry
+from cmk.gui.main_menu import get_main_menu_items_prefixed_by_segment, mega_menu_registry
 from cmk.gui.pages import AjaxPage, PageResult
 from cmk.gui.type_defs import (
     HTTPVariables,
@@ -175,7 +175,8 @@ class ABCQuicksearchConductor(abc.ABC):
 class BasicPluginQuicksearchConductor(ABCQuicksearchConductor):
     """Passes queries through to a non livestatus plug-in
 
-    There is no aggregation done by this conductor. It deals with a single search plug-in."""
+    There is no aggregation done by this conductor. It deals with a single search plug-in.
+    """
 
     def __init__(self, used_filters: UsedFilters, filter_behaviour: FilterBehaviour) -> None:
         super().__init__(used_filters, filter_behaviour)
@@ -721,7 +722,10 @@ class QuicksearchSnapin(SidebarSnapin):
         html.open_div(id_="mk_side_search", onclick="cmk.quicksearch.close_popup();")
         html.input(id_=id_, type_="text", name="search", autocomplete="off")
         html.icon_button(
-            "#", _("Search"), "quicksearch", onclick="cmk.quicksearch.on_search_click();"
+            "#",
+            _("Search"),
+            "quicksearch",
+            onclick="cmk.quicksearch.on_search_click();",
         )
         html.close_div()
         html.div("", id_="mk_side_clear")
@@ -969,7 +973,10 @@ class GroupMatchPlugin(ABCLivestatusMatchPlugin):
             "servicegroup": ["servicegroup", "name"],
             "svcgroups": ["servicegroup_regex", "name"],
             # Host/Service domain (hosts, services)
-            "allservices": ["%sgroups" % self._group_type, "%s_groups" % self._group_type],
+            "allservices": [
+                "%sgroups" % self._group_type,
+                "%s_groups" % self._group_type,
+            ],
             "searchsvc": [
                 "%sgroups" % self._group_type,
                 self._group_type == "service" and "groups" or "host_groups",
@@ -1054,6 +1061,63 @@ class ServiceMatchPlugin(ABCLivestatusMatchPlugin):
 match_plugin_registry.register(ServiceMatchPlugin())
 
 
+class ServiceStateMatchPlugin(ABCLivestatusMatchPlugin):
+    def __init__(self) -> None:
+        super().__init__(["services"], "services", "st")
+        self._state_mapping = {"ok": "0", "warn": "1", "crit": "2", "unkn": "3", "pend": "p"}
+        self._supported_views = frozenset({"allservices", "searchsvc"})
+
+    def _get_service_state_from_filter(self, value: str) -> str:
+        return self._state_mapping.get(value.lower(), "")
+
+    def get_match_topic(self) -> str:
+        return _("Service states")
+
+    def get_livestatus_columns(self, livestatus_table: LivestatusTable) -> list[LivestatusColumn]:
+        return ["state"]
+
+    def get_livestatus_filters(
+        self, livestatus_table: LivestatusTable, used_filters: UsedFilters
+    ) -> LivestatusFilterHeaders:
+        if not (raw_used_filters := used_filters.get(self.name, [])):
+            return ""
+
+        filter_lines = [
+            f"Filter: state = {self._get_service_state_from_filter(entry)}"
+            for entry in raw_used_filters
+        ]
+
+        if len(filter_lines) > 1:
+            filter_lines.append("Or: %d" % len(filter_lines))
+
+        return "\n".join(filter_lines)
+
+    def get_matches(
+        self,
+        for_view: ViewName,
+        row: Row | None,
+        livestatus_table: LivestatusTable,
+        used_filters: UsedFilters,
+        rows: Rows,
+    ) -> Matches:
+        if for_view not in self._supported_views:
+            return None
+
+        url_infos: HTTPVariables = [
+            (f"st{self._get_service_state_from_filter(entry)}", "on")
+            for entry in used_filters.get(self.name, [])
+        ]
+
+        # add support for clicking on an individual filtered service.
+        service_field = row["description"] if row else ""
+        url_infos.append(("service", service_field))
+
+        return service_field, url_infos
+
+
+match_plugin_registry.register(ServiceStateMatchPlugin())
+
+
 class HostMatchPlugin(ABCLivestatusMatchPlugin):
     def __init__(self, livestatus_field: LivestatusColumn, name: str) -> None:
         super().__init__(["hosts", "services"], "hosts", name)
@@ -1098,10 +1162,22 @@ class HostMatchPlugin(ABCLivestatusMatchPlugin):
             # View name     Filter name
             # Exact matches (always uses hostname as filter)
             "host": {"name": "host", "address": "host", "alias": "host"},
-            "allservices": {"name": "host_regex", "address": "host_regex", "alias": "host_regex"},
+            "allservices": {
+                "name": "host_regex",
+                "address": "host_regex",
+                "alias": "host_regex",
+            },
             # Multi matches
-            "searchhost": {"name": "host_regex", "address": "host_address", "alias": "hostalias"},
-            "searchsvc": {"name": "host_regex", "address": "host_address", "alias": "hostalias"},
+            "searchhost": {
+                "name": "host_regex",
+                "address": "host_address",
+                "alias": "hostalias",
+            },
+            "searchsvc": {
+                "name": "host_regex",
+                "address": "host_address",
+                "alias": "hostalias",
+            },
         }
 
         view_info = supported_views.get(for_view)
@@ -1352,7 +1428,7 @@ class MonitorMenuMatchPlugin(ABCBasicMatchPlugin):
                 url=topic_menu_item.url,
             )
             for topic_menu_topic in mega_menu_registry["monitoring"].topics()
-            for topic_menu_item in topic_menu_topic.items
+            for topic_menu_item in get_main_menu_items_prefixed_by_segment(topic_menu_topic)
             if any(
                 query.lower() in match_text.lower()
                 for match_text in [
@@ -1424,7 +1500,7 @@ class MenuSearchResultsRenderer(abc.ABC):
             mega_menu_registry.menu_monitoring(),
         ]:
             mapping[str(menu.title)] = (
-                menu.icon + "_active" if isinstance(menu.icon, str) else default_icons[0],
+                (menu.icon + "_active" if isinstance(menu.icon, str) else default_icons[0]),
                 menu.icon if menu.icon else default_icons[1],
             )
 
@@ -1433,7 +1509,7 @@ class MenuSearchResultsRenderer(abc.ABC):
                     topic.icon if topic.icon else default_icons[0],
                     topic.icon if topic.icon else default_icons[1],
                 )
-                for item in topic.items:
+                for item in topic.entries:
                     mapping[item.title] = (
                         topic.icon if topic.icon else default_icons[0],
                         item.icon if item.icon else default_icons[1],
@@ -1456,7 +1532,10 @@ class MenuSearchResultsRenderer(abc.ABC):
         results: SearchResultsByTopic,
     ) -> str:
         with output_funnel.plugged():
-            default_icons = ("main_" + self.search_type + "_active", "main_" + self.search_type)
+            default_icons = (
+                "main_" + self.search_type + "_active",
+                "main_" + self.search_type,
+            )
             icon_mapping = self._get_icon_mapping(default_icons)
 
             for topic, search_results_iter in results:

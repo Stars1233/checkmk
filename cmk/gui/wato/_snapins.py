@@ -14,7 +14,7 @@ from cmk.gui.htmllib.generator import HTMLWriter
 from cmk.gui.htmllib.html import html
 from cmk.gui.i18n import _, _l
 from cmk.gui.logged_in import user
-from cmk.gui.main_menu import MegaMenuRegistry
+from cmk.gui.main_menu import get_main_menu_items_prefixed_by_segment, MegaMenuRegistry
 from cmk.gui.sidebar import (
     footnotelinks,
     make_topic_menu,
@@ -65,7 +65,7 @@ def render_wato(mini: bool) -> None:
 
     if mini:
         for topic in menu:
-            for item in topic.items:
+            for item in get_main_menu_items_prefixed_by_segment(topic):
                 html.icon_button(
                     url=item.url,
                     class_=["show_more_mode"] if item.is_show_more else [],
@@ -97,10 +97,10 @@ def get_wato_menu_items() -> list[TopicMenuTopic]:
                 name=module.topic.name,
                 title=str(module.topic.title),
                 icon=module.topic.icon_name,
-                items=[],
+                entries=[],
             ),
         )
-        topic.items.append(
+        topic.entries.append(
             TopicMenuItem(
                 name=module.mode_or_url,
                 title=module.title,
@@ -112,9 +112,9 @@ def get_wato_menu_items() -> list[TopicMenuTopic]:
             )
         )
 
-    # Sort the items of all topics
+    # Sort the entries of all topics
     for topic in by_topic.values():
-        topic.items.sort(key=lambda i: (i.sort_index, i.title))
+        topic.entries.sort(key=lambda i: (i.sort_index, i.title))
 
     # Return the sorted topics
     return [v for k, v in sorted(by_topic.items(), key=lambda e: (e[0].sort_index, e[0].title))]
@@ -188,7 +188,7 @@ class MatchItemGeneratorSetupMenu(ABCMatchItemGenerator):
                 ],
             )
             for topic_menu_topic in self._topic_generator()
-            for topic_menu_item in topic_menu_topic.items
+            for topic_menu_item in get_main_menu_items_prefixed_by_segment(topic_menu_topic)
         )
 
     @staticmethod
@@ -420,7 +420,7 @@ class SidebarSnapinWATOFoldertree(SidebarSnapin):
 
         for topic in topics:
             targets: Choices = []
-            for item in topic.items:
+            for item in get_main_menu_items_prefixed_by_segment(topic):
                 if item.url and item.url.startswith("dashboard.py"):
                     name = "dashboard|" + item.name
                 else:

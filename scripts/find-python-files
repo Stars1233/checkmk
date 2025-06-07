@@ -35,7 +35,6 @@ get_candidates_from_filesystem() {
     SEARCH+=" doc"
     PRUNE+=" -path $(realpath doc/treasures) -prune -o" # our "treasures" need much more love before they can be linted
     if [ -d "omd/packages/enterprise" ]; then
-        SEARCH+=" non-free/cmk-update-agent"
         SEARCH+=" omd/packages/enterprise/alert_handlers"
         SEARCH+=" omd/packages/enterprise/bin"
         SEARCH+=" omd/packages/enterprise/saml2/attribute_mappings"
@@ -83,10 +82,11 @@ filter_for_python_files() {
 
     # use "-r" over "--no-run-if-empty" and "-0" over "--null" to work on alpine
     # Exclude files below packages: The package specific jobs deal with them
-    grep --null --null-data -v -e "^$repo_path/packages/" -e "^$repo_path/non-free/packages/" |
+    # Don't look into .werks folder: werks may contain a python shebang for documentation and should not be linted of course
+    grep --null --null-data -v -e "^$repo_path/packages/" -e "^$repo_path/non-free/packages/" -e "$repo_path/.werks" |
         sort --zero-terminated |
         xargs -r -0 \
-            grep --binary-files=without-match --files-with-matches '^#!.*python3$'
+            grep --binary-files=without-match --files-with-matches '^#!.*python3\( -P\)\?'
 }
 
 main() {

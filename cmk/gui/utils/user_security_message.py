@@ -10,6 +10,8 @@ from functools import partial
 
 from jinja2 import Template
 
+from cmk.ccc.user import UserId
+
 from cmk.utils.mail import (
     Attachment,
     default_from_address,
@@ -18,7 +20,6 @@ from cmk.utils.mail import (
     send_mail_sendmail,
 )
 from cmk.utils.paths import web_dir
-from cmk.utils.user import UserId
 
 from cmk.gui import config, userdb, utils
 from cmk.gui.i18n import _
@@ -429,7 +430,7 @@ def _send_mail(email_address: str, event: SecurityNotificationEvent, event_time:
 
 def _get_attachments() -> list[Attachment]:
     attachments: list[Attachment] = []
-    with open(web_dir + "/htdocs/images/icons/checkmk_logo.png", "rb") as file:
+    with open(web_dir / "htdocs/images/icons/checkmk_logo.png", "rb") as file:
         attachments.append(
             Attachment(what="img", name="checkmk_logo.png", contents=file.read(), how="inline")
         )

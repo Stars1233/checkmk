@@ -34,42 +34,44 @@ from cmk.rulesets.v1.form_specs import (
 )
 
 
-class DummyNotificationParams(NotificationParameter):
-    @property
-    def ident(self) -> str:
-        return "dummy_params"
+def spec() -> ValueSpecDictionary:
+    raise NotImplementedError()
 
-    @property
-    def spec(self) -> ValueSpecDictionary:
-        raise NotImplementedError()
 
-    def _form_spec(self) -> DictionaryExtended:
-        return DictionaryExtended(
-            title=Title("Create notification with the following parameters"),
-            elements={
-                "test_param": DictElement(
-                    parameter_form=String(
-                        custom_validate=[not_empty()], prefill=DefaultValue("some_default_value")
-                    ),
-                    required=True,
+def form_spec() -> DictionaryExtended:
+    return DictionaryExtended(
+        title=Title("Create notification with the following parameters"),
+        elements={
+            "test_param": DictElement(
+                parameter_form=String(
+                    custom_validate=[not_empty()], prefill=DefaultValue("some_default_value")
                 ),
-                "select_param": DictElement(
-                    parameter_form=SingleChoice(
-                        elements=[
-                            SingleChoiceElement(name="name1", title=Title("title1")),
-                            SingleChoiceElement(name="name2", title=Title("title2")),
-                        ]
-                    ),
-                    required=False,
+                required=True,
+            ),
+            "select_param": DictElement(
+                parameter_form=SingleChoice(
+                    elements=[
+                        SingleChoiceElement(name="name1", title=Title("title1")),
+                        SingleChoiceElement(name="name2", title=Title("title2")),
+                    ]
                 ),
-            },
-        )
+                required=False,
+            ),
+        },
+    )
 
 
 @pytest.fixture(name="registry")
 def _registry() -> NotificationParameterRegistry:
     registry = NotificationParameterRegistry()
-    registry.register(DummyNotificationParams)
+    registry.register(
+        NotificationParameter(
+            ident="dummy_params",
+            spec=spec,
+            form_spec=form_spec,
+        )
+    )
+
     return registry
 
 
@@ -83,6 +85,8 @@ def test_save_notification_params(registry: NotificationParameterRegistry) -> No
             "general": {"description": "foo", "comment": "bar", "docu_url": "baz"},
             "parameter_properties": {"method_parameters": {"test_param": "bar"}},
         },
+        object_id=None,
+        pprint_value=False,
     )
 
     # THEN
@@ -124,10 +128,15 @@ def test_validation_on_saving_notification_params(
 ) -> None:
     # WHEN
     with pytest.raises(FormSpecValidationError):
-        save_notification_parameter(registry, "dummy_params", params)
+        save_notification_parameter(
+            registry,
+            "dummy_params",
+            params,
+            object_id=None,
+            pprint_value=False,
+        )
 
 
-@pytest.mark.usefixtures("request_context")
 def test_get_list_of_notification_parameter() -> None:
     # GIVEN
     NotificationParameterConfigFile().save(
@@ -140,7 +149,8 @@ def test_get_list_of_notification_parameter() -> None:
                     parameter_properties={"test_param": "bar"},
                 )
             }
-        }
+        },
+        pprint_value=False,
     )
 
     # WHEN
@@ -165,7 +175,8 @@ def test_get_notification_parameter(registry: NotificationParameterRegistry) -> 
                     parameter_properties={"test_param": "bar"},
                 )
             }
-        }
+        },
+        pprint_value=False,
     )
 
     # WHEN
@@ -178,7 +189,6 @@ def test_get_notification_parameter(registry: NotificationParameterRegistry) -> 
     assert param.data["parameter_properties"]["method_parameters"]["test_param"] == "bar"
 
 
-@pytest.mark.usefixtures("request_context")
 def test_get_notification_parameter_throws_keyerror(
     registry: NotificationParameterRegistry,
 ) -> None:
@@ -204,7 +214,8 @@ def test_get_notification_parameter_doesnt_just_return_from_disk(
                     },
                 )
             }
-        }
+        },
+        pprint_value=False,
     )
 
     # WHEN

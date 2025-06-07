@@ -49,11 +49,19 @@ import tarfile
 from pathlib import Path
 from shutil import rmtree
 from tempfile import mkdtemp
+from typing import NamedTuple
 
 import docker  # type: ignore[import-untyped]
 
 sys.path.insert(0, Path(__file__).parent.parent.parent.as_posix())
 from buildscripts.scripts.lib.common import cwd, strtobool
+
+
+class RegistryConfig(NamedTuple):
+    url: str
+    namespace: str
+    username_env_var: str
+    password_env_var: str
 
 
 def parse_arguments() -> argparse.Namespace:
@@ -231,9 +239,19 @@ def docker_login(registry: str, docker_username: str, docker_passphrase: str) ->
     docker_client.login(registry=registry, username=docker_username, password=docker_passphrase)
 
 
-def docker_push(args: argparse.Namespace, version_tag: str, registry: str, folder: str) -> None:
+def docker_push(
+    args: argparse.Namespace,
+    version_tag: str,
+    registry_config: RegistryConfig,
+) -> None:
     """Push images to a registry"""
-    this_repository = f"{registry}{folder}/check-mk-{args.edition}"
+    this_repository = f"{registry_config.url}{registry_config.namespace}/check-mk-{args.edition}"
+
+    docker_login(
+        registry=registry_config.url,
+        docker_username=os.environ[registry_config.username_env_var],
+        docker_passphrase=os.environ[registry_config.password_env_var],
+    )
 
     if "-rc" in version_tag:
         LOG.info("%s was a release candidate, do a retagging before pushing", version_tag)
@@ -241,16 +259,10 @@ def docker_push(args: argparse.Namespace, version_tag: str, registry: str, folde
         docker_tag(
             args=args,
             version_tag=version_tag,
-            registry=registry,
-            folder=folder,
+            registry=registry_config.url,
+            folder=registry_config.namespace,
             target_version=version_tag,
         )
-
-    docker_login(
-        registry=registry,
-        docker_username=os.environ.get("DOCKER_USERNAME", ""),
-        docker_passphrase=os.environ.get("DOCKER_PASSPHRASE", ""),
-    )
 
     LOG.info("Pushing '%s' as '%s' ...", this_repository, version_tag)
     resp = docker_client.images.push(
@@ -476,100 +488,124 @@ def build_image(
 def main() -> None:
     args: argparse.Namespace = parse_arguments()
 
+    dockerhub = RegistryConfig(
+        url="",  # That's basically dockerhub
+        namespace="checkmk",
+        username_env_var="DOCKER_USERNAME",
+        password_env_var="DOCKER_PASSPHRASE",
+    )
+    enterprise_registry = RegistryConfig(
+        url="registry.checkmk.com",
+        namespace="/enterprise",
+        username_env_var="DOCKER_USERNAME",
+        password_env_var="DOCKER_PASSPHRASE",
+    )
+    nexus = RegistryConfig(
+        url="artifacts.lan.tribe29.com:4000",
+        namespace="",
+        username_env_var="NEXUS_USERNAME",
+        password_env_var="NEXUS_PASSWORD",
+    )
+
     LOG_LEVELS = ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"][::-1]
     LOG.setLevel(LOG_LEVELS[min(len(LOG_LEVELS) - 1, max(args.verbose, 0))])
 
     LOG.debug("Docker version: %r", docker_client.info()["ServerVersion"])
     LOG.debug("args: %s", args)
 
-    # Default to our internal registry, set it to "" if you want push it to dockerhub
-    registry = os.environ.get("CHECKMK_REGISTRY", "registry.checkmk.com")
-    # the leading "/" is needed to finally create a valid namespace
-    # all registry == "" have a different folder and/or all folder == "" have a different registry
-    # a full repo name shall not start with "/"
-    folder = f"/{args.edition}"  # known as namespace
     match args.edition:
         case "raw":
             suffix = ".cre"
-            registry = ""
-            folder = "checkmk"
+            registries = [dockerhub]
         case "enterprise":
             suffix = ".cee"
+            registries = [enterprise_registry]
         case "managed":
             suffix = ".cme"
-            registry = ""
-            folder = "checkmk"
+            registries = [dockerhub]
         case "cloud":
             suffix = ".cce"
-            registry = ""
-            folder = "checkmk"
+            registries = [dockerhub, nexus]
         case "saas":
             suffix = ".cse"
-            registry = "artifacts.lan.tribe29.com:4000"
-            folder = ""
+            registries = [nexus]
         case _:
             raise Exception(f"ERROR: Unknown edition '{args.edition}'")
 
-    version_tag = Path(args.source_path).name
+    # remove potential meta data of tag
+    version_tag = Path(args.source_path).name.split("+")[0]
 
     LOG.debug("tmp_path: %s", tmp_path)
     LOG.debug("version_tag: %s", version_tag)
-    LOG.debug("registry: %s", registry)
+    LOG.debug("registry: %s", registries)
     LOG.debug("suffix: %s", suffix)
     LOG.debug("base_path: %s", base_path)
 
-    if os.environ.get("NEXUS_USERNAME"):
-        docker_login(
-            registry=os.environ.get("DOCKER_REGISTRY", ""),
-            docker_username=os.environ.get("NEXUS_USERNAME", ""),
-            docker_passphrase=os.environ.get("NEXUS_PASSWORD", ""),
-        )
-
-    match args.action:
-        case "build":
-            build_image(
-                args=args, registry=registry, folder=folder, version_tag=version_tag, suffix=suffix
-            )
-        case "push":
-            docker_push(args=args, registry=registry, folder=folder, version_tag=version_tag)
-        case "load":
-            if check_for_local_image(
-                args=args, registry=registry, folder=folder, version_tag=args.version
-            ):
-                return
-            LOG.info("Image not found locally, trying to download it ...")
-            if release_key := os.environ.get("RELEASE_KEY"):
-                internal_deploy_port = os.environ.get("INTERNAL_DEPLOY_PORT")
-                internal_deploy_dest = os.environ.get("INTERNAL_DEPLOY_DEST")
-                file_pattern = f"check-mk-{args.edition}-docker-{args.version}.tar.gz"
-                run_cmd(
-                    cmd=[
-                        "rsync",
-                        "--recursive",
-                        "--links",
-                        "--perms",
-                        "--times",
-                        "--verbose",
-                        "-e",
-                        f"ssh -o StrictHostKeyChecking=no -i {release_key} -p {internal_deploy_port}",
-                        f"{internal_deploy_dest}/{args.version_rc_aware}/{file_pattern}",
-                        f"{tmp_path}/",
-                    ]
+    for registry in registries:
+        match args.action:
+            case "build":
+                build_image(
+                    args=args,
+                    registry=registry.url,
+                    folder=registry.namespace,
+                    version_tag=version_tag,
+                    suffix=suffix,
                 )
-            else:
-                raise SystemExit(
-                    "RELEASE_KEY not found in env, required to download image via rsync"
+            case "push":
+                docker_push(
+                    args=args,
+                    registry_config=registry,
+                    version_tag=version_tag,
                 )
-            docker_load(args=args, registry=registry, folder=folder, version_tag=args.version)
-        case "check_local":
-            if not check_for_local_image(
-                args=args, registry=registry, folder=folder, version_tag=args.version
-            ):
-                raise SystemExit("Image not found locally")
-        case _:
-            raise Exception(
-                f"Unknown action: {args.action}, should be prevented by argparse options"
-            )
+            case "load":
+                if check_for_local_image(
+                    args=args,
+                    registry=registry.url,
+                    folder=registry.namespace,
+                    version_tag=args.version,
+                ):
+                    return
+                LOG.info("Image not found locally, trying to download it ...")
+                if release_key := os.environ.get("RELEASE_KEY"):
+                    internal_deploy_port = os.environ.get("INTERNAL_DEPLOY_PORT")
+                    internal_deploy_dest = os.environ.get("INTERNAL_DEPLOY_DEST")
+                    file_pattern = f"check-mk-{args.edition}-docker-{args.version}.tar.gz"
+                    run_cmd(
+                        cmd=[
+                            "rsync",
+                            "--recursive",
+                            "--links",
+                            "--perms",
+                            "--times",
+                            "--verbose",
+                            "-e",
+                            f"ssh -o StrictHostKeyChecking=no -i {release_key} -p {internal_deploy_port}",
+                            f"{internal_deploy_dest}/{args.version_rc_aware}/{file_pattern}",
+                            f"{tmp_path}/",
+                        ]
+                    )
+                else:
+                    raise SystemExit(
+                        "RELEASE_KEY not found in env, required to download image via rsync"
+                    )
+                docker_load(
+                    args=args,
+                    registry=registry.url,
+                    folder=registry.namespace,
+                    version_tag=args.version,
+                )
+            case "check_local":
+                if not check_for_local_image(
+                    args=args,
+                    registry=registry.url,
+                    folder=registry.namespace,
+                    version_tag=args.version,
+                ):
+                    raise SystemExit("Image not found locally")
+            case _:
+                raise Exception(
+                    f"Unknown action: {args.action}, should be prevented by argparse options"
+                )
 
 
 if __name__ == "__main__":

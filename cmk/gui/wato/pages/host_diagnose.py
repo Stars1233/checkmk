@@ -10,13 +10,13 @@ from collections.abc import Collection
 from typing import NotRequired, TypedDict
 
 from cmk.ccc.exceptions import MKGeneralException
-
-from cmk.utils.hostaddress import HostAddress, HostName
+from cmk.ccc.hostaddress import HostAddress, HostName
 
 from cmk.snmplib import SNMPCredentials  # pylint: disable=cmk-module-layer-violation
 
 from cmk.gui import forms
 from cmk.gui.breadcrumb import Breadcrumb
+from cmk.gui.config import active_config
 from cmk.gui.exceptions import MKAuthException, MKUserError
 from cmk.gui.htmllib.html import html
 from cmk.gui.http import request
@@ -40,6 +40,7 @@ from cmk.gui.valuespec import Dictionary, DropdownChoice, FixedValue, Float, Int
 from cmk.gui.valuespec import HostAddress as VSHostAddress
 from cmk.gui.wato.pages.hosts import ModeEditHost, page_menu_host_entries
 from cmk.gui.watolib.attributes import SNMPCredentials as VSSNMPCredentials
+from cmk.gui.watolib.automations import make_automation_config
 from cmk.gui.watolib.check_mk_automations import diag_host
 from cmk.gui.watolib.host_attributes import HostAttributes
 from cmk.gui.watolib.hosts_and_folders import folder_from_request, folder_preserving_link, Host
@@ -184,7 +185,7 @@ class ModeDiagHost(WatoMode):
                 return_message.append(_("SNMP credentials"))
                 attributes["snmp_community"] = new["snmp_community"]
 
-            self._host.update_attributes(attributes)
+            self._host.update_attributes(attributes, pprint_value=active_config.wato_pprint_config)
 
             flash(_("Updated attributes: ") + ", ".join(return_message))
             return redirect(
@@ -502,9 +503,10 @@ class PageAjaxDiagHost(AjaxPage):
                 args[9] = api_request.get("snmpv3_security_name", "")
 
         result = diag_host(
-            host.site_id(),
+            make_automation_config(active_config.sites[host.site_id()]),
             hostname,
             _test,
+            active_config.debug,
             *args,
         )
         return {

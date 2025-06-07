@@ -4,6 +4,7 @@
 # conditions defined in the file COPYING, which is part of this source code package.
 
 from collections.abc import Iterator
+from pathlib import Path
 
 import pytest
 
@@ -14,12 +15,21 @@ from livestatus import LivestatusOutputFormat, LivestatusResponse
 from cmk.ccc.site import SiteId
 
 from cmk.bi.data_fetcher import BIStatusFetcher, BIStructureFetcher
+from cmk.bi.filesystem import BIFileSystem
 from cmk.bi.lib import SitesCallback
 from cmk.bi.node_generator import BINodeGenerator
 from cmk.bi.packs import BIAggregationPacks
 from cmk.bi.rule import BIRule
 from cmk.bi.rule_interface import bi_rule_id_registry
 from cmk.bi.searcher import BISearcher
+
+
+@pytest.fixture
+def fs(tmp_path: Path) -> BIFileSystem:
+    (tmp_dir := tmp_path / "tmp").mkdir()
+    (var_dir := tmp_path / "var").mkdir()
+    (etc_dir := tmp_path / "etc").mkdir()
+    return BIFileSystem.build(tmp_dir, var_dir, etc_dir)
 
 
 def mock_query_callback(
@@ -40,10 +50,12 @@ def _bi_searcher() -> Iterator[BISearcher]:
 
 
 @pytest.fixture(scope="function")
-def bi_searcher_with_sample_config(bi_searcher: BISearcher) -> Iterator[BISearcher]:
+def bi_searcher_with_sample_config(
+    bi_searcher: BISearcher, fs: BIFileSystem
+) -> Iterator[BISearcher]:
     from .bi_test_data import sample_config
 
-    structure_fetcher = BIStructureFetcher(DUMMY_SITES_CALLBACK)
+    structure_fetcher = BIStructureFetcher(DUMMY_SITES_CALLBACK, fs)
     structure_fetcher.add_site_data(SiteId("heute"), sample_config.bi_structure_states)
     bi_searcher.set_hosts(structure_fetcher.hosts)
     yield bi_searcher
@@ -56,8 +68,8 @@ def bi_status_fetcher() -> Iterator[BIStatusFetcher]:
 
 
 @pytest.fixture(scope="function")
-def bi_structure_fetcher() -> Iterator[BIStructureFetcher]:
-    structure_fetcher = BIStructureFetcher(DUMMY_SITES_CALLBACK)
+def bi_structure_fetcher(fs: BIFileSystem) -> Iterator[BIStructureFetcher]:
+    structure_fetcher = BIStructureFetcher(DUMMY_SITES_CALLBACK, fs)
     yield structure_fetcher
 
 

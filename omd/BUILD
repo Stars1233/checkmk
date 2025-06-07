@@ -32,42 +32,77 @@ create_venv(
     ],
     extension = "tar.gz",
     deps = [
-        #added here instead of above because of disappearing file
-        "//omd/packages/Python:python_tar",
-        "//omd/packages/heirloom-pkgtools",
-        "//omd/packages/maintenance",
-        "//omd/packages/mk-livestatus",
-        "//omd/packages/mod_fcgid",
-        "//omd/packages/mod_wsgi",
-        "//omd/packages/navicli",
-        "//omd/packages/net-snmp:net-snmp_tar",
-        "//omd/packages/openssl:openssl_tar_" + edition,
-        "//omd/packages/patch",
-        "//omd/packages/perl-modules",
-        "//omd/packages/python3-modules:python3-modules.tar",
-        "//omd/packages/redis",
-        "//omd/packages/rrdtool:rrdtool_perl_bindings",
-        "//omd/packages/rrdtool:rrdtool_python_tar",
-        "//omd/packages/rrdtool:rrdtool_tar",
-        "//omd/packages/snap7",
-        "//omd/packages/stunnel",
-        "//packages/cmk-agent-based:pkg_tar",
-        "//packages/cmk-agent-receiver:pkg_tar",
-        "//packages/cmk-ccc:pkg_tar",
-        "//packages/cmk-crypto:pkg_tar",
-        "//packages/cmk-events:pkg_tar",
-        "//packages/cmk-graphing:pkg_tar",
-        "//packages/cmk-livestatus-client:cmk_livestatus_client_pkg_tar",
-        "//packages/cmk-livestatus-client:cmk_livestatus_pkg_tar",
-        "//packages/cmk-messaging:pkg_tar",
-        "//packages/cmk-mkp-tool:pkg_tar",
-        "//packages/cmk-rulesets:pkg_tar",
-        "//packages/cmk-server-side-calls:pkg_tar",
-        "//packages/cmk-trace:pkg_tar",
-        "//packages/cmk-werks:pkg_tar",
-        "//packages/unixcat:unixcat_tar",
-        ":license_info",
-    ] + edition_deps[edition],
+               #added here instead of above because of disappearing file
+               "//omd/packages/Python:python_tar",
+               "//omd/packages/erlang",
+               "//omd/packages/heirloom-pkgtools",
+               "//omd/packages/lcab",
+               "//omd/packages/maintenance",
+               "//omd/packages/mk-livestatus",
+               "//omd/packages/mod_fcgid",
+               "//omd/packages/mod_wsgi",
+               "//omd/packages/monitoring-plugins",
+               "//omd/packages/msitools",
+               "//omd/packages/nagios",
+               "//omd/packages/navicli",
+               "//omd/packages/net-snmp:net-snmp_tar",
+               "//omd/packages/nrpe",
+               "//omd/packages/openssl:openssl_tar_" + edition,
+               "//omd/packages/patch",
+               "//omd/packages/perl-modules",
+               "//omd/packages/python3-modules:python3-modules.tar",
+               "//omd/packages/rabbitmq",
+               "//omd/packages/redis",
+               "//omd/packages/rrdtool:rrdtool_perl_bindings",
+               "//omd/packages/rrdtool:rrdtool_python_tar",
+               "//omd/packages/rrdtool:rrdtool_tar",
+               "//omd/packages/robotmk",
+               "//omd/packages/snap7",
+               "//omd/packages/stunnel",
+               "//packages/cmk-agent-receiver:pkg_tar",
+               "//packages/cmk-ccc:pkg_tar",
+               "//packages/cmk-crypto:pkg_tar",
+               "//packages/cmk-events:pkg_tar",
+               "//packages/cmk-frontend",
+               "//packages/cmk-frontend-vue",
+               "//packages/cmk-livestatus-client:cmk_livestatus_client_pkg_tar",
+               "//packages/cmk-livestatus-client:cmk_livestatus_pkg_tar",
+               "//packages/cmk-messaging:pkg_tar",
+               "//packages/cmk-mkp-tool:pkg_tar",
+               "//packages/cmk-plugin-apis:pkg_tar",
+               "//packages/cmk-trace:pkg_tar",
+               "//packages/cmk-werks:pkg_tar",
+               "//packages/livestatus:livestatus_pkg",
+               "//packages/neb:neb_pkg",
+               "//packages/cmk-shared-typing:pkg_tar",
+               "//packages/unixcat:unixcat_tar",
+               ":license_info",
+           ] + select({
+               "//:almalinux_8": ["//omd/packages/xinetd"],
+               "//:almalinux_9": ["//omd/packages/xinetd"],
+               "//:cma_4": [],
+               "//:debian_11": [],
+               "//:debian_12": [],
+               "//:sles_15sp3": [
+                   "//omd/packages/libgsf",
+                   "//omd/packages/xinetd",
+               ],
+               "//:sles_15sp4": [
+                   "//omd/packages/libgsf",
+                   "//omd/packages/xinetd",
+               ],
+               "//:sles_15sp5": [
+                   "//omd/packages/libgsf",
+                   "//omd/packages/xinetd",
+               ],
+               "//:sles_15sp6": [
+                   "//omd/packages/libgsf",
+                   "//omd/packages/xinetd",
+               ],
+               "//:ubuntu_22.04": [],
+               "//:ubuntu_24.04": [],
+           }) +
+           edition_deps[edition],
 ) for edition in [
     "cre",
     "cce",
@@ -148,21 +183,21 @@ py_binary(
 ]]
 
 py_binary(
-    name = "generate_licenses_csv_py",
-    srcs = ["license_sources/generate_licenses_csv.py"],
+    name = "generate_bom_csv_py",
+    srcs = ["license_sources/generate_bom_csv.py"],
 )
 
 run_binary(
-    name = "generate_licenses_csv",
+    name = "generate_bom_csv",
     srcs = ["bill-of-materials.json"],
-    outs = ["Licenses.csv"],
+    outs = ["bill-of-materials.csv"],
     args = [
         "--bom",
         "$(location bill-of-materials.json)",
         "--out",
-        "$(location Licenses.csv)",
+        "$(location bill-of-materials.csv)",
     ],
-    tool = ":generate_licenses_csv_py",
+    tool = ":generate_bom_csv_py",
 )
 
 filegroup(
@@ -173,8 +208,8 @@ filegroup(
 )
 
 py_binary(
-    name = "build_license_texts_pdf_py",
-    srcs = ["license_sources/build_license_texts_pdf.py"],
+    name = "build_bom_texts_pdf_py",
+    srcs = ["license_sources/build_bom_texts_pdf.py"],
     data = [
         "license_sources/Calibri.ttf",
         "license_sources/checkmk_logo.svg",
@@ -187,24 +222,24 @@ py_binary(
 )
 
 run_binary(
-    name = "build_license_texts_pdf",
-    srcs = [":generate_licenses_csv"],
+    name = "build_bom_texts_pdf",
+    srcs = [":generate_bom_csv"],
     outs = ["License_texts.pdf"],
     args = [
         "--pdf",
         "$(location License_texts.pdf)",
         "--csv",
-        "$(location :generate_licenses_csv)",
+        "$(location :generate_bom_csv)",
     ],
-    tool = ":build_license_texts_pdf_py",
+    tool = ":build_bom_texts_pdf_py",
 )
 
 pkg_tar(
     name = "license_info",
     srcs = [
         "bill-of-materials.json",
-        ":build_license_texts_pdf",
-        ":generate_licenses_csv",
+        ":build_bom_texts_pdf",
+        ":generate_bom_csv",
     ],
     package_dir = "share/doc/",
     package_file_name = "license_info_archive.tar",

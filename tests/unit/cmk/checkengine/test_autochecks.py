@@ -11,8 +11,9 @@ import pytest
 
 from tests.testlib.unit.base_configuration_scenario import Scenario
 
+from cmk.ccc.hostaddress import HostName
+
 import cmk.utils.paths
-from cmk.utils.hostaddress import HostName
 
 from cmk.checkengine.discovery import AutocheckServiceWithNodes, AutochecksStore
 from cmk.checkengine.discovery._autochecks import _AutochecksSerializer as AutochecksSerializer
@@ -22,8 +23,8 @@ from cmk.checkengine.plugins import AutocheckEntry, CheckPluginName
 
 
 @pytest.fixture(autouse=True)
-def autochecks_dir(monkeypatch, tmp_path):
-    monkeypatch.setattr(cmk.utils.paths, "autochecks_dir", str(tmp_path))
+def autochecks_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(cmk.utils.paths, "autochecks_dir", tmp_path)
 
 
 class TestAutochecksSerializer:
@@ -95,8 +96,7 @@ def test_manager_get_autochecks_of(
     expected_result: Sequence[AutocheckEntry],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    autochecks_file = Path(cmk.utils.paths.autochecks_dir, "host.mk")
-    with autochecks_file.open("w", encoding="utf-8") as f:
+    with (cmk.utils.paths.autochecks_dir / "host.mk").open("w", encoding="utf-8") as f:
         f.write(autochecks_content)
 
     ts = Scenario()

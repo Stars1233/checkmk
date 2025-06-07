@@ -1,7 +1,7 @@
-load("@cargo_deps_site//:defs.bzl", "aliases", "all_crate_deps")
 load("@rules_pkg//pkg:mappings.bzl", "pkg_attributes", "pkg_files")
 load("@rules_pkg//pkg:tar.bzl", "pkg_tar")
-load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test", "rust_test_suite")
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_doc", "rust_library", "rust_test", "rust_test_suite")
+load("@site_crates//:defs.bzl", "aliases", "all_crate_deps")
 load("//bazel/rules:file_from_flag.bzl", "file_from_flag")
 
 rust_library(
@@ -82,4 +82,13 @@ pkg_files(
 pkg_tar(
     name = "check_http_tar",
     srcs = [":check_http_pkg"],
+)
+
+rust_doc(
+    name = "doc",
+    crate = ":check-http-lib",
+    rustdoc_flags = [
+        '--cfg=feature="reqwest/native-tls-vendored"',
+        "--document-private-items",
+    ],
 )

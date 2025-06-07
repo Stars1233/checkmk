@@ -13,11 +13,11 @@ import cmk.ccc.debug
 import cmk.ccc.version as cmk_version
 from cmk.ccc import crash_reporting
 from cmk.ccc.crash_reporting import CrashInfo
+from cmk.ccc.hostaddress import HostName
 
 import cmk.utils.encoding
 import cmk.utils.paths
 from cmk.utils.agentdatatype import AgentRawData
-from cmk.utils.hostaddress import HostName
 from cmk.utils.sectionname import SectionName
 from cmk.utils.servicename import ServiceName
 
@@ -171,19 +171,17 @@ class CheckCrashReport(CrashReportWithAgentOutput[CheckDetails]):
 
 
 def _read_snmp_info(hostname: str) -> bytes | None:
-    cache_path = Path(cmk.utils.paths.snmpwalks_dir, hostname)
     try:
-        with cache_path.open(mode="rb") as f:
+        with (cmk.utils.paths.snmpwalks_dir / hostname).open(mode="rb") as f:
             return f.read()
     except OSError:
-        pass
-    return None
+        return None
 
 
 def _read_agent_output(hostname: HostName) -> AgentRawData | None:
     agent_outputs = []
 
-    cache_path = Path(cmk.utils.paths.tcp_cache_dir, hostname)
+    cache_path = cmk.utils.paths.tcp_cache_dir / hostname
     try:
         agent_outputs.append(cache_path.read_bytes())
     except OSError:

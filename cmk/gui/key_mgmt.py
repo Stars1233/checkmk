@@ -2,6 +2,7 @@
 # Copyright (C) 2019 Checkmk GmbH - License: GNU General Public License v2
 # This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
 # conditions defined in the file COPYING, which is part of this source code package.
+# mypy: disable-error-code="no-untyped-call, no-untyped-def"
 
 import pprint
 import time
@@ -11,11 +12,11 @@ from typing import Any, Literal
 
 from cmk.ccc import store
 from cmk.ccc.site import omd_site, SiteId
+from cmk.ccc.user import UserId
 
 import cmk.utils.render
 from cmk.utils.certs import CertManagementEvent
 from cmk.utils.log.security_event import log_security_event
-from cmk.utils.user import UserId
 
 from cmk.gui.breadcrumb import Breadcrumb
 from cmk.gui.exceptions import FinalizeRequest, HTTPRedirect, MKUserError
@@ -52,10 +53,10 @@ from cmk.crypto.pem import PEMDecodingError
 
 
 class KeypairStore:
-    def __init__(self, path: str, attr: str) -> None:
-        self._path = Path(path)
-        self._attr = attr
+    def __init__(self, path: Path, attr: str) -> None:
         super().__init__()
+        self._path = path
+        self._attr = attr
 
     def load(self) -> dict[int, Key]:
         if not self._path.exists():
@@ -67,7 +68,7 @@ class KeypairStore:
         return self._parse(variables[self._attr])
 
     def save(self, keys: Mapping[int, Key]) -> None:
-        store.makedirs(self._path.parent)
+        self._path.parent.mkdir(mode=0o770, exist_ok=True, parents=True)
         with store.locked(self._path):
             store.save_mk_file(
                 self._path, f"{self._attr}.update({pprint.pformat(self._unparse(keys))})"

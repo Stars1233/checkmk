@@ -4,6 +4,7 @@ load("@com_google_protobuf//:protobuf_version.bzl", "PROTOBUF_PYTHON_VERSION")
 load("@gazelle//:def.bzl", "gazelle")
 load("@hedron_compile_commands//:refresh_compile_commands.bzl", "refresh_compile_commands")
 load("@repo_license//:license.bzl", "REPO_LICENSE")
+load("@rules_multirun//:defs.bzl", "multirun")
 load("@rules_uv//uv:pip.bzl", "pip_compile")
 load("@rules_uv//uv:venv.bzl", "create_venv")
 load("//:bazel_variables.bzl", "RUFF_VERSION")
@@ -35,6 +36,90 @@ string_flag(
     name = "cmk_edition",
     build_setting_default = "UNSET",
     visibility = ["//:__subpackages__"],
+)
+
+string_flag(
+    name = "cmk_distro",
+    build_setting_default = "UNSET",
+    values = [
+        "almalinux-8",
+        "almalinux-9",
+        "cma-4",
+        "debian-11",
+        "debian-12",
+        "sles-15sp3",
+        "sles-15sp4",
+        "sles-15sp5",
+        "sles-15sp6",
+        "ubuntu-22.04",
+        "ubuntu-24.04",
+    ],
+)
+
+config_setting(
+    name = "almalinux_8",
+    flag_values = {":cmk_distro": "almalinux-8"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "almalinux_9",
+    flag_values = {":cmk_distro": "almalinux-9"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "cma_4",
+    flag_values = {":cmk_distro": "cma-4"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "debian_11",
+    flag_values = {":cmk_distro": "debian-11"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "debian_12",
+    flag_values = {":cmk_distro": "debian-12"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "sles_15sp3",
+    flag_values = {":cmk_distro": "sles-15sp3"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "sles_15sp4",
+    flag_values = {":cmk_distro": "sles-15sp4"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "sles_15sp5",
+    flag_values = {":cmk_distro": "sles-15sp5"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "sles_15sp6",
+    flag_values = {":cmk_distro": "sles-15sp6"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "ubuntu_22.04",
+    flag_values = {":cmk_distro": "ubuntu-22.04"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "ubuntu_24.04",
+    flag_values = {":cmk_distro": "ubuntu-24.04"},
+    visibility = ["//visibility:public"],
 )
 
 string_flag(
@@ -123,6 +208,27 @@ pip_compile(
 )
 
 compile_requirements_in(
+    name = "raw-requirements-in",
+    constraints = [
+        ":bazel-requirements-constraints.txt",
+        ":requirements.txt",
+        "//:constraints.txt",
+    ],
+    requirements = [
+        "//cmk:requirements.in",
+        "//packages:python_requirements",
+        "//:dev-requirements.in",
+    ],
+)
+
+pip_compile(
+    name = "raw_requirements",
+    requirements_in = ":raw-requirements-in",
+    requirements_txt = ":raw-requirements.txt",
+    tags = ["manual"],
+)
+
+compile_requirements_in(
     name = "runtime-requirements-in",
     constraints = [
         ":bazel-requirements-constraints.txt",
@@ -143,15 +249,26 @@ pip_compile(
     requirements_in = ":runtime-requirements-in",
     requirements_txt = ":runtime-requirements.txt",
     tags = ["manual"],
-    visibility = ["//visibility:public"],
 )
 
-test_suite(
-    name = "requirements_test_suite",
-    tests = [
-        ":requirements_test",
-        ":runtime_requirements_test",
+multirun(
+    name = "lock_python_requirements",
+    commands = [
+        ":requirements",
+        ":raw_requirements",
+        ":runtime_requirements",
     ],
+    # Running in a single threaded mode allows consecutive `uv` invocations to benefit
+    # from the `uv` cache from the first run.
+    jobs = 1,
+)
+
+alias(
+    name = "python_requirements_test",
+    actual = select({
+        "@//:gpl_repo": "raw_requirements_test",
+        "@//:gpl+enterprise_repo": "requirements_test",
+    }),
 )
 
 write_file(
@@ -182,7 +299,7 @@ write_file(
         "@//:gpl+enterprise_repo": [
             "add_packages(repo_path.joinpath('non-free'))",
             # needed for composition tests: they want to 'import cmk_update_agent' via the .venv
-            "sys.path.insert(0, str(repo_path.joinpath('non-free/cmk-update-agent')))",
+            "sys.path.insert(0, str(repo_path.joinpath('non-free/packages/cmk-update-agent')))",
         ],
     }),
 )
@@ -190,11 +307,16 @@ write_file(
 create_venv(
     name = "create_venv",
     destination_folder = ".venv",
-    requirements_txt = "@//:requirements.txt",
+    requirements_txt = select({
+        "@//:gpl_repo": ":raw-requirements.txt",
+        "@//:gpl+enterprise_repo": ":requirements.txt",
+    }),
     site_packages_extra_files = [":sitecustomize.py"],
     whls = [
         "@rrdtool_native//:rrdtool_python_wheel",
+        "//packages/cmk-shared-typing:wheel",
         "//packages/cmk-werks:wheel_entrypoint_only",
+        "//packages/cmk-mkp-tool:wheel_entrypoint_only",
     ] + select({
         "@//:gpl_repo": [],
         "@//:gpl+enterprise_repo": [
@@ -244,4 +366,14 @@ gazelle(
 
 gazelle(
     name = "gazelle",
+)
+
+alias(
+    name = "format",
+    actual = "//bazel/tools:format",
+)
+
+alias(
+    name = "format.check",
+    actual = "//bazel/tools:format.check",
 )

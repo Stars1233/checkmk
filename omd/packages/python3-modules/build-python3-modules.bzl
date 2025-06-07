@@ -1,9 +1,12 @@
+load("@omd_packages//omd/packages/Python:version.bzl", "PYTHON_MAJOR_DOT_MINOR")
 load("@python_modules//:requirements.bzl", "packages")
 
 def get_pip_options(module_name):
     return {
         # * avoid compiling with BLAS support - we don't need super fast numpy (yet)
         "numpy": '--config-settings=setup-args="-Dallow-noblas=true"',
+        # pillow in version 11.2 and above would require libavif>=1.0.0 which is per default not available on debian-12, see https://github.com/radarhere/Pillow/commit/7d50816f0a6e607b04f9bdc8af7482a29ba578e3 and as we don't need avif support, we simply disable it
+        "pillow": "--config-settings=avif=disable",
     }.get(module_name, "")
 
 def create_requirements_file(name, outs):
@@ -13,18 +16,40 @@ def create_requirements_file(name, outs):
         name = name,
         outs = outs,
         cmd = """
-           echo "%s" > $@
-        """ % packages[name],
+           echo "%s %s" > $@
+        """ % (packages[name], get_pip_options(name)),
     )
 
-def build_python_module(name, srcs, outs, cmd, **kwargs):
+def build_python_module(name, srcs, outs, requirements = "", **kwargs):
+    # buildifier: disable=function-docstring-args
     """This macro is creating an empty file.
     """
+    requirements = requirements if requirements else "-r $$HOME/$(execpath %s_requirements.txt)" % name
+    openssl_dir = Label("@openssl").repo_name
+    freetds_dir = Label("@freetds").repo_name
+    python_dir = Label("@python").repo_name
     native.genrule(
-        name = name,
+        name = name + "_compile",
         srcs = srcs,
         outs = outs,
-        cmd = cmd,
+        cmd = select({
+            "//conditions:default": build_cmd.format(
+                git_ssl_no_verify = "",
+                pyMajMin = PYTHON_MAJOR_DOT_MINOR,
+                requirements = requirements,
+                openssl_dir = openssl_dir,
+                freetds_dir = freetds_dir,
+                python_dir = python_dir,
+            ),
+            ":git_ssl_no_verify": build_cmd.format(
+                git_ssl_no_verify = "GIT_SSL_NO_VERIFY=true",
+                pyMajMin = PYTHON_MAJOR_DOT_MINOR,
+                requirements = requirements,
+                openssl_dir = openssl_dir,
+                freetds_dir = freetds_dir,
+                python_dir = python_dir,
+            ),
+        }),
         **kwargs
     )
 
@@ -43,10 +68,10 @@ build_cmd = """
     EXT_DEPS_PATH=$$(echo $(SRCS) | sed 's/.*\\s\\(.*external\\).*\\s.*/\\1/')
 
     # This is where the Python Modules should be found
-    export LD_LIBRARY_PATH="$$PWD/$$EXT_DEPS_PATH/python/python/lib/:$$PWD/$$EXT_DEPS_PATH/openssl/openssl/lib/"
+    export LD_LIBRARY_PATH="$$PWD/$$EXT_DEPS_PATH/{python_dir}/python/lib/:$$PWD/$$EXT_DEPS_PATH/{openssl_dir}/openssl/lib/"
 
     # Python binary supplied by bazel build process
-    export PYTHON_EXECUTABLE=$$PWD/$$EXT_DEPS_PATH/python/python/bin/python3
+    export PYTHON_EXECUTABLE=$$PWD/$$EXT_DEPS_PATH/{python_dir}/python/bin/python3
 
     # Workaround for git execution issue
     mkdir -p $$TMPDIR/workdir/$$MODULE_NAME
@@ -56,7 +81,7 @@ build_cmd = """
     # Build directory
     mkdir -p $$HOME/$$MODULE_NAME
 
-    export CPATH="$$HOME/$$EXT_DEPS_PATH/python/python/include/python{pyMajMin}/:$$HOME/$$EXT_DEPS_PATH/openssl/openssl/include/openssl:$$HOME/$$EXT_DEPS_PATH/freetds/freetds/include/"
+    export CPATH="$$HOME/$$EXT_DEPS_PATH/{python_dir}/python/include/python{pyMajMin}/:$$HOME/$$EXT_DEPS_PATH/{openssl_dir}/openssl/include/openssl:$$HOME/$$EXT_DEPS_PATH/{freetds_dir}/freetds/include/"
 
     # Reduce GRPC build load peaks - See src/python/grpcio/_parallel_compile_patch.py in grpcio package
     # Keep in sync with scripts/run-uvenv
@@ -70,8 +95,8 @@ build_cmd = """
     # https://github.com/sfackler/rust-openssl/blob/10cee24f49cd3f37da1dbf663ba67bca6728db1f/openssl-sys/build/find_normal.rs#L8
     # TODO: we should ideally adjust the PKG_CONFIG_PATH to add the openssl pkgconfig files
 
-    export OPENSSL_LIB_DIR="$$HOME/$$EXT_DEPS_PATH/openssl/openssl/lib"
-    export OPENSSL_INCLUDE_DIR="$$HOME/$$EXT_DEPS_PATH/openssl/openssl/include"
+    export OPENSSL_LIB_DIR="$$HOME/$$EXT_DEPS_PATH/{openssl_dir}/openssl/lib"
+    export OPENSSL_INCLUDE_DIR="$$HOME/$$EXT_DEPS_PATH/{openssl_dir}/openssl/include"
 
     # Under some distros (e.g. almalinux), the build may use an available c++ system compiler instead of our own /opt/bin/g++
     # Enforce here the usage of the build image compiler and in the same time enable local building.
@@ -80,8 +105,8 @@ build_cmd = """
     export CC="$$(which gcc)"
 
     # install requirements
-    export CPPFLAGS="-I$$HOME/$$EXT_DEPS_PATH/openssl/openssl/include -I$$HOME/$$EXT_DEPS_PATH/freetds/freetds/include -I$$HOME/$$EXT_DEPS_PATH/python/python/include/python{pyMajMin}/"
-    export LDFLAGS="-L$$HOME/$$EXT_DEPS_PATH/openssl/openssl/lib -L$$HOME/$$EXT_DEPS_PATH/freetds/freetds/lib -L$$HOME/$$EXT_DEPS_PATH/python/python/lib -Wl,--strip-debug"
+    export CPPFLAGS="-I$$HOME/$$EXT_DEPS_PATH/{openssl_dir}/openssl/include -I$$HOME/$$EXT_DEPS_PATH/{freetds_dir}/freetds/include -I$$HOME/$$EXT_DEPS_PATH/{python_dir}/python/include/python{pyMajMin}/"
+    export LDFLAGS="-L$$HOME/$$EXT_DEPS_PATH/{openssl_dir}/openssl/lib -L$$HOME/$$EXT_DEPS_PATH/{freetds_dir}/freetds/lib -L$$HOME/$$EXT_DEPS_PATH/{python_dir}/python/lib -Wl,--strip-debug"
     {git_ssl_no_verify}\\
     $$PYTHON_EXECUTABLE -m pip install \\
      `: dont use precompiled things, build with our build env ` \\
@@ -93,7 +118,6 @@ build_cmd = """
       --ignore-installed \\
       --no-warn-script-location \\
       --prefix="$$HOME/$$MODULE_NAME" \\
-      {pip_add_opts} \\
       {requirements} 2>&1 | tee "$$HOME/""$$MODULE_NAME""_pip_install.stdout"
 
     tar cf $@ $$MODULE_NAME

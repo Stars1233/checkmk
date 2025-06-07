@@ -1,3 +1,4 @@
+load("@bazel_skylib//lib:selects.bzl", "selects")
 load("@rules_foreign_cc//foreign_cc:defs.bzl", "configure_make")
 
 filegroup(
@@ -8,14 +9,14 @@ filegroup(
     ),
 )
 
-#
-# This should be put somewhere toplevel, also avoiding the deprecated
-# --define syntax, see
-# https://bazel.build/docs/configurable-attributes
-#
-config_setting(
-    name = "omd_libgsf",
-    values = {"define": "omd-libgsf=true"},
+selects.config_setting_group(
+    name = "sles",
+    match_any = [
+        "@//:sles_15sp3",
+        "@//:sles_15sp4",
+        "@//:sles_15sp5",
+        "@//:sles_15sp6",
+    ],
 )
 
 configure_make(
@@ -36,7 +37,7 @@ configure_make(
         ]),
     } | select(
         {
-            ":omd_libgsf": {
+            ":sles": {
                 "GSF_LIBS": "-L$${EXT_BUILD_DEPS}/libgsf/lib -lgsf-1",
                 "GSF_CFLAGS": "-I$${EXT_BUILD_DEPS}/libgsf/include/libgsf-1",
             },
@@ -68,8 +69,29 @@ configure_make(
     visibility = ["//visibility:public"],
     deps = select(
         {
-            ":omd_libgsf": ["@libgsf"],
+            "sles": ["@libgsf"],
             "//conditions:default": [],
         },
     ),
+)
+
+filegroup(
+    name = "gen_dir",
+    srcs = [":msitools"],
+    output_group = "gen_dir",
+    visibility = ["//visibility:public"],
+)
+
+filegroup(
+    name = "msibuild",
+    srcs = [":msitools"],
+    output_group = "msibuild",
+    visibility = ["//visibility:public"],
+)
+
+filegroup(
+    name = "msiinfo",
+    srcs = [":msitools"],
+    output_group = "msiinfo",
+    visibility = ["//visibility:public"],
 )

@@ -5,16 +5,14 @@
 
 import abc
 import ast
-import os
 from pathlib import Path
 
 from pydantic import BaseModel
 
 from cmk.ccc import store
 from cmk.ccc.exceptions import MKGeneralException, MKTimeout
+from cmk.ccc.hostaddress import HostName
 from cmk.ccc.site import omd_site, SiteId
-
-from cmk.utils.hostaddress import HostName
 
 from cmk.gui.background_job import (
     BackgroundJob,
@@ -34,14 +32,20 @@ from cmk.gui.http import ContentDispositionType, request, response
 from cmk.gui.i18n import _
 from cmk.gui.logged_in import user
 from cmk.gui.pages import Page, PageRegistry
-from cmk.gui.site_config import get_site_config, site_is_local
+from cmk.gui.site_config import site_is_local
 from cmk.gui.theme import make_theme
 from cmk.gui.utils.escaping import escape_attribute
 from cmk.gui.utils.transaction_manager import transactions
 from cmk.gui.utils.urls import makeuri, makeuri_contextless
 from cmk.gui.view_breadcrumbs import make_host_breadcrumb
 from cmk.gui.watolib.automation_commands import AutomationCommand, AutomationCommandRegistry
-from cmk.gui.watolib.automations import AnnotatedHostName, do_remote_automation
+from cmk.gui.watolib.automations import (
+    AnnotatedHostName,
+    do_remote_automation,
+    LocalAutomationConfig,
+    make_automation_config,
+    RemoteAutomationConfig,
+)
 from cmk.gui.watolib.check_mk_automations import get_agent_output
 from cmk.gui.watolib.hosts_and_folders import folder_from_request, Host
 from cmk.gui.watolib.mode import mode_url
@@ -197,29 +201,37 @@ class PageFetchAgentOutput(AgentOutputPage):
 
     def _start_fetch(self) -> None:
         """Start the job on the site the host is monitored by"""
-        if site_is_local(active_config, self._request.host.site_id()):
+        if site_is_local(
+            site_config := active_config.sites[self._request.host.site_id()],
+            self._request.host.site_id(),
+        ):
             start_fetch_agent_job(self._request)
             return
 
         do_remote_automation(
-            get_site_config(active_config, self._request.host.site_id()),
+            RemoteAutomationConfig.from_site_config(site_config),
             "fetch-agent-output-start",
             [
                 ("request", repr(self._request.serialize())),
             ],
+            debug=active_config.debug,
         )
 
     def _get_job_status(self) -> JobStatusSpec:
-        if site_is_local(active_config, self._request.host.site_id()):
+        if site_is_local(
+            site_config := active_config.sites[self._request.host.site_id()],
+            self._request.host.site_id(),
+        ):
             return get_fetch_agent_job_status(self._request)
 
         return JobStatusSpec.model_validate(
             do_remote_automation(
-                get_site_config(active_config, self._request.host.site_id()),
+                RemoteAutomationConfig.from_site_config(site_config),
                 "fetch-agent-output-get-status",
                 [
                     ("request", repr(self._request.serialize())),
                 ],
+                debug=active_config.debug,
             )
         )
 
@@ -323,18 +335,29 @@ class FetchAgentOutputBackgroundJob(BackgroundJob):
 
     def fetch_agent_output(self, job_interface: BackgroundProcessInterface) -> None:
         with job_interface.gui_context():
-            self._fetch_agent_output(job_interface)
+            self._fetch_agent_output(
+                job_interface,
+                automation_config=make_automation_config(active_config.sites[self._site_id]),
+                debug=active_config.debug,
+            )
 
-    def _fetch_agent_output(self, job_interface: BackgroundProcessInterface) -> None:
+    def _fetch_agent_output(
+        self,
+        job_interface: BackgroundProcessInterface,
+        *,
+        automation_config: LocalAutomationConfig | RemoteAutomationConfig,
+        debug: bool,
+    ) -> None:
         job_interface.send_progress_update(_("Fetching '%s'...") % self._agent_type)
 
         agent_output_result = get_agent_output(
-            self._site_id,
+            automation_config,
             self._host_name,
             self._agent_type,
             timeout=int(active_config.reschedule_timeout)
             if self._agent_type == "agent"
             else int(active_config.snmp_walk_download_timeout),
+            debug=debug,
         )
 
         if not agent_output_result.success:
@@ -365,9 +388,8 @@ class FetchAgentOutputBackgroundJob(BackgroundJob):
                 raise MKTimeout
             raise MKGeneralException()
 
-        preview_filepath = os.path.join(
-            job_interface.get_work_dir(),
-            AgentOutputPage.file_name(self._site_id, self._host_name, self._agent_type),
+        preview_filepath = Path(job_interface.get_work_dir()) / AgentOutputPage.file_name(
+            self._site_id, self._host_name, self._agent_type
         )
 
         store.save_bytes_to_file(
@@ -405,15 +427,19 @@ class PageDownloadAgentOutput(AgentOutputPage):
         response.set_data(file_content)
 
     def _get_agent_output_file(self) -> bytes:
-        if site_is_local(active_config, self._request.host.site_id()):
+        if site_is_local(
+            site_config := active_config.sites[self._request.host.site_id()],
+            self._request.host.site_id(),
+        ):
             return get_fetch_agent_output_file(self._request)
 
         raw_response = do_remote_automation(
-            get_site_config(active_config, self._request.host.site_id()),
+            RemoteAutomationConfig.from_site_config(site_config),
             "fetch-agent-output-get-file",
             [
                 ("request", repr(self._request.serialize())),
             ],
+            debug=active_config.debug,
         )
         assert isinstance(raw_response, bytes)
         return raw_response

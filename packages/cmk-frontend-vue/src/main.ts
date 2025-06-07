@@ -9,11 +9,13 @@
 
 import { createApp } from 'vue'
 
+import AgentDownload from './setup/AgentDownloadApp.vue'
 import QuickSetup from './quick-setup/QuickSetupApp.vue'
 import NotificationOverview from './notification/NotificationOverviewApp.vue'
 import { FormApp } from '@/form'
 import NotificationParametersOverviewApp from '@/notification/NotificationParametersOverviewApp.vue'
 import GraphDesignerApp from '@/graph-designer/GraphDesignerApp.vue'
+import ModeHostApp from '@/mode-host/ModeHostApp.vue'
 
 import '@/assets/variables.css'
 
@@ -68,6 +70,13 @@ function setupVue() {
           })
           break
         }
+        case 'agent_download': {
+          app = createApp(AgentDownload, {
+            url: appData.url,
+            i18n: appData.i18n
+          })
+          break
+        }
         case 'notification_parameters_overview': {
           app = createApp(NotificationParametersOverviewApp, {
             parameters: appData.parameters,
@@ -79,6 +88,13 @@ function setupVue() {
           app = createApp(GraphDesignerApp, {
             graph_lines: appData.graph_lines,
             graph_options: appData.graph_options,
+            i18n: appData.i18n
+          })
+          break
+        }
+        case 'mode_host': {
+          app = createApp(ModeHostApp, {
+            formKeys: appData.form_keys,
             i18n: appData.i18n
           })
           break

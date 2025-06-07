@@ -8,16 +8,15 @@ import json
 import time
 from collections.abc import Collection, Iterator, Sequence
 from logging import FileHandler, Formatter
-from pathlib import Path
 from typing import Literal, TypedDict
 
 from redis import ConnectionError as RedisConnectionError
 
 from livestatus import LocalConnection, MKLivestatusSocketError
 
+from cmk.ccc.hostaddress import HostName
 from cmk.ccc.site import SiteId
 
-from cmk.utils.hostaddress import HostName
 from cmk.utils.paths import log_dir
 from cmk.utils.rulesets.ruleset_matcher import RuleSpec
 
@@ -26,12 +25,16 @@ from cmk.gui.config import active_config
 from cmk.gui.exceptions import MKUserError
 from cmk.gui.i18n import _
 from cmk.gui.session import SuperUserContext
-from cmk.gui.site_config import get_site_config, is_wato_slave_site, site_is_local, wato_site_ids
+from cmk.gui.site_config import is_wato_slave_site, site_is_local, wato_site_ids
 from cmk.gui.watolib.activate_changes import ActivateChangesManager
 from cmk.gui.watolib.automation_commands import AutomationCommand
-from cmk.gui.watolib.automations import do_remote_automation, MKAutomationException
+from cmk.gui.watolib.automations import (
+    do_remote_automation,
+    MKAutomationException,
+    RemoteAutomationConfig,
+)
 from cmk.gui.watolib.check_mk_automations import analyze_host_rule_matches, delete_hosts
-from cmk.gui.watolib.hosts_and_folders import folder_tree, Host
+from cmk.gui.watolib.hosts_and_folders import Folder, folder_tree, Host
 from cmk.gui.watolib.rulesets import SingleRulesetRecursively, UseHostFolder
 
 _LOGGER = cmk.gui.log.logger.getChild("automatic_host_removal")
@@ -50,21 +53,24 @@ def execute_host_removal_job() -> None:
 
     _LOGGER_BACKGROUND_JOB.debug("Starting host removal background job")
 
+    def _folder_of_host(h: Host) -> Folder:
+        return h.folder()
+
     try:
         _LOGGER.info("Starting host removal background job")
 
         if not (
             hosts_to_be_removed := {
-                site_id: hosts for site_id, hosts in _hosts_to_be_removed() if hosts
+                site_id: hosts
+                for site_id, hosts in _hosts_to_be_removed(debug=active_config.debug)
+                if hosts
             }
         ):
             _LOGGER_BACKGROUND_JOB.debug("Found no hosts to be removed, exiting")
             _LOGGER.info("Found no hosts to be removed, exiting")
             return
-
         for folder, hosts_in_folder in itertools.groupby(
-            itertools.chain.from_iterable(hosts_to_be_removed.values()),
-            lambda h: h.folder(),
+            itertools.chain.from_iterable(hosts_to_be_removed.values()), _folder_of_host
         ):
             hostnames = list(host.name() for host in hosts_in_folder)
             _LOGGER_BACKGROUND_JOB.debug(
@@ -74,7 +80,12 @@ def execute_host_removal_job() -> None:
             )
             _LOGGER.info(f"Removing {len(hostnames)} hosts from folder {folder.title()}")
             with SuperUserContext():
-                folder.delete_hosts(hostnames, automation=delete_hosts)
+                folder.delete_hosts(
+                    hostnames,
+                    automation=delete_hosts,
+                    pprint_value=active_config.wato_pprint_config,
+                    debug=active_config.debug,
+                )
 
         _LOGGER.info("Hosts removed, starting activation of changes")
         _activate_changes(hosts_to_be_removed)
@@ -87,7 +98,7 @@ def execute_host_removal_job() -> None:
 
 
 def _init_logging() -> None:
-    handler = FileHandler(log_file := Path(log_dir, "automatic-host-removal.log"), encoding="utf-8")
+    handler = FileHandler(log_file := log_dir / "automatic-host-removal.log", encoding="utf-8")
     _LOGGER.info("Logging host removal to %s", log_file)
     handler.setFormatter(Formatter("%(asctime)s [%(levelno)s] [%(name)s %(process)d] %(message)s"))
     del _LOGGER.handlers[:]  # Remove all previously existing handlers
@@ -95,16 +106,19 @@ def _init_logging() -> None:
     _LOGGER.propagate = False
 
 
-def _hosts_to_be_removed() -> list[tuple[SiteId, list[Host]]]:
+def _hosts_to_be_removed(*, debug: bool) -> list[tuple[SiteId, list[Host]]]:
     _LOGGER_BACKGROUND_JOB.info("Gathering hosts to be removed")
-    return [(site_id, _hosts_to_be_removed_for_site(site_id)) for site_id in wato_site_ids()]
+    return [
+        (site_id, _hosts_to_be_removed_for_site(site_id, debug=debug))
+        for site_id in wato_site_ids()
+    ]
 
 
-def _hosts_to_be_removed_for_site(site_id: SiteId) -> list[Host]:
-    if site_is_local(active_config, site_id):
+def _hosts_to_be_removed_for_site(site_id: SiteId, *, debug: bool) -> list[Host]:
+    if site_is_local(site_config := active_config.sites[site_id], site_id):
         try:
             # evaluate the generator here to potentially catch the exception below
-            hostnames = list(_hosts_to_be_removed_local())
+            hostnames = list(_hosts_to_be_removed_local(debug=debug))
         # can happen if the Nagios core is currently restarting during the activation of changes
         except MKLivestatusSocketError:
             _LOGGER.info(
@@ -116,9 +130,10 @@ def _hosts_to_be_removed_for_site(site_id: SiteId) -> list[Host]:
         try:
             hostnames_serialized = str(
                 do_remote_automation(
-                    get_site_config(active_config, site_id),
+                    RemoteAutomationConfig.from_site_config(site_config),
                     "hosts-for-auto-removal",
                     [],
+                    debug=debug,
                 )
             )
         except (MKUserError, MKAutomationException) as e:
@@ -129,7 +144,7 @@ def _hosts_to_be_removed_for_site(site_id: SiteId) -> list[Host]:
     return [Host.load_host(hostname) for hostname in hostnames]
 
 
-def _hosts_to_be_removed_local() -> Iterator[HostName]:
+def _hosts_to_be_removed_local(*, debug: bool) -> Iterator[HostName]:
     if not (automatic_host_removal_ruleset := _load_automatic_host_removal_ruleset()):
         _LOGGER.debug("No cleanup rule configured: Terminating.")
         return  # small 'optimization'
@@ -140,7 +155,7 @@ def _hosts_to_be_removed_local() -> Iterator[HostName]:
         if not (
             matches := list(
                 analyze_host_rule_matches(
-                    hostname, [automatic_host_removal_ruleset]
+                    hostname, [automatic_host_removal_ruleset], debug=debug
                 ).results.values()
             )[0]
         ):
@@ -246,7 +261,7 @@ class AutomationHostsForAutoRemoval(AutomationCommand[None]):
         return "hosts-for-auto-removal"
 
     def execute(self, api_request: None) -> str:
-        return json.dumps(list(_hosts_to_be_removed_local()))
+        return json.dumps(list(_hosts_to_be_removed_local(debug=active_config.debug)))
 
     def get_request(self) -> None:
         pass

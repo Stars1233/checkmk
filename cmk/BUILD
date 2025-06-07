@@ -1,7 +1,7 @@
 load("@aspect_rules_py//py:defs.bzl", "py_library", "py_pytest_main")
 load("@cmk_requirements//:requirements.bzl", "requirement")
 load("@rules_python//python:packaging.bzl", "py_wheel")
-load("//:bazel_variables.bzl", "edition_deps")
+load("//:bazel_variables.bzl", "edition_python_deps")
 load("//bazel/rules:doctest.bzl", "py_doc_test")
 
 exports_files(["requirements.in"])
@@ -130,27 +130,29 @@ CSE_PY = glob([
 ])
 
 CMK_PACKAGES = [
-    "//packages/cmk-agent-based",
+    "//packages/cmk-shared-typing:cmk_shared_typing_py",
     "//packages/cmk-agent-receiver",
+    "//packages/cmk-ccc:cleanup",
     "//packages/cmk-ccc:crash-reporting",
     "//packages/cmk-ccc:daemon",
     "//packages/cmk-ccc:debug",
     "//packages/cmk-ccc:exceptions",
+    "//packages/cmk-ccc:hostaddress",
     "//packages/cmk-ccc:i18n",
     "//packages/cmk-ccc:plugin-registry",
     "//packages/cmk-ccc:profile",
     "//packages/cmk-ccc:site",
     "//packages/cmk-ccc:store",
+    "//packages/cmk-ccc:tty",
+    "//packages/cmk-ccc:user",
     "//packages/cmk-ccc:version",
     "//packages/cmk-crypto",
     "//packages/cmk-events",
-    "//packages/cmk-graphing",
     "//packages/cmk-livestatus-client",
     "//packages/cmk-livestatus-client:py_livestatus",
     "//packages/cmk-messaging",
     "//packages/cmk-mkp-tool",
-    "//packages/cmk-rulesets",
-    "//packages/cmk-server-side-calls",
+    "//packages/cmk-plugin-apis",
     "//packages/cmk-trace",
     "//packages/cmk-werks",
 ] + select({
@@ -204,7 +206,7 @@ py_library(
     visibility = ["//tests:__subpackages__"],
     deps = CMC_PROTO_DEPS + [
         "lib_cmk",
-    ] + edition_deps[edition],
+    ] + edition_python_deps[edition],
 ) for edition, srcs in [
     ("cce", CCE_PY),
     ("cee", CEE_PY),
@@ -217,7 +219,7 @@ py_library(
     name = "lib_cmk_repo_no_meraki",
     srcs = glob(
         include = ["**/*.py"],
-        exclude = ["special_agents/agent_cisco_meraki.py"],
+        exclude = ["plugins/cisco_meraki/special_agent/agent_cisco_meraki.py"],
     ),
     data = ["gui/wsgi/applications/index.wsgi"],
     imports = [".."],

@@ -3,7 +3,6 @@
 # This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
 # conditions defined in the file COPYING, which is part of this source code package.
 
-import os
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, NamedTuple, NotRequired, TypedDict
@@ -151,7 +150,7 @@ class BIAggregationPack:
 
 
 class BIAggregationPacks:
-    def __init__(self, bi_configuration_file: str) -> None:
+    def __init__(self, bi_configuration_file: Path) -> None:
         super().__init__()
         self.packs: dict[str, BIAggregationPack] = {}
         self._bi_configuration_file = bi_configuration_file
@@ -306,7 +305,7 @@ class BIAggregationPacks:
                     bi_aggregation.node.action.rule_id = new_id
 
     def load_config(self) -> None:
-        if not Path(self._bi_configuration_file).exists():
+        if not self._bi_configuration_file.exists():
             self._load_config(bi_sample_config)
             return
         self._load_config(store.load_object_from_file(self._bi_configuration_file, default=None))
@@ -330,16 +329,16 @@ class BIAggregationPacks:
             )
         )
 
-        store.makedirs(self._num_enabled_aggregations_dir())
+        self._num_enabled_aggregations_dir().mkdir(mode=0o770, exist_ok=True, parents=True)
         store.save_text_to_file(self._num_enabled_aggregations_path(), enabled_aggregations)
 
     @classmethod
-    def _num_enabled_aggregations_dir(cls):
-        return os.path.join(var_dir, "wato")
+    def _num_enabled_aggregations_dir(cls) -> Path:
+        return var_dir / "wato"
 
     @classmethod
-    def _num_enabled_aggregations_path(cls):
-        return os.path.join(cls._num_enabled_aggregations_dir(), "num_enabled_aggregations")
+    def _num_enabled_aggregations_path(cls) -> Path:
+        return cls._num_enabled_aggregations_dir() / "num_enabled_aggregations"
 
     @classmethod
     def get_num_enabled_aggregations(cls) -> int:
@@ -503,7 +502,7 @@ class BIHostRenamer:
         # TODO: renaming can be moved into the action class itself. allows easier plug-ins
         if isinstance(
             bi_node.action,
-            (BIStateOfHostAction, BIStateOfServiceAction, BIStateOfRemainingServicesAction),
+            BIStateOfHostAction | BIStateOfServiceAction | BIStateOfRemainingServicesAction,
         ):
             if bi_node.action.host_regex == oldname:
                 bi_node.action.host_regex = newname
@@ -521,7 +520,7 @@ class BIHostRenamer:
     def rename_node_search(self, bi_node: BINodeGenerator, oldname: str, newname: str) -> int:
         # TODO: renaming can be moved into the search class itself. allows easier plug-ins
         if (
-            isinstance(bi_node.search, (BIHostSearch, BIServiceSearch))
+            isinstance(bi_node.search, BIHostSearch | BIServiceSearch)
             and bi_node.search.conditions["host_choice"]["type"] == "host_name_regex"
             and bi_node.search.conditions["host_choice"]["pattern"] == oldname
         ):

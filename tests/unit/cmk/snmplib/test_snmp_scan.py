@@ -13,8 +13,8 @@ import pytest
 from tests.unit.mocks_and_helpers import FixPluginLegacy
 
 from cmk.ccc.exceptions import MKSNMPError, OnError
+from cmk.ccc.hostaddress import HostAddress, HostName
 
-from cmk.utils.hostaddress import HostAddress, HostName
 from cmk.utils.log import logger
 from cmk.utils.paths import snmp_scan_cache_dir
 from cmk.utils.sectionname import SectionName
@@ -176,7 +176,7 @@ def backend() -> Iterator[SNMPBackend]:
     try:
         yield SNMPTestBackend(SNMPConfig, logger)
     finally:
-        cachefile = Path(snmp_scan_cache_dir, f"{SNMPConfig.hostname}.{SNMPConfig.ipaddress}")
+        cachefile = snmp_scan_cache_dir / f"{SNMPConfig.hostname}.{SNMPConfig.ipaddress}"
         try:
             cachefile.unlink()
         except FileNotFoundError:

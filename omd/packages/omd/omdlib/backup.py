@@ -9,7 +9,6 @@ import contextlib
 import errno
 import fnmatch
 import io
-import logging
 import os
 import shutil
 import socket
@@ -22,12 +21,10 @@ from types import TracebackType
 from typing import BinaryIO, override
 
 from omdlib.contexts import SiteContext
+from omdlib.site_paths import SitePaths
 from omdlib.type_defs import CommandOptions
 
-from cmk.utils.log import VERBOSE
 from cmk.utils.paths import mkbackup_lock_dir
-
-logger = logging.getLogger("cmk.omd")
 
 
 def ensure_mkbackup_lock_dir_rights() -> None:
@@ -36,15 +33,7 @@ def ensure_mkbackup_lock_dir_rights() -> None:
         shutil.chown(mkbackup_lock_dir, group="omd")
         mkbackup_lock_dir.chmod(0o0770)
     except PermissionError:
-        logger.log(
-            VERBOSE,
-            "Unable to create %s needed for mkbackup. "
-            "This may be due to the fact that your SITE "
-            "User isn't allowed to create the backup directory. "
-            "You could resolve this issue by running 'sudo omd start' as root "
-            "(and not as SITE user).",
-            mkbackup_lock_dir,
-        )
+        pass
 
 
 def backup_site_to_tarfile(
@@ -54,19 +43,34 @@ def backup_site_to_tarfile(
     options: CommandOptions,
     verbose: bool,
 ) -> None:
-    if not os.path.isdir(site.dir):
-        raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), site.dir)
+    site_home = SitePaths.from_site_name(site.name).home
+    _backup_site_to_tarfile(
+        site.name, site_home, site.is_stopped(verbose), fh, mode, options, verbose
+    )
+
+
+def _backup_site_to_tarfile(
+    site_name: str,
+    site_home: str,
+    site_is_stopped: bool,
+    fh: BinaryIO | io.BufferedWriter,
+    mode: str,
+    options: CommandOptions,
+    verbose: bool,
+) -> None:
+    if not os.path.isdir(site_home):
+        raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), site_home)
 
     excludes = get_exclude_patterns(options)
 
     def accepted_files(tarinfo: tarfile.TarInfo) -> bool:
         # patterns are relative to site directory, tarinfo.name includes site name.
         return not any(
-            fnmatch.fnmatch(tarinfo.name[len(site.name) + 1 :], glob_pattern)
+            fnmatch.fnmatch(tarinfo.name[len(site_name) + 1 :], glob_pattern)
             for glob_pattern in excludes
         )
 
-    with RRDSocket(site.is_stopped(), site.name, verbose) as rrd_socket:
+    with RRDSocket(site_is_stopped, site_name, verbose) as rrd_socket:
         with tarfile.TarFile.open(
             fileobj=fh,
             mode=mode,
@@ -79,15 +83,15 @@ def backup_site_to_tarfile(
             tar_add(
                 rrd_socket,
                 tar,
-                site.dir + "/version",
-                site.name + "/version",
+                site_home + "/version",
+                site_name + "/version",
                 verbose=verbose,
             )
             tar_add(
                 rrd_socket,
                 tar,
-                site.dir,
-                site.name,
+                site_home,
+                site_name,
                 predicate=accepted_files,
                 verbose=verbose,
             )

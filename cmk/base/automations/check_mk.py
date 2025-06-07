@@ -30,34 +30,34 @@ from typing import Any
 import livestatus
 
 import cmk.ccc.debug
-from cmk.ccc import version
+from cmk.ccc import tty, version
 from cmk.ccc.exceptions import MKBailOut, MKGeneralException, MKSNMPError, MKTimeout, OnError
+from cmk.ccc.hostaddress import HostAddress, HostName, Hosts
 from cmk.ccc.version import edition_supports_nagvis
 
 import cmk.utils.password_store
 import cmk.utils.paths
-from cmk.utils import config_warnings, ip_lookup, log, man_pages, tty
+from cmk.utils import config_warnings, ip_lookup, log, man_pages
 from cmk.utils.agentdatatype import AgentRawData
 from cmk.utils.auto_queue import AutoQueue
 from cmk.utils.caching import cache_manager
-from cmk.utils.config_path import LATEST_CONFIG
 from cmk.utils.diagnostics import deserialize_cl_parameters, DiagnosticsCLParameters
 from cmk.utils.encoding import ensure_str_with_fallback
 from cmk.utils.everythingtype import EVERYTHING
-from cmk.utils.hostaddress import HostAddress, HostName, Hosts
 from cmk.utils.labels import DiscoveredHostLabelsStore, HostLabel, LabelManager
 from cmk.utils.log import console
 from cmk.utils.macros import replace_macros_in_str
 from cmk.utils.paths import (
     autochecks_dir,
     autodiscovery_dir,
-    base_autochecks_dir,
     base_discovered_host_labels_dir,
     counters_dir,
     data_source_cache_dir,
     discovered_host_labels_dir,
     local_agent_based_plugins_dir,
     local_checks_dir,
+    local_cmk_addons_plugins_dir,
+    local_cmk_plugins_dir,
     logwatch_dir,
     nagios_startscript,
     omd_root,
@@ -76,6 +76,7 @@ from cmk.automations.results import (
     ActiveCheckResult,
     AnalyseHostResult,
     AnalyseServiceResult,
+    AnalyzeHostRuleEffectivenessResult,
     AnalyzeHostRuleMatchesResult,
     AnalyzeServiceRuleMatchesResult,
     AutodiscoveryResult,
@@ -97,6 +98,9 @@ from cmk.automations.results import (
     NotificationGetBulksResult,
     NotificationReplayResult,
     NotificationTestResult,
+    PingHostCmd,
+    PingHostInput,
+    PingHostResult,
     ReloadResult,
     RenameHostsResult,
     RestartResult,
@@ -135,8 +139,7 @@ from cmk.checkengine.discovery import (
     automation_discovery,
     CheckPreview,
     CheckPreviewEntry,
-    DiscoveryMode,
-    DiscoveryResult,
+    DiscoveryReport,
     DiscoverySettings,
     get_check_preview,
     set_autochecks_for_effective_host,
@@ -219,7 +222,7 @@ def _schedule_discovery_check(host_name: HostName) -> None:
 
     try:
         s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        s.connect(cmk.utils.paths.livestatus_unix_socket)
+        s.connect(str(cmk.utils.paths.livestatus_unix_socket))
         s.send(f"COMMAND [{now}] {command}\n".encode())
     except Exception:
         if cmk.ccc.debug.enabled():
@@ -274,20 +277,9 @@ class AutomationDiscovery(DiscoveryAutomation):
         file_cache_options = FileCacheOptions(use_outdated=True)
 
         if len(args) < 2:
-            raise MKAutomationError(
-                "Need two arguments: %s " % "DiscoveryMode|DiscoverySettings HOSTNAME"
-            )
+            raise MKAutomationError("Need two arguments: DiscoverySettings HOSTNAME")
 
-        # TODO 2.3 introduced a new format but has to be compatible for 2.2.
-        # Can be removed one day
-        if (discovery_settings := args[0]) in ["new", "remove", "fixall", "refresh"]:
-            settings = DiscoverySettings.from_discovery_mode(
-                DiscoveryMode.from_str(discovery_settings)
-            )
-        else:
-            # 2.3 format
-            settings = DiscoverySettings.from_json(discovery_settings)
-
+        settings = DiscoverySettings.from_automation_arg(args[0])
         hostnames = [HostName(h) for h in islice(args, 1, None)]
 
         if plugins is None:
@@ -304,7 +296,7 @@ class AutomationDiscovery(DiscoveryAutomation):
             loading_result.loaded_config.discovery_rules,
         )
         config_cache = loading_result.config_cache
-        ruleset_matcher = config_cache.ruleset_matcher
+        hosts_config = config_cache.hosts_config
         service_name_config = config_cache.make_passive_service_name_config()
         autochecks_config = config.AutochecksConfigurer(
             config_cache, plugins.check_plugins, service_name_config
@@ -313,7 +305,7 @@ class AutomationDiscovery(DiscoveryAutomation):
             plugins.check_plugins, service_name_config
         )
 
-        results: dict[HostName, DiscoveryResult] = {}
+        results: dict[HostName, DiscoveryReport] = {}
 
         parser = CMKParser(
             config_cache.parser_factory(),
@@ -337,7 +329,8 @@ class AutomationDiscovery(DiscoveryAutomation):
             snmp_backend_override=None,
             password_store_file=cmk.utils.password_store.pending_password_store_path(),
         )
-        for hostname in hostnames:
+        # sort clusters last, to have them operate with the new nodes host labels.
+        for is_cluster, hostname in sorted((h in hosts_config.clusters, h) for h in hostnames):
 
             def section_error_handling(
                 section_name: SectionName,
@@ -352,17 +345,16 @@ class AutomationDiscovery(DiscoveryAutomation):
                     rtc_package=None,
                 )
 
-            hosts_config = config_cache.hosts_config
             results[hostname] = automation_discovery(
                 hostname,
-                is_cluster=hostname in config_cache.hosts_config.clusters,
+                is_cluster=is_cluster,
                 cluster_nodes=config_cache.nodes(hostname),
                 active_hosts={
                     hn
                     for hn in itertools.chain(hosts_config.hosts, hosts_config.clusters)
                     if config_cache.is_active(hn) and config_cache.is_online(hn)
                 },
-                ruleset_matcher=ruleset_matcher,
+                clear_ruleset_matcher_caches=config_cache.ruleset_matcher.clear_caches,
                 parser=parser,
                 fetcher=fetcher,
                 summarizer=CMKSummarizer(
@@ -401,13 +393,6 @@ class AutomationDiscovery(DiscoveryAutomation):
 
 
 automations.register(AutomationDiscovery())
-
-
-class AutomationDiscoveryPre22Name(AutomationDiscovery):
-    cmd = "inventory"
-
-
-automations.register(AutomationDiscoveryPre22Name())
 
 
 class AutomationSpecialAgentDiscoveryPreview(Automation):
@@ -521,7 +506,7 @@ class AutomationDiscoveryPreview(Automation):
         ip_address_of = config.ConfiguredIPLookup(
             config_cache, error_handler=config.handle_ip_lookup_failure
         )
-        hosts_config = config.make_hosts_config()
+        hosts_config = config.make_hosts_config(loading_result.loaded_config)
         ip_address = (
             None
             if host_name in hosts_config.clusters
@@ -704,7 +689,7 @@ def _execute_discovery(
     config_cache: config.ConfigCache,
     plugins: AgentBasedPlugins,
 ) -> CheckPreview:
-    hosts_config = config.make_hosts_config()
+    hosts_config = config.make_hosts_config(loaded_config)
     discovery_config = DiscoveryConfig(
         config_cache.ruleset_matcher,
         config_cache.label_manager.labels_of_host,
@@ -729,7 +714,7 @@ def _execute_discovery(
 
     with (
         set_value_store_manager(
-            ValueStoreManager(host_name, AllValueStoresStore(Path(counters_dir, host_name))),
+            ValueStoreManager(host_name, AllValueStoresStore(counters_dir / host_name)),
             store_changes=False,
         ) as value_store_manager,
     ):
@@ -825,10 +810,26 @@ class AutomationAutodiscovery(DiscoveryAutomation):
 automations.register(AutomationAutodiscovery())
 
 
+def _make_configured_bake_on_restart_callback(
+    loading_result: config.LoadingResult,
+    hosts: Sequence[HostAddress],
+) -> Callable[[], None]:
+    # TODO: consider passing the edition here, instead of "detecting" it (and thus
+    # silently failing if the bakery is missing unexpectedly)
+    try:
+        from cmk.base.configlib.cee.bakery import (  # type: ignore[import-untyped, unused-ignore, import-not-found]
+            make_configured_bake_on_restart_callback,
+        )
+    except ImportError:
+        return lambda: None
+
+    return make_configured_bake_on_restart_callback(loading_result, hosts)
+
+
 def _execute_autodiscovery(
     ab_plugins: AgentBasedPlugins | None,
     loading_result: config.LoadingResult | None,
-) -> tuple[Mapping[HostName, DiscoveryResult], bool]:
+) -> tuple[Mapping[HostName, DiscoveryReport], bool]:
     file_cache_options = FileCacheOptions(use_outdated=True)
 
     if not (autodiscovery_queue := AutoQueue(autodiscovery_dir)):
@@ -861,7 +862,6 @@ def _execute_autodiscovery(
         # allows to access the lookup faiures.
         error_handler=ip_lookup.CollectFailedHosts(),
     )
-    ruleset_matcher = config_cache.ruleset_matcher
     parser = CMKParser(
         config_cache.parser_factory(),
         selected_sections=NO_SELECTION,
@@ -882,7 +882,7 @@ def _execute_autodiscovery(
         selected_sections=NO_SELECTION,
         simulation_mode=config.simulation_mode,
         snmp_backend_override=None,
-        password_store_file=cmk.utils.password_store.core_password_store_path(LATEST_CONFIG),
+        password_store_file=cmk.utils.password_store.core_password_store_path(),
     )
     section_plugins = SectionPluginMapper({**ab_plugins.agent_sections, **ab_plugins.snmp_sections})
     host_label_plugins = HostLabelPluginMapper(
@@ -896,12 +896,13 @@ def _execute_autodiscovery(
     on_error = OnError.IGNORE
 
     hosts_config = config_cache.hosts_config
-    all_hosts = frozenset(
-        itertools.chain(hosts_config.hosts, hosts_config.clusters, hosts_config.shadow_hosts)
-    )
+    all_hosts = frozenset(itertools.chain(hosts_config.hosts, hosts_config.shadow_hosts))
     for host_name in autodiscovery_queue:
-        if host_name not in all_hosts:
-            console.verbose(f"  Removing mark '{host_name}' (host not configured")
+        if host_name in hosts_config.clusters:
+            console.verbose(f"  Removing mark '{host_name}' (host is a cluster)")
+            (autodiscovery_queue.path / str(host_name)).unlink(missing_ok=True)
+        elif host_name not in all_hosts:
+            console.verbose(f"  Removing mark '{host_name}' (host not configured)")
             (autodiscovery_queue.path / str(host_name)).unlink(missing_ok=True)
 
     if (oldest_queued := autodiscovery_queue.oldest()) is None:
@@ -961,14 +962,13 @@ def _execute_autodiscovery(
                     hosts_config = config_cache.hosts_config
                     discovery_result, activate_host = autodiscovery(
                         host_name,
-                        is_cluster=host_name in config_cache.hosts_config.clusters,
                         cluster_nodes=config_cache.nodes(host_name),
                         active_hosts={
                             hn
                             for hn in itertools.chain(hosts_config.hosts, hosts_config.clusters)
                             if config_cache.is_active(hn) and config_cache.is_online(hn)
                         },
-                        ruleset_matcher=ruleset_matcher,
+                        clear_ruleset_matcher_caches=config_cache.ruleset_matcher.clear_caches,
                         parser=parser,
                         fetcher=fetcher,
                         summarizer=CMKSummarizer(
@@ -984,7 +984,6 @@ def _execute_autodiscovery(
                         schedule_discovery_check=_schedule_discovery_check,
                         rediscovery_parameters=params.rediscovery,
                         invalidate_host_config=config_cache.invalidate_host_config,
-                        autodiscovery_queue=autodiscovery_queue,
                         reference_time=rediscovery_reference_time,
                         oldest_queued=oldest_queued,
                         enforced_services=config_cache.enforced_services_table(
@@ -992,6 +991,12 @@ def _execute_autodiscovery(
                         ),
                         on_error=on_error,
                     )
+                    # delete the file even in error case, otherwise we might be causing the same error
+                    # every time the cron job runs
+                    (autodiscovery_queue.path / str(host_name)).unlink(
+                        missing_ok=True
+                    )  # TODO: should be a method of autodiscovery_queue
+
                 if discovery_result:
                     discovery_results[host_name] = discovery_result
                     activation_required |= activate_host
@@ -1004,39 +1009,52 @@ def _execute_autodiscovery(
 
     core = create_core(config.monitoring_core)
     with config.set_use_core_config(
-        autochecks_dir=Path(base_autochecks_dir),
+        autochecks_dir=autochecks_dir,
         discovered_host_labels_dir=base_discovered_host_labels_dir,
     ):
         try:
             cache_manager.clear_all()
             config_cache.initialize()
-            hosts_config = config.make_hosts_config()
+            hosts_config = config.make_hosts_config(loading_result.loaded_config)
+            bake_on_restart = _make_configured_bake_on_restart_callback(
+                loading_result, hosts_config.hosts
+            )
 
             # reset these to their original value to create a correct config
             if config.monitoring_core == "cmc":
                 cmk.base.core.do_reload(
                     config_cache,
+                    hosts_config,
                     service_name_config,
                     ip_address_of,
                     core,
                     ab_plugins,
                     locking_mode=config.restart_locking,
-                    all_hosts=hosts_config.hosts,
                     discovery_rules=loading_result.loaded_config.discovery_rules,
+                    hosts_to_update=None,
+                    service_depends_on=config.ServiceDependsOn(
+                        tag_list=config_cache.tag_list,
+                        service_dependencies=loading_result.loaded_config.service_dependencies,
+                    ),
                     duplicates=sorted(
                         hosts_config.duplicates(
                             lambda hn: config_cache.is_active(hn) and config_cache.is_online(hn)
                         ),
                     ),
+                    bake_on_restart=bake_on_restart,
                 )
             else:
                 cmk.base.core.do_restart(
                     config_cache,
+                    hosts_config,
                     service_name_config,
                     ip_address_of,
                     core,
                     ab_plugins,
-                    all_hosts=hosts_config.hosts,
+                    service_depends_on=config.ServiceDependsOn(
+                        tag_list=config_cache.tag_list,
+                        service_dependencies=loading_result.loaded_config.service_dependencies,
+                    ),
                     locking_mode=config.restart_locking,
                     discovery_rules=loading_result.loaded_config.discovery_rules,
                     duplicates=sorted(
@@ -1044,6 +1062,7 @@ def _execute_autodiscovery(
                             lambda hn: config_cache.is_active(hn) and config_cache.is_online(hn)
                         ),
                     ),
+                    bake_on_restart=bake_on_restart,
                 )
         finally:
             cache_manager.clear_all()
@@ -1240,11 +1259,12 @@ class AutomationRenameHosts(Automation):
                 # If that is on the local site, we can not lock the configuration again during baking!
                 # (If we are on a remote site now, locking *would* work, but we will not bake agents anyway.)
                 config_cache = loading_result.config_cache
-                hosts_config = config.make_hosts_config()
+                hosts_config = config.make_hosts_config(loading_result.loaded_config)
                 service_name_config = config_cache.make_passive_service_name_config()
                 ip_address_of = config.ConfiguredIPLookup(
                     config_cache, error_handler=ip_lookup.CollectFailedHosts()
                 )
+
                 _execute_silently(
                     config_cache,
                     service_name_config,
@@ -1253,7 +1273,14 @@ class AutomationRenameHosts(Automation):
                     hosts_config,
                     loading_result.loaded_config,
                     plugins,
-                    skip_config_locking_for_bakery=True,
+                    hosts_to_update=None,
+                    service_depends_on=config.ServiceDependsOn(
+                        tag_list=config_cache.tag_list,
+                        service_dependencies=loading_result.loaded_config.service_dependencies,
+                    ),
+                    bake_on_restart=_make_configured_bake_on_restart_callback(
+                        loading_result, hosts_config.hosts
+                    ),
                 )
 
                 for hostname in ip_address_of.error_handler.failed_ip_lookups:
@@ -1269,7 +1296,7 @@ class AutomationRenameHosts(Automation):
 
     def _core_is_running(self) -> bool:
         if config.monitoring_core == "nagios":
-            command = nagios_startscript + " status"
+            command = str(nagios_startscript) + " status"
         else:
             command = "omd status cmc"
         return (
@@ -1288,7 +1315,7 @@ class AutomationRenameHosts(Automation):
     ) -> list[str]:
         actions = []
 
-        if self._rename_host_file(autochecks_dir, oldname + ".mk", newname + ".mk"):
+        if self._rename_host_file(str(autochecks_dir), oldname + ".mk", newname + ".mk"):
             actions.append("autochecks")
 
         if self._rename_host_file(
@@ -1304,23 +1331,23 @@ class AutomationRenameHosts(Automation):
         actions.extend(move_piggyback_for_host_rename(cmk.utils.paths.omd_root, oldname, newname))
 
         # Logwatch
-        if self._rename_host_dir(logwatch_dir, oldname, newname):
+        if self._rename_host_dir(str(logwatch_dir), oldname, newname):
             actions.append("logwatch")
 
         # SNMP walks
-        if self._rename_host_file(snmpwalks_dir, oldname, newname):
+        if self._rename_host_file(str(snmpwalks_dir), oldname, newname):
             actions.append("snmpwalk")
 
         # HW/SW Inventory
-        if self._rename_host_file(var_dir + "/inventory", oldname, newname):
-            self._rename_host_file(var_dir + "/inventory", oldname + ".gz", newname + ".gz")
+        if self._rename_host_file(str(var_dir / "inventory"), oldname, newname):
+            self._rename_host_file(str(var_dir / "inventory"), oldname + ".gz", newname + ".gz")
             actions.append("inv")
 
-        if self._rename_host_dir(var_dir + "/inventory_archive", oldname, newname):
+        if self._rename_host_dir(str(var_dir / "inventory_archive"), oldname, newname):
             actions.append("invarch")
 
         # Baked agents
-        baked_agents_dir = var_dir + "/agents/"
+        baked_agents_dir = str(var_dir) + "/agents/"
         have_renamed_agent = False
         if os.path.exists(baked_agents_dir):
             for opsys in os.listdir(baked_agents_dir):
@@ -1330,7 +1357,7 @@ class AutomationRenameHosts(Automation):
             actions.append("agent")
 
         # Agent deployment
-        deployment_dir = var_dir + "/agent_deployment/"
+        deployment_dir = str(var_dir) + "/agent_deployment/"
         if self._rename_host_file(deployment_dir, oldname, newname):
             actions.append("agent_deployment")
 
@@ -1431,7 +1458,7 @@ class AutomationRenameHosts(Automation):
             # Create a file "renamed_hosts" with the information about the
             # renaming of the hosts. The core will honor this file when it
             # reads the status file with the saved state.
-            Path(var_dir, "core/renamed_hosts").write_text(f"{oldname}\n{newname}\n")
+            (var_dir / "core/renamed_hosts").write_text(f"{oldname}\n{newname}\n")
             actions.append("retention")
 
         # NagVis maps
@@ -1974,6 +2001,56 @@ class AutomationAnalyzeServiceRuleMatches(Automation):
 automations.register(AutomationAnalyzeServiceRuleMatches())
 
 
+class AutomationAnalyzeHostRuleEffectiveness(Automation):
+    cmd = "analyze-host-rule-effectiveness"
+    needs_config = True
+    needs_checks = False
+
+    def execute(
+        self,
+        args: list[str],
+        plugins: AgentBasedPlugins | None,
+        loading_result: config.LoadingResult | None,
+    ) -> AnalyzeHostRuleEffectivenessResult:
+        # We read the list of rules from stdin since it could be too much for the command line
+        match_rules = ast.literal_eval(sys.stdin.read())
+
+        if loading_result is None:
+            loading_result = load_config(discovery_rulesets=())
+        config_cache = loading_result.config_cache
+        ruleset_matcher = config_cache.ruleset_matcher
+
+        hosts_config = config_cache.hosts_config
+        labels_of_host = config_cache.label_manager.labels_of_host
+        host_names = list(
+            filter(
+                config_cache.is_online,
+                itertools.chain(
+                    hosts_config.hosts, hosts_config.clusters, hosts_config.shadow_hosts
+                ),
+            )
+        )
+
+        return AnalyzeHostRuleEffectivenessResult(
+            {
+                rules[0]["id"]: any(
+                    True
+                    for host_name in host_names
+                    for _ in ruleset_matcher.get_host_values(host_name, rules, labels_of_host)
+                )
+                # The caller needs to get one result per rule. For this reason we can not just use
+                # the list of rules with the ruleset matching functions but have to execute rule
+                # matching for the rules individually. If we would use the provided list of rules,
+                # then the not matching rules would not be represented in the result and we would
+                # not know which matched value is related to which rule.
+                for rules in match_rules
+            }
+        )
+
+
+automations.register(AutomationAnalyzeHostRuleEffectiveness())
+
+
 class ABCDeleteHosts:
     def _execute(self, args: list[str]) -> None:
         for hostname_str in args:
@@ -2000,7 +2077,7 @@ class ABCDeleteHosts:
     def _delete_baked_agents(self, hostname: HostName) -> None:
         # softlinks for baked agents. obsolete packages are removed upon next bake action
         # TODO: Move to bakery code
-        baked_agents_dir = var_dir + "/agents/"
+        baked_agents_dir = str(var_dir) + "/agents/"
         if os.path.exists(baked_agents_dir):
             for folder in os.listdir(baked_agents_dir):
                 self._delete_if_exists(f"{folder}/{hostname}")
@@ -2040,12 +2117,12 @@ class AutomationDeleteHosts(ABCDeleteHosts, Automation):
 
     def _single_file_paths(self, hostname: HostName) -> list[str]:
         return [
-            f"{precompiled_hostchecks_dir}/{hostname}",
-            f"{precompiled_hostchecks_dir}/{hostname}.py",
+            f"{precompiled_hostchecks_dir / hostname}",
+            f"{precompiled_hostchecks_dir / hostname}.py",
             f"{autochecks_dir}/{hostname}.mk",
-            f"{counters_dir}/{hostname}",
+            f"{counters_dir / hostname}",
             f"{discovered_host_labels_dir}/{hostname}.mk",
-            f"{tcp_cache_dir}/{hostname}",
+            f"{tcp_cache_dir / hostname}",
             f"{var_dir}/persisted/{hostname}",
             f"{var_dir}/inventory/{hostname}",
             f"{var_dir}/inventory/{hostname}.gz",
@@ -2088,11 +2165,11 @@ class AutomationDeleteHostsKnownRemote(ABCDeleteHosts, Automation):
 
     def _single_file_paths(self, hostname: HostName) -> list[str]:
         return [
-            f"{precompiled_hostchecks_dir}/{hostname}",
-            f"{precompiled_hostchecks_dir}/{hostname}.py",
+            f"{precompiled_hostchecks_dir / hostname}",
+            f"{precompiled_hostchecks_dir / hostname}.py",
             f"{autochecks_dir}/{hostname}.mk",
-            f"{counters_dir}/{hostname}",
-            f"{tcp_cache_dir}/{hostname}",
+            f"{counters_dir / hostname}",
+            f"{tcp_cache_dir / hostname}",
             f"{var_dir}/persisted/{hostname}",
         ]
 
@@ -2140,11 +2217,12 @@ class AutomationRestart(Automation):
                 discovery_rulesets=extract_known_discovery_rulesets(plugins)
             )
 
-        hosts_config = config.make_hosts_config()
+        hosts_config = config.make_hosts_config(loading_result.loaded_config)
         service_name_config = loading_result.config_cache.make_passive_service_name_config()
         ip_address_of = config.ConfiguredIPLookup(
             loading_result.config_cache, error_handler=ip_lookup.CollectFailedHosts()
         )
+
         return _execute_silently(
             loading_result.config_cache,
             service_name_config,
@@ -2154,6 +2232,13 @@ class AutomationRestart(Automation):
             loading_result.loaded_config,
             plugins,
             hosts_to_update=nodes,
+            service_depends_on=config.ServiceDependsOn(
+                tag_list=loading_result.config_cache.tag_list,
+                service_dependencies=loading_result.loaded_config.service_dependencies,
+            ),
+            bake_on_restart=_make_configured_bake_on_restart_callback(
+                loading_result, hosts_config.hosts
+            ),
         )
 
     def _check_plugins_have_changed(self) -> bool:
@@ -2161,6 +2246,8 @@ class AutomationRestart(Automation):
         for checks_path in [
             local_checks_dir,
             local_agent_based_plugins_dir,
+            local_cmk_addons_plugins_dir,
+            local_cmk_plugins_dir,
         ]:
             if not checks_path.exists():
                 continue
@@ -2218,8 +2305,9 @@ def _execute_silently(
     hosts_config: Hosts,
     loaded_config: config.LoadedConfigFragment,
     plugins: AgentBasedPlugins,
-    hosts_to_update: set[HostName] | None = None,
-    skip_config_locking_for_bakery: bool = False,
+    hosts_to_update: set[HostName] | None,
+    service_depends_on: Callable[[HostName, ServiceName], Sequence[ServiceName]],
+    bake_on_restart: Callable[[], None],
 ) -> RestartResult:
     with redirect_stdout(open(os.devnull, "w")):
         # The IP lookup used to write to stdout, that is not the case anymore.
@@ -2228,21 +2316,22 @@ def _execute_silently(
         try:
             do_restart(
                 config_cache,
+                hosts_config,
                 service_name_config,
                 ip_address_of,
                 create_core(config.monitoring_core),
                 plugins,
                 action=action,
-                all_hosts=hosts_config.hosts,
                 discovery_rules=loaded_config.discovery_rules,
                 hosts_to_update=hosts_to_update,
+                service_depends_on=service_depends_on,
                 locking_mode=config.restart_locking,
                 duplicates=sorted(
                     hosts_config.duplicates(
                         lambda hn: config_cache.is_active(hn) and config_cache.is_online(hn)
                     )
                 ),
-                skip_config_locking_for_bakery=skip_config_locking_for_bakery,
+                bake_on_restart=bake_on_restart,
             )
         except (MKBailOut, MKGeneralException) as e:
             raise MKAutomationError(str(e))
@@ -2401,7 +2490,7 @@ class AutomationScanParents(Automation):
         plugins = plugins or load_plugins()  # do we really still need this?
         loading_result = loading_result or load_config(extract_known_discovery_rulesets(plugins))
 
-        hosts_config = config.make_hosts_config()
+        hosts_config = config.make_hosts_config(loading_result.loaded_config)
         monitoring_host = (
             HostName(config.monitoring_host) if config.monitoring_host is not None else None
         )
@@ -2469,7 +2558,9 @@ def get_special_agent_commandline(
         passwords,
         password_store_file,
         ExecutableFinder(
-            cmk.utils.paths.local_special_agents_dir, cmk.utils.paths.special_agents_dir
+            # NOTE: we can't ignore these, they're an API promise.
+            cmk.utils.paths.local_special_agents_dir,
+            cmk.utils.paths.special_agents_dir,
         ),
     )
 
@@ -2543,6 +2634,34 @@ class AutomationDiagSpecialAgent(Automation):
 
 
 automations.register(AutomationDiagSpecialAgent())
+
+
+class AutomationPingHost(Automation):
+    cmd = "ping-host"
+
+    def execute(
+        self,
+        args: list[str],
+        plugins: AgentBasedPlugins | None,
+        loaded_config: config.LoadingResult | None,
+    ) -> PingHostResult:
+        ping_host_input = PingHostInput.deserialize(sys.stdin.read())
+        return PingHostResult(
+            *self._execute_ping(ping_host_input.ip_or_dns_name, ping_host_input.base_cmd)
+        )
+
+    def _execute_ping(self, ip_or_dns_name: str, base_cmd: PingHostCmd) -> tuple[int, str]:
+        completed_process = subprocess.run(
+            [base_cmd.value, "-A", "-i", "0.2", "-c", "2", "-W", "5", ip_or_dns_name],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            encoding="utf-8",
+            check=False,
+        )
+        return completed_process.returncode, completed_process.stdout
+
+
+automations.register(AutomationPingHost())
 
 
 class AutomationDiagHost(Automation):
@@ -2715,11 +2834,10 @@ class AutomationDiagHost(Automation):
     ) -> tuple[int, str]:
         hosts_config = config_cache.hosts_config
         check_interval = config_cache.check_mk_check_interval(host_name)
-        oid_cache_dir = Path(cmk.utils.paths.snmp_scan_cache_dir)
-        stored_walk_path = Path(cmk.utils.paths.snmpwalks_dir)
-        walk_cache_path = Path(cmk.utils.paths.var_dir) / "snmp_cache"
-        file_cache_path = Path(cmk.utils.paths.data_source_cache_dir)
-        tcp_cache_path = Path(cmk.utils.paths.tcp_cache_dir)
+        oid_cache_dir = cmk.utils.paths.snmp_scan_cache_dir
+        walk_cache_path = cmk.utils.paths.var_dir / "snmp_cache"
+        file_cache_path = cmk.utils.paths.data_source_cache_dir
+        tcp_cache_path = cmk.utils.paths.tcp_cache_dir
         tls_config = TLSConfig(
             cas_dir=Path(cmk.utils.paths.agent_cas_dir),
             ca_store=Path(cmk.utils.paths.agent_cert_store),
@@ -2744,7 +2862,7 @@ class AutomationDiagHost(Automation):
                 scan_config=snmp_scan_config,
                 selected_sections=NO_SELECTION,
                 backend_override=None,
-                stored_walk_path=stored_walk_path,
+                stored_walk_path=cmk.utils.paths.snmpwalks_dir,
                 walk_cache_path=walk_cache_path,
             ),
             is_cluster=host_name in hosts_config.clusters,
@@ -2876,7 +2994,6 @@ class AutomationDiagHost(Automation):
             credentials: SNMPCredentials = snmp_config.credentials
 
             if snmpv3_use:
-                snmpv3_credentials = [snmpv3_use]
                 if snmpv3_use in ["authNoPriv", "authPriv"]:
                     if (
                         not isinstance(snmpv3_auth_proto, str)
@@ -2884,22 +3001,30 @@ class AutomationDiagHost(Automation):
                         or not isinstance(snmpv3_security_password, str)
                     ):
                         raise TypeError()
-                    snmpv3_credentials.extend(
-                        [snmpv3_auth_proto, snmpv3_security_name, snmpv3_security_password]
-                    )
+                    if snmpv3_use == "authPriv":
+                        if not isinstance(snmpv3_privacy_proto, str) or not isinstance(
+                            snmpv3_privacy_password, str
+                        ):
+                            raise TypeError()
+                        credentials = (
+                            snmpv3_use,
+                            snmpv3_auth_proto,
+                            snmpv3_security_name,
+                            snmpv3_security_password,
+                            snmpv3_privacy_proto,
+                            snmpv3_privacy_password,
+                        )
+                    else:
+                        credentials = (
+                            snmpv3_use,
+                            snmpv3_auth_proto,
+                            snmpv3_security_name,
+                            snmpv3_security_password,
+                        )
                 else:
                     if not isinstance(snmpv3_security_name, str):
                         raise TypeError()
-                    snmpv3_credentials.extend([snmpv3_security_name])
-
-                if snmpv3_use == "authPriv":
-                    if not isinstance(snmpv3_privacy_proto, str) or not isinstance(
-                        snmpv3_privacy_password, str
-                    ):
-                        raise TypeError()
-                    snmpv3_credentials.extend([snmpv3_privacy_proto, snmpv3_privacy_password])
-
-                credentials = tuple(snmpv3_credentials)
+                    credentials = (snmpv3_use, snmpv3_security_name)
         else:
             credentials = snmp_community or (
                 snmp_config.credentials
@@ -2955,7 +3080,6 @@ class AutomationDiagHost(Automation):
             snmp_backend=snmp_config.snmp_backend,
         )
 
-        stored_walk_path = Path(cmk.utils.paths.snmpwalks_dir)
         data = get_snmp_table(
             section_name=None,
             tree=BackendSNMPTree(
@@ -2963,7 +3087,9 @@ class AutomationDiagHost(Automation):
                 oids=[BackendOIDSpec(c, "string", False) for c in "1456"],
             ),
             walk_cache={},
-            backend=make_snmp_backend(snmp_config, log.logger, stored_walk_path=stored_walk_path),
+            backend=make_snmp_backend(
+                snmp_config, log.logger, stored_walk_path=cmk.utils.paths.snmpwalks_dir
+            ),
             log=log.logger.debug,
         )
 
@@ -3199,7 +3325,7 @@ class AutomationGetAgentOutput(Automation):
             plugins.check_plugins, loading_result.config_cache.make_passive_service_name_config()
         )
         config_cache = loading_result.config_cache
-        hosts_config = config.make_hosts_config()
+        hosts_config = config.make_hosts_config(loading_result.loaded_config)
 
         # No caching option over commandline here.
         file_cache_options = FileCacheOptions()
@@ -3216,11 +3342,10 @@ class AutomationGetAgentOutput(Automation):
                 else config.lookup_ip_address(config_cache, hostname)
             )
             check_interval = config_cache.check_mk_check_interval(hostname)
-            stored_walk_path = Path(cmk.utils.paths.snmpwalks_dir)
-            walk_cache_path = Path(cmk.utils.paths.var_dir) / "snmp_cache"
-            section_cache_path = Path(var_dir)
-            file_cache_path = Path(cmk.utils.paths.data_source_cache_dir)
-            tcp_cache_path = Path(cmk.utils.paths.tcp_cache_dir)
+            walk_cache_path = cmk.utils.paths.var_dir / "snmp_cache"
+            section_cache_path = var_dir
+            file_cache_path = cmk.utils.paths.data_source_cache_dir
+            tcp_cache_path = cmk.utils.paths.tcp_cache_dir
             tls_config = TLSConfig(
                 cas_dir=Path(cmk.utils.paths.agent_cas_dir),
                 ca_store=Path(cmk.utils.paths.agent_cert_store),
@@ -3228,14 +3353,12 @@ class AutomationGetAgentOutput(Automation):
             )
             snmp_scan_config = SNMPScanConfig(
                 on_error=OnError.RAISE,
-                oid_cache_dir=Path(cmk.utils.paths.snmp_scan_cache_dir),
+                oid_cache_dir=cmk.utils.paths.snmp_scan_cache_dir,
                 missing_sys_description=config_cache.missing_sys_description(hostname),
             )
 
             if ty == "agent":
-                core_password_store_file = cmk.utils.password_store.core_password_store_path(
-                    LATEST_CONFIG
-                )
+                core_password_store_file = cmk.utils.password_store.core_password_store_path()
                 for source in sources.make_sources(
                     plugins,
                     hostname,
@@ -3246,7 +3369,7 @@ class AutomationGetAgentOutput(Automation):
                         scan_config=snmp_scan_config,
                         selected_sections=NO_SELECTION,
                         backend_override=None,
-                        stored_walk_path=stored_walk_path,
+                        stored_walk_path=cmk.utils.paths.snmpwalks_dir,
                         walk_cache_path=walk_cache_path,
                     ),
                     is_cluster=hostname in hosts_config.clusters,
@@ -3326,7 +3449,10 @@ class AutomationGetAgentOutput(Automation):
                     hostname, ipaddress, SourceType.HOST, backend_override=None
                 )
                 backend = make_snmp_backend(
-                    snmp_config, log.logger, use_cache=False, stored_walk_path=stored_walk_path
+                    snmp_config,
+                    log.logger,
+                    use_cache=False,
+                    stored_walk_path=cmk.utils.paths.snmpwalks_dir,
                 )
 
                 lines = []

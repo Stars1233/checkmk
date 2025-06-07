@@ -7,11 +7,8 @@
 /*eslint no-undef: "off"*/
 import crossfilter from "crossfilter2";
 import type {Selection} from "d3";
-import {ascending, select, selectAll} from "d3";
-import type {DataTableWidget, PieChart, RowChart} from "dc";
-import {pieChart, redrawAll, renderAll, rowChart} from "dc";
+import {select, selectAll} from "d3";
 
-import {DCTableFigure} from "@/modules/figures/cmk_dc_table";
 import type {FigureBase} from "@/modules/figures/cmk_figures";
 import {figure_registry} from "@/modules/figures/cmk_figures";
 import {TableFigure} from "@/modules/figures/cmk_table";
@@ -31,12 +28,12 @@ import type {
     TopPeerProtocol,
     TrafficTabData,
 } from "./ntop_types";
+import {ifid_dep} from "./ntop_utils";
+import {PieChartData} from "@/modules/figures/cmk_pie_chart";
 import {
-    add_classes_to_trs,
-    add_columns_classes_to_nodes,
-    bytes_to_volume,
-    ifid_dep,
-} from "./ntop_utils";
+    BarplotData,
+    BarplotFigureData,
+} from "@/modules/figures/cmk_horizontal_bar";
 
 function _add_item_link(tab_instance: Tab) {
     // Create link to ntop and hide it until we have a valid link from the backend
@@ -107,7 +104,6 @@ export class HostTabs extends TabsBar {
 abstract class NtopTab extends Tab<HostTabs> {
     _multi_data_fetcher: MultiDataFetcher;
     _figures: Record<string, FigureBase<FigureData>>;
-    _dc_figures: Record<string, any>;
     _ifid: string;
     _vlanid!: string;
     post_url!: string;
@@ -116,7 +112,6 @@ abstract class NtopTab extends Tab<HostTabs> {
         super(tabs_bar);
         this._multi_data_fetcher = new MultiDataFetcher();
         this._figures = {}; // figures from cmk
-        this._dc_figures = {}; // figures from dc_library
         this._tab_selection.classed("ntop ntop_host " + ifid_dep, true);
         //@ts-ignore
         this._ifid = tabs_bar.current_ifid;
@@ -272,10 +267,6 @@ class TrafficTab extends NtopTab {
     override _update_data(data: TrafficTabData) {
         this._table_figures.process_data(data["table_overview"]);
         this._table_stats.process_data(data["table_breakdown"]);
-
-        //_update_dc_graphs_in_selection(this._table_figures._div_selection, this.tab_id());
-        redrawAll(this.tab_id());
-
         update_item_link(this, data["ntop_link"]);
     }
 }
@@ -313,8 +304,6 @@ class PacketsTab extends NtopTab {
     override _update_data(data?: PacketsTabData) {
         if (data == undefined) return;
         this._figures["table_packets"].process_data(data["table_packets"]);
-
-        redrawAll(this.tab_id());
         update_item_link(this, data["ntop_link"]);
     }
 }
@@ -352,34 +341,20 @@ class PortsTab extends NtopTab {
 
     override _update_data(data: PortsTabData) {
         this._table_ports.process_data(data["table_ports"]);
-        redrawAll(this.tab_id());
         update_item_link(this, data["ntop_link"]);
     }
 }
 
 class PeersTab extends NtopTab {
-    _filter_dimensions: Record<any, any>;
-    _filters: Record<any, any>;
     _crossfilter!: crossfilter.Crossfilter<any>;
-    _host_chart!: RowChart;
-    _name_dimension!: crossfilter.Dimension<any, any>;
-    _traffic_per_host!: crossfilter.Group<
-        any,
-        crossfilter.NaturallyOrderedValue,
-        unknown
-    >;
-    _pie_chart!: PieChart;
-    _pie_dimension!: crossfilter.Dimension<any, any>;
-    _pie_group!: crossfilter.Group<any, any, any>;
-    _table_stats!: DCTableFigure;
+
+    _pie_chart_figure!: FigureBase<any>;
+    _horizontal_barplot_figure!: FigureBase<any>;
+    _table_div!: Selection<HTMLDivElement, any, HTMLElement, any>;
 
     constructor(tabs_bar: HostTabs) {
         super(tabs_bar);
         this._multi_data_fetcher = new MultiDataFetcher();
-
-        // Filtered elements for the crossfilter dimension
-        this._filter_dimensions = {};
-        this._filters = {};
     }
 
     tab_id() {
@@ -417,7 +392,7 @@ class PeersTab extends NtopTab {
             .style("width", "550px")
             .style("height", "400px")
             .append("div")
-            .attr("id", "peers_bar");
+            .attr("id", "peers_barplot");
 
         div_graphs
             .selectAll("div#pie")
@@ -446,69 +421,31 @@ class PeersTab extends NtopTab {
         // crossfilter is globally defined
         this._crossfilter = crossfilter();
 
-        // Host chart
-        this._host_chart = rowChart("#peers_bar", this.tab_id());
-        this._name_dimension = this._crossfilter.dimension(function (d) {
-            return d.name;
-        });
-        this._traffic_per_host = this._name_dimension
-            .group()
-            .reduceSum(function (d) {
-                return +d.traffic;
-            });
-        this._host_chart
-            .width(500)
-            .height(300)
-            .elasticX(true)
-            .dimension(this._name_dimension)
-            .group(this._traffic_per_host);
-        // Tooltip
-        this._host_chart.title(function (d) {
-            return "Host " + d.key + ": " + bytes_to_volume(d.value);
-        });
+        // Horizontal bars with hosts
+        const horizontal_figure_class =
+            figure_registry.get_figure("horizontal_barplot");
+        this._horizontal_barplot_figure = new horizontal_figure_class(
+            "#peers_barplot",
+            {
+                width: 500,
+                height: 400,
+            },
+        );
+        this._horizontal_barplot_figure.initialize(false);
+        this._horizontal_barplot_figure.resize();
 
-        this._host_chart
-            .xAxis()
-            .tickFormat(function (v) {
-                if (v < 1024) return v.toFixed(2);
-                else return bytes_to_volume(v);
-            })
-            .ticks(5);
-
-        // Protocol chart
-        this._pie_chart = pieChart("#peers_pie", this.tab_id());
-        this._pie_dimension = this._crossfilter.dimension(d => d.l7proto);
-        this._pie_group = this._pie_dimension.group().reduceSum(d => d.traffic);
-        this._pie_chart
-            .width(550)
-            .height(300)
-            .dimension(this._pie_dimension)
-            .radius(350)
-            .innerRadius(60)
-            .externalRadiusPadding(40)
-            .minAngleForLabel(0.5)
-            .externalLabels(25)
-            .group(this._pie_group);
+        // Pie chart
+        const pie_figure_class = figure_registry.get_figure("pie_chart");
+        this._pie_chart_figure = new pie_figure_class("#peers_pie", {
+            width: 500,
+            height: 400,
+        });
+        this._pie_chart_figure.initialize(false);
 
         // Table
-        const name_dimension = this._crossfilter.dimension(d => d.name);
-        renderAll(this.tab_id());
-
-        // Table
-        const div_id = "peers_table";
-        this._tab_selection.append("div").attr("id", div_id);
-        this._table_stats = new DCTableFigure("#" + div_id, this.tab_id());
-        this._table_stats.crossfilter(this._crossfilter);
-        this._table_stats.dimension(name_dimension);
-        this._table_stats.columns(this._get_columns());
-        this._table_stats.sort_by(d => {
-            return d.name;
-        });
-        this._table_stats.initialize();
-        this._table_stats
-            .get_dc_chart()
-            .on("renderlet", chart => this._update_css_classes(chart));
-        this._table_stats.get_dc_chart().order(ascending);
+        this._table_div = this._tab_selection
+            .append("div")
+            .attr("id", "peers_table");
     }
 
     override _update_data(data?: PeersTabData) {
@@ -517,17 +454,142 @@ class PeersTab extends NtopTab {
         const data_stats = data["stats"];
         // @ts-ignore
         if (data_stats == []) return;
-        this._crossfilter.remove(() => true);
-        this._crossfilter.add(data_stats);
-        redrawAll(this.tab_id());
-        this._table_stats.remove_loading_image();
-
         update_item_link(this, data["ntop_link"]);
+
+        this._update_bar_chart(data);
+        this._update_pie_chart(data);
+        this._update_table(data);
     }
 
-    _update_css_classes(chart: DataTableWidget) {
-        add_classes_to_trs(chart);
-        add_columns_classes_to_nodes(chart, this._get_columns());
+    _update_table(data: PeersTabData) {
+        const sorted_data_by_host = data["stats"].sort((a, b) => {
+            const host_a = a.host.toLowerCase();
+            const host_b = b.host.toLowerCase();
+            if (host_a < host_b) return -1;
+            if (host_a > host_b) return 1;
+            return 0;
+        });
+
+        const table = this._table_div
+            .selectAll("table")
+            .data([sorted_data_by_host])
+            .join("table");
+
+        // Headers
+        table
+            .selectAll("thead")
+            .data([null])
+            .enter()
+            .append("thead")
+            .append("tr")
+            .selectAll("th")
+            .data(["Host", "IP Address", "Application", "Traffic"])
+            .join("th")
+            .text(d => d);
+
+        const rows = table
+            .selectAll("tbody")
+            .data(d => [d])
+            .join("tbody")
+            .selectAll("tr")
+            .data(d => d)
+            .join("tr")
+            .attr("class", "table_row");
+
+        interface Entry {
+            ident: string;
+            is_link: boolean;
+            field_name: keyof TopPeerProtocol;
+        }
+
+        const entries: Entry[] = [
+            {ident: "host_url", is_link: true, field_name: "name"},
+            {ident: "host", is_link: false, field_name: "host"},
+            {ident: "application", is_link: true, field_name: "l7proto"},
+            {ident: "traffic", is_link: false, field_name: "traffic_hr"},
+        ];
+
+        entries.forEach(entry => {
+            const cell = rows
+                .selectAll<HTMLTableCellElement, TopPeerProtocol>(
+                    `td.${entry.ident}`,
+                )
+                .data(d => [d])
+                .join("td")
+                .classed(entry.ident, true);
+            if (entry.is_link)
+                cell.selectAll<HTMLAnchorElement, TopPeerProtocol>("a")
+                    .data(d => [d])
+                    .join("a")
+                    .attr("href", d => d.host_url)
+                    .classed("ntop_link", true)
+                    .text(d => d[entry.field_name]);
+            else cell.text(d => d[entry.field_name]);
+        });
+    }
+
+    _update_bar_chart(data: PeersTabData) {
+        const bar_config: BarplotFigureData = {
+            title: "Top peers",
+            title_url: "",
+            plot_definitions: [
+                {
+                    plot_type: "single_value",
+                    css_classes: ["bar_chart"],
+                    id: "id_bar",
+                    label: "",
+                    use_tags: ["bar"],
+                },
+            ],
+            data: [],
+        };
+
+        data.stats.forEach(entry => {
+            (bar_config.data as BarplotData[]).push({
+                value: entry.traffic,
+                tag: "bar",
+                ident: entry.host,
+                label: entry.name,
+                tooltip: entry.traffic_hr,
+                url: entry.host_url,
+            });
+        });
+        this._horizontal_barplot_figure.update_data(bar_config);
+        this._horizontal_barplot_figure.update_gui();
+    }
+
+    _update_pie_chart(data: PeersTabData) {
+        const aggregatedData: Record<string, number> = {};
+
+        // Aggregate traffic by l7proto
+        data.stats.forEach(entry => {
+            const protocol = entry.l7proto;
+            const traffic = entry.traffic;
+            if (aggregatedData[protocol]) {
+                aggregatedData[protocol] += traffic;
+            } else {
+                aggregatedData[protocol] = traffic;
+            }
+        });
+
+        // Convert aggregatedData to array of objects with human readable bytes
+        const pieData: PieChartData[] = [];
+        Object.keys(aggregatedData).forEach(key => {
+            pieData.push({
+                index: pieData.length,
+                ident: key,
+                label: key,
+                value: aggregatedData[key],
+            });
+        });
+
+        this._pie_chart_figure.resize();
+        this._pie_chart_figure.update_data({
+            data: pieData,
+            title: "Top Peers Protocols",
+            title_url: data["ntop_link"],
+        });
+        this._pie_chart_figure.update_gui();
     }
 
     _get_columns() {
@@ -668,8 +730,6 @@ class ApplicationsTab extends NtopTab {
         this._table.process_data(data["table_apps_overview"]);
         this._table_applications.process_data(data["table_apps_applications"]);
         this._table_categories.process_data(data["table_apps_categories"]);
-        redrawAll(this.tab_id());
-
         update_item_link(this, data["ntop_link"]);
     }
 
@@ -767,10 +827,7 @@ class NtophostFlowAlertsTab extends FlowAlertsTab {
 }
 
 function _initialize_alerts_tab(instance: ABCAlertsTab) {
-    const dimension = instance._alerts_page._table_details
-        // @ts-ignore
-        .crossfilter()!
-        .dimension(d => d);
+    const dimension = instance._alerts_page._crossfilter.dimension(d => d);
     dimension.filter(d => {
         return (
             (d as unknown as Alert).msg.indexOf(

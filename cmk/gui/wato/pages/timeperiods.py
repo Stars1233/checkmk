@@ -26,11 +26,13 @@ from cmk.utils.timeperiod import (
 
 from cmk.gui import forms, watolib
 from cmk.gui.breadcrumb import Breadcrumb
+from cmk.gui.config import active_config
 from cmk.gui.default_name import unique_default_name_suggestion
 from cmk.gui.exceptions import MKUserError
 from cmk.gui.htmllib.html import html
 from cmk.gui.http import request
 from cmk.gui.i18n import _
+from cmk.gui.logged_in import user
 from cmk.gui.page_menu import (
     make_simple_form_page_menu,
     make_simple_link,
@@ -262,7 +264,12 @@ class ModeTimeperiods(WatoMode):
             return redirect(mode_url("timeperiods"))
 
         try:
-            watolib.timeperiods.delete_timeperiod(TimeperiodName(delname))
+            watolib.timeperiods.delete_timeperiod(
+                TimeperiodName(delname),
+                user_id=user.id,
+                pprint_value=active_config.wato_pprint_config,
+                use_git=active_config.wato_use_git,
+            )
             self._timeperiods = load_timeperiods()
 
         except watolib.timeperiods.TimePeriodBuiltInError:
@@ -523,10 +530,7 @@ class ModeEditTimeperiod(WatoMode):
                 self._name = clone_name
                 self._timeperiod = self._get_timeperiod(self._name)
             else:
-                # initialize with 24x7 config
                 self._timeperiod = {"alias": ""}
-                for day in dateutils.weekday_ids():
-                    self._timeperiod[day] = [("00:00", "24:00")]
         else:
             if is_builtin_timeperiod(self._name):
                 raise MKUserError("edit", _("Built-in time periods can not be modified"))
@@ -738,9 +742,21 @@ class ModeEditTimeperiod(WatoMode):
 
         if self._name is None:
             self._name = vs_spec["name"]
-            watolib.timeperiods.create_timeperiod(self._name, self._timeperiod)
+            watolib.timeperiods.create_timeperiod(
+                self._name,
+                self._timeperiod,
+                user_id=user.id,
+                pprint_value=active_config.wato_pprint_config,
+                use_git=active_config.wato_use_git,
+            )
         else:
-            watolib.timeperiods.modify_timeperiod(self._name, self._timeperiod)
+            watolib.timeperiods.modify_timeperiod(
+                self._name,
+                self._timeperiod,
+                user_id=user.id,
+                pprint_value=active_config.wato_pprint_config,
+                use_git=active_config.wato_use_git,
+            )
 
         self._timeperiods = load_timeperiods()
         return redirect(mode_url("timeperiods"))
