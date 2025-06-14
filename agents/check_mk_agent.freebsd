@@ -52,10 +52,11 @@ inpath() {
 
 init_sudo() {
     if inpath sudo && [ "$(whoami)" != "root" ]; then
-        sudo_as_root() { sudo --non-interactive "$@"; }
+        ROOT_OR_SUDO="sudo --non-interactive"
     else
-        sudo_as_root() { "$@"; }
+        ROOT_OR_SUDO=""
     fi
+    export ROOT_OR_SUDO
 }
 
 get_file_atime() {
@@ -501,7 +502,7 @@ run_purely_synchronous_sections() {
     fi
 
     # Filesystem usage for ZFS
-    if inpath zfs; then
+    if kldstat -m zfs -q && inpath zfs; then
         echo '<<<zfsget>>>'
         zfs get -t filesystem,volume -Hp name,quota,used,avail,mountpoint,type ||
             zfs get -Hp name,quota,used,avail,mountpoint,type
@@ -573,7 +574,7 @@ run_purely_synchronous_sections() {
 
     # Multipathing is supported in FreeBSD by now
     # http://www.mywushublog.com/2010/06/freebsd-and-multipath/
-    if kldstat -v | grep g_multipath >/dev/null; then
+    if kldstat -m g_multipath -q; then
         echo '<<<freebsd_multipath>>>'
         gmultipath status | grep -v ^Name
     fi
@@ -684,7 +685,7 @@ run_purely_synchronous_sections() {
         fi
     elif [ -x /usr/sbin/ssmtp ]; then
         echo '<<<postfix_mailq>>>'
-        sudo_as_root mailq 2>&1 | sed 's/^[^:]*: \(.*\)/\1/' | tail -n 6
+        ${ROOT_OR_SUDO} mailq 2>&1 | sed 's/^[^:]*: \(.*\)/\1/' | tail -n 6
     fi
 
     # Check status of qmail mailqueue
@@ -694,7 +695,7 @@ run_purely_synchronous_sections() {
     fi
 
     # check zpool status
-    if inpath zpool; then
+    if kldstat -m zfs -q && inpath zpool; then
         echo "<<<zpool_status>>>"
         zpool status -x | grep -v "errors: No known data errors"
     fi
@@ -750,11 +751,11 @@ fi
 
 _run_cached_internal() {
     # Run a command asynchronous by use of a cache file.
-    # Usage: _run_cached_internal NAME REFRESH_INTERVAL MAXAGE OUTPUT_TIMEOUT OUTPUT_TIMEOUT CREATION_TIMEOUT [COMMAND ...]
+    # Usage: _run_cached_internal NAME REFRESH_INTERVAL MAXAGE OUTPUT_TIMEOUT CREATION_TIMEOUT [COMMAND ...]
     # Note that while multiple COMMAND arguments are considered, they are evaluated in a string.
     # This means that extra escaping is required.
     # For example:
-    # To run a cat command every two minutes, considering the created data valid for one three minutes,
+    # To run a cat command every two minutes, considering the created data valid for three minutes,
     # send the created data for four minutes and allowing the command to run for 12 minutes, you'll have to call
     #
     #   _run_cached_interal "my_file_content" 120 180 240 720 "cat \"My File\""

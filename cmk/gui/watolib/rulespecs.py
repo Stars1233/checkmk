@@ -19,6 +19,7 @@ from cmk.ccc.version import Edition, edition, mark_edition_only
 from cmk.utils import paths
 from cmk.utils.rulesets.definition import RuleGroup
 
+from cmk.gui.config import active_config
 from cmk.gui.form_specs.converter import Tuple as FSTuple
 from cmk.gui.form_specs.private import SingleChoiceElementExtended, SingleChoiceExtended
 from cmk.gui.form_specs.private.time_specific import TimeSpecific
@@ -492,7 +493,7 @@ class Rulespec(abc.ABC):
         if item_spec is None:
             return None
 
-        if isinstance(item_spec, (DropdownChoice, OptionalDropdownChoice)):
+        if isinstance(item_spec, DropdownChoice | OptionalDropdownChoice):
             return item_spec.choices()
 
         return None
@@ -1114,6 +1115,7 @@ class ManualCheckParameterRulespec(HostRulespec):
                     title=Title("Check type"),
                     help_text=Help("Please choose the check plug-in"),
                     check_group_name=self.check_group_name,
+                    debug=active_config.debug,
                 ),
                 self._compute_item_form_spec(item_form_spec),
                 parameter_fs,
@@ -1131,9 +1133,9 @@ class ManualCheckParameterRulespec(HostRulespec):
 
 
 def _get_check_type_group_choice(
-    title: Title, help_text: Help, check_group_name: str
+    title: Title, help_text: Help, check_group_name: str, *, debug: bool
 ) -> SingleChoice:
-    checks = get_check_information_cached()
+    checks = get_check_information_cached(debug=debug)
     elements: list[SingleChoiceElement] = []
     for checkname, check in checks.items():
         if check.get("group") == check_group_name:
@@ -1161,13 +1163,11 @@ def _registration_should_be_skipped(instance: object) -> bool:
     # objects that can be specified using the new API.
     return isinstance(
         instance,
-        (
-            CheckParameterRulespecWithItem,
-            CheckParameterRulespecWithoutItem,
-            ManualCheckParameterRulespec,
-            HostRulespec,
-            ServiceRulespec,
-        ),
+        CheckParameterRulespecWithItem
+        | CheckParameterRulespecWithoutItem
+        | ManualCheckParameterRulespec
+        | HostRulespec
+        | ServiceRulespec,
     )
 
 
@@ -1210,9 +1210,7 @@ class RulespecRegistry(cmk.ccc.plugin_registry.Registry[Rulespec]):
         if not isinstance(instance, Rulespec):
             raise MKGeneralException(_("Tried to register incompatible rulespec: %r") % instance)
 
-        if isinstance(
-            instance, (CheckParameterRulespecWithItem, CheckParameterRulespecWithoutItem)
-        ):
+        if isinstance(instance, CheckParameterRulespecWithItem | CheckParameterRulespecWithoutItem):
             manual_instance: Any = instance.manual_check_parameter_rulespec_instance
             if manual_instance:
                 subgroup_key = "static/" + manual_instance.group().sub_group_name
@@ -1248,7 +1246,7 @@ class CheckTypeGroupSelection(ElementSelection):
         self._checkgroup = checkgroup
 
     def get_elements(self):
-        checks = get_check_information_cached()
+        checks = get_check_information_cached(debug=active_config.debug)
         elements = {
             str(cn): "{} - {}".format(cn, c["title"])
             for (cn, c) in checks.items()

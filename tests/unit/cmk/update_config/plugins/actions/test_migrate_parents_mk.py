@@ -10,11 +10,11 @@ from pathlib import Path
 
 import pytest
 
+from cmk.ccc.hostaddress import HostAddress, HostName
 from cmk.ccc.site import omd_site
+from cmk.ccc.user import UserId
 
 import cmk.utils.paths
-from cmk.utils.hostaddress import HostAddress, HostName
-from cmk.utils.user import UserId
 
 from cmk.gui.watolib.hosts_and_folders import Folder, folder_tree
 
@@ -72,7 +72,7 @@ def _conf_root(with_admin_login: UserId, load_config: None) -> Iterator[Folder]:
     tree = folder_tree()
     tree.invalidate_caches()
     root = tree.root_folder()
-    Path(cmk.utils.paths.main_config_file).touch()
+    cmk.utils.paths.main_config_file.touch()
 
     yield root
 
@@ -94,8 +94,10 @@ def test_parents_created(conf_root: Folder) -> None:
 
     hostname = HostName("checkmk.com")
     local_site_id = omd_site()
-    conf_subfolder = conf_root.create_subfolder("some_subfolder", "Some Subfolder", {})
-    conf_subfolder.create_hosts([(hostname, {"site": local_site_id}, None)])
+    conf_subfolder = conf_root.create_subfolder(
+        "some_subfolder", "Some Subfolder", {}, pprint_value=False
+    )
+    conf_subfolder.create_hosts([(hostname, {"site": local_site_id}, None)], pprint_value=False)
     assert conf_subfolder.host(hostname) is not None, "Test setup failed, host not created"
 
     run_migrate()

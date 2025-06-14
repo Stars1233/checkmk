@@ -4,9 +4,9 @@
 # conditions defined in the file COPYING, which is part of this source code package.
 
 from collections.abc import Callable
-from pathlib import Path
 
 from cmk.ccc.plugin_registry import Registry
+from cmk.ccc.user import UserId
 
 from cmk.utils.timeperiod import (
     add_builtin_timeperiods,
@@ -40,7 +40,7 @@ TimeperiodUsageFinder = Callable[[str], list[TimeperiodUsage]]
 class TimePeriodsConfigFile(WatoSimpleConfigFile[TimeperiodSpec]):
     def __init__(self) -> None:
         super().__init__(
-            config_file_path=Path(wato_root_dir()) / "timeperiods.mk",
+            config_file_path=wato_root_dir() / "timeperiods.mk",
             config_variable="timeperiods",
             spec_class=TimeperiodSpec,
         )
@@ -51,8 +51,8 @@ class TimePeriodsConfigFile(WatoSimpleConfigFile[TimeperiodSpec]):
     def load_timeperiod_specs_for_modification(self) -> dict[TimeperiodName, TimeperiodSpec]:
         return {TimeperiodName(n): s for n, s in self.load_for_modification().items()}
 
-    def save_timeperiod_specs(self, timeperiods: TimeperiodSpecs) -> None:
-        self.save({_project(n): s for n, s in timeperiods.items()})
+    def save_timeperiod_specs(self, timeperiods: TimeperiodSpecs, pprint_value: bool) -> None:
+        self.save({_project(n): s for n, s in timeperiods.items()}, pprint_value)
 
 
 # basically the inverse of TimeperiodName
@@ -66,8 +66,10 @@ def load_timeperiods() -> TimeperiodSpecs:
     return add_builtin_timeperiods(TimePeriodsConfigFile().load_timeperiod_specs_for_reading())
 
 
-def save_timeperiods(timeperiods: TimeperiodSpecs) -> None:
-    TimePeriodsConfigFile().save_timeperiod_specs(remove_builtin_timeperiods(timeperiods))
+def save_timeperiods(timeperiods: TimeperiodSpecs, pprint_value: bool) -> None:
+    TimePeriodsConfigFile().save_timeperiod_specs(
+        remove_builtin_timeperiods(timeperiods), pprint_value
+    )
     cleanup_timeperiod_caches()
     load_timeperiods.cache_clear()  # type: ignore[attr-defined]
 
@@ -106,7 +108,13 @@ def load_timeperiod(name: TimeperiodName) -> TimeperiodSpec:
     return timeperiod
 
 
-def delete_timeperiod(name: TimeperiodName) -> None:
+def delete_timeperiod(
+    name: TimeperiodName,
+    *,
+    user_id: UserId | None,
+    pprint_value: bool,
+    use_git: bool,
+) -> None:
     if is_builtin_timeperiod(name):
         raise TimePeriodBuiltInError()
     time_periods = TimePeriodsConfigFile().load_timeperiod_specs_for_modification()
@@ -115,11 +123,23 @@ def delete_timeperiod(name: TimeperiodName) -> None:
     if usages := list(find_usages_of_timeperiod(name)):
         raise TimePeriodInUseError(usages=usages)
     del time_periods[name]
-    save_timeperiods(time_periods)
-    _changes.add_change("edit-timeperiods", _("Deleted time period %s") % name)
+    save_timeperiods(time_periods, pprint_value)
+    _changes.add_change(
+        action_name="edit-timeperiods",
+        text=_("Deleted time period %s") % name,
+        user_id=user_id,
+        use_git=use_git,
+    )
 
 
-def modify_timeperiod(name: TimeperiodName, timeperiod: TimeperiodSpec) -> None:
+def modify_timeperiod(
+    name: TimeperiodName,
+    timeperiod: TimeperiodSpec,
+    *,
+    user_id: UserId | None,
+    pprint_value: bool,
+    use_git: bool,
+) -> None:
     if is_builtin_timeperiod(name):
         raise TimePeriodBuiltInError()
 
@@ -128,11 +148,23 @@ def modify_timeperiod(name: TimeperiodName, timeperiod: TimeperiodSpec) -> None:
         raise TimePeriodNotFoundError()
 
     existing_timeperiods[name] = timeperiod
-    save_timeperiods(existing_timeperiods)
-    _changes.add_change("edit-timeperiods", _("Modified time period %s") % name)
+    save_timeperiods(existing_timeperiods, pprint_value)
+    _changes.add_change(
+        action_name="edit-timeperiods",
+        text=_("Modified time period %s") % name,
+        user_id=user_id,
+        use_git=use_git,
+    )
 
 
-def create_timeperiod(name: TimeperiodName, timeperiod: TimeperiodSpec) -> None:
+def create_timeperiod(
+    name: TimeperiodName,
+    timeperiod: TimeperiodSpec,
+    *,
+    user_id: UserId | None,
+    pprint_value: bool,
+    use_git: bool,
+) -> None:
     if is_builtin_timeperiod(name):
         raise TimePeriodBuiltInError()
 
@@ -141,8 +173,13 @@ def create_timeperiod(name: TimeperiodName, timeperiod: TimeperiodSpec) -> None:
         raise TimePeriodAlreadyExistsError()
 
     existing_timeperiods[name] = timeperiod
-    save_timeperiods(existing_timeperiods)
-    _changes.add_change("edit-timeperiods", _("Created new time period %s") % name)
+    save_timeperiods(existing_timeperiods, pprint_value)
+    _changes.add_change(
+        action_name="edit-timeperiods",
+        text=_("Created new time period %s") % name,
+        user_id=user_id,
+        use_git=use_git,
+    )
 
 
 def verify_timeperiod_name_exists(name: str) -> bool:

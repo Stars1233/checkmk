@@ -7,9 +7,9 @@ from pathlib import Path
 from typing import Final, Literal
 
 from cmk.ccc import store
+from cmk.ccc.user import UserId
 
 from cmk.utils import paths
-from cmk.utils.user import UserId
 
 from cmk.gui import permissions
 from cmk.gui.config import active_config
@@ -152,5 +152,5 @@ class AutomationUserFile:
         return store.load_object_from_file(self.path, default=False)
 
     def save(self, value: bool) -> None:
-        store.mkdir(self.path.parent)
+        self.path.parent.mkdir(mode=0o770, exist_ok=True)
         store.save_object_to_file(self.path, value)

@@ -3,12 +3,12 @@
 # This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
 # conditions defined in the file COPYING, which is part of this source code package.
 
-
 import csv
 import json
 import os
 import shutil
 import uuid
+from collections.abc import Callable, Sequence
 from pathlib import Path, PurePath
 from typing import NamedTuple
 from unittest.mock import mock_open, patch
@@ -20,7 +20,15 @@ from tests.unit.cmk.base.emptyconfig import EMPTYCONFIG
 
 import livestatus
 
+from cmk.ccc.hostaddress import HostName
+
 import cmk.utils.paths
+from cmk.utils.structured_data import (
+    deserialize_tree,
+    InventoryStore,
+    make_meta,
+    SDRawTree,
+)
 
 from cmk.base import diagnostics
 
@@ -336,6 +344,28 @@ def test_diagnostics_element_dpkg():
     )
 
 
+@pytest.mark.usefixtures("monkeypatch")
+def test_diagnostics_element_filesize_content_ignores_temporary_file(tmp_path: PurePath) -> None:
+    diagnostics_element = diagnostics.FilesSizeCSVDiagnosticsElement()
+
+    test_dir = cmk.utils.paths.local_checks_dir
+    test_dir.mkdir(parents=True, exist_ok=True)
+    test_dir.joinpath("testfile").write_text("test\n")
+
+    test_dir.joinpath(".session_info.mk.newodhsmg3r").write_text("test\n")
+
+    tmppath = Path(tmp_path).joinpath("tmp")
+    with patch("pathlib.Path.group", return_value="dummygroup"):
+        filepath = next(diagnostics_element.add_or_get_files(tmppath))
+
+    with open(filepath, newline="") as csvfile:
+        files = [
+            Path(row["path"]).name for row in csv.DictReader(csvfile, delimiter=";", quotechar="'")
+        ]
+
+    assert files == ["testfile"]
+
+
 def test_diagnostics_element_dpkg_content(monkeypatch, tmp_path):
     test_bin_dir = Path(cmk.utils.paths.omd_root).joinpath("bin")
     test_bin_dir.mkdir(parents=True, exist_ok=True)
@@ -522,8 +552,10 @@ CONFIG_TMPFS='on'"""
     shutil.rmtree(str(etc_omd_dir))
 
 
-def test_diagnostics_element_checkmk_overview() -> None:
-    diagnostics_element = diagnostics.CheckmkOverviewDiagnosticsElement("")
+def test_diagnostics_element_checkmk_overview(tmp_path: Path) -> None:
+    diagnostics_element = diagnostics.CheckmkOverviewDiagnosticsElement(
+        InventoryStore(tmp_path), ""
+    )
     assert diagnostics_element.ident == "checkmk_overview"
     assert diagnostics_element.title == "Checkmk Overview of Checkmk Server"
     assert diagnostics_element.description == (
@@ -536,7 +568,7 @@ def test_diagnostics_element_checkmk_overview() -> None:
 
 
 @pytest.mark.parametrize(
-    "host_list, host_tree, error",
+    "host_list, raw_tree, error",
     [
         ([], None, "No Checkmk server found"),
         ([["checkmk-server-name"]], None, "No HW/SW Inventory tree of 'checkmk-server-name' found"),
@@ -554,19 +586,25 @@ def test_diagnostics_element_checkmk_overview() -> None:
     ],
 )
 def test_diagnostics_element_checkmk_overview_error(
-    monkeypatch, tmp_path, _fake_local_connection, host_list, host_tree, error
-):
-    diagnostics_element = diagnostics.CheckmkOverviewDiagnosticsElement("")
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    _fake_local_connection: Callable,
+    host_list: Sequence[Sequence[str]],
+    raw_tree: SDRawTree | None,
+    error: str,
+) -> None:
+    inv_store = InventoryStore(tmp_path)
+    diagnostics_element = diagnostics.CheckmkOverviewDiagnosticsElement(inv_store, "")
 
     monkeypatch.setattr(livestatus, "LocalConnection", _fake_local_connection(host_list))
 
-    inventory_dir = Path(cmk.utils.paths.inventory_output_dir)
-
-    if host_tree:
+    if raw_tree:
         # Fake HW/SW Inventory tree
-        inventory_dir.mkdir(parents=True, exist_ok=True)
-        with inventory_dir.joinpath("checkmk-server-name").open("w") as f:
-            f.write(repr(host_tree))
+        inv_store.save_inventory_tree(
+            host_name=HostName("checkmk-server-name"),
+            tree=deserialize_tree(raw_tree),
+            meta=make_meta(do_archive=False),
+        )
 
     tmppath = Path(tmp_path).joinpath("tmp")
 
@@ -574,12 +612,9 @@ def test_diagnostics_element_checkmk_overview_error(
         next(diagnostics_element.add_or_get_files(tmppath))
         assert error == str(e)
 
-    if host_tree:
-        shutil.rmtree(str(inventory_dir))
-
 
 @pytest.mark.parametrize(
-    "host_list, host_tree",
+    "host_list, raw_tree",
     [
         (
             [["checkmk-server-name"]],
@@ -624,19 +659,23 @@ def test_diagnostics_element_checkmk_overview_error(
     ],
 )
 def test_diagnostics_element_checkmk_overview_content(
-    monkeypatch, tmp_path, _fake_local_connection, host_list, host_tree
-):
-    diagnostics_element = diagnostics.CheckmkOverviewDiagnosticsElement("")
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    _fake_local_connection: Callable,
+    host_list: Sequence[Sequence[str]],
+    raw_tree: SDRawTree,
+) -> None:
+    inv_store = InventoryStore(tmp_path)
+    diagnostics_element = diagnostics.CheckmkOverviewDiagnosticsElement(inv_store, "")
 
     monkeypatch.setattr(livestatus, "LocalConnection", _fake_local_connection(host_list))
 
-    inventory_dir = Path(cmk.utils.paths.inventory_output_dir)
-
-    if host_tree:
-        # Fake HW/SW Inventory tree
-        inventory_dir.mkdir(parents=True, exist_ok=True)
-        with inventory_dir.joinpath("checkmk-server-name").open("w") as f:
-            f.write(repr(host_tree))
+    # Fake HW/SW Inventory tree
+    inv_store.save_inventory_tree(
+        host_name=HostName("checkmk-server-name"),
+        tree=deserialize_tree(raw_tree),
+        meta=make_meta(do_archive=False),
+    )
 
     tmppath = Path(tmp_path).joinpath("tmp")
     filepath = next(diagnostics_element.add_or_get_files(tmppath))
@@ -677,8 +716,6 @@ def test_diagnostics_element_checkmk_overview_content(
         },
     ]:
         assert row in rows
-
-    shutil.rmtree(str(inventory_dir))
 
 
 @pytest.mark.parametrize(
@@ -742,11 +779,20 @@ def test_diagnostics_element_checkmk_files_error(
             cmk.utils.paths.default_config_dir,
             "test.conf",
         ),
-        (diagnostics.CheckmkLogFilesDiagnosticsElement, cmk.utils.paths.log_dir, "test.log"),
+        (
+            diagnostics.CheckmkLogFilesDiagnosticsElement,
+            cmk.utils.paths.log_dir,
+            "test.log",
+        ),
     ],
     ids=["conf", "log"],
 )
-def test_diagnostics_element_checkmk_files_content(tmp_path, diag_elem, test_dir, test_filename):
+def test_diagnostics_element_checkmk_files_content(
+    tmp_path: Path,
+    diag_elem: type[diagnostics.ABCCheckmkFilesDiagnosticsElement],
+    test_dir: Path,
+    test_filename: str,
+) -> None:
     test_conf_dir = Path(test_dir) / "test"
     test_conf_dir.mkdir(parents=True, exist_ok=True)
     test_conf_filepath = test_conf_dir.joinpath(test_filename)
@@ -756,7 +802,7 @@ def test_diagnostics_element_checkmk_files_content(tmp_path, diag_elem, test_dir
     relative_path = str(Path(test_dir).relative_to(cmk.utils.paths.omd_root))
     short_test_conf_filepath = str(Path(test_conf_filepath).relative_to(test_dir))
     diagnostics_element = diag_elem([short_test_conf_filepath])
-    tmppath = Path(tmp_path).joinpath("tmp")
+    tmppath = tmp_path / "tmp"
     tmppath.mkdir(parents=True, exist_ok=True)
     filepath = next(diagnostics_element.add_or_get_files(tmppath))
 
@@ -822,7 +868,7 @@ def test_diagnostics_element_performance_graphs_error(
         requests, "post", lambda *arg, **kwargs: FakeResponse(status_code, text, content)
     )
 
-    automation_dir = Path(cmk.utils.paths.var_dir) / "web" / "automation"
+    automation_dir = cmk.utils.paths.var_dir / "web/automation"
     automation_dir.mkdir(parents=True, exist_ok=True)
     with automation_dir.joinpath("automation.secret").open("w") as f:
         f.write("my-123-password")
@@ -874,7 +920,7 @@ def test_diagnostics_element_performance_graphs_content(
         requests, "post", lambda *arg, **kwargs: FakeResponse(status_code, text, content)
     )
 
-    automation_dir = Path(cmk.utils.paths.var_dir) / "web" / "automation"
+    automation_dir = cmk.utils.paths.var_dir / "web/automation"
     automation_dir.mkdir(parents=True, exist_ok=True)
     with automation_dir.joinpath("automation.secret").open("w") as f:
         f.write("my-123-password")

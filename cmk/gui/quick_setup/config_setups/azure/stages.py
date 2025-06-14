@@ -140,6 +140,9 @@ def configure_authentication() -> QuickSetupStage:
                 id=ActionId("action"),
                 custom_validators=[
                     qs_validators.validate_unique_id,
+                    qs_validators.validate_non_quick_setup_password(
+                        parameter_form=azure.formspec()
+                    ),
                     qs_validators.validate_test_connection_custom_collect_params(
                         rulespec_name=RuleGroup.SpecialAgents("azure"),
                         parameter_form=azure.formspec(),
@@ -232,6 +235,7 @@ def recap_found_services(
     _stage_index: StageIndex,
     parsed_data: ParsedFormData,
     progress_logger: ProgressLogger,
+    debug: bool,
 ) -> Sequence[Widget]:
     service_discovery_result = utils.get_service_discovery_preview(
         rulespec_name=RuleGroup.SpecialAgents("azure"),
@@ -239,6 +243,7 @@ def recap_found_services(
         parameter_form=azure.formspec(),
         collect_params=azure_collect_params,
         progress_logger=progress_logger,
+        debug=debug,
     )
     azure_service_interest = ServiceInterest(r"(?i).*azure.*", "services")
     filtered_groups_of_services, _other_services = utils.group_services_by_interest(
@@ -279,7 +284,7 @@ def review_and_run_preview_service_discovery() -> QuickSetupStage:
                 id=ActionId("skip_configuration_test"),
                 custom_validators=[],
                 recap=[
-                    lambda __, ___, ____, _____: [
+                    lambda __, ___, ____, _____, ______: [
                         Text(text=_("Skipped the configuration test.")),
                         Text(
                             text=_(

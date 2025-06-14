@@ -56,7 +56,7 @@ def register(mode_registry: ModeRegistry) -> None:
 
 
 class ModeAnalyzeConfig(WatoMode):
-    _ack_path = cmk.utils.paths.var_dir + "/acknowledged_bp_tests.mk"
+    _ack_path = cmk.utils.paths.var_dir / "acknowledged_bp_tests.mk"
 
     @classmethod
     def name(cls) -> str:
@@ -154,6 +154,8 @@ class ModeAnalyzeConfig(WatoMode):
                 active_config,
                 request,
                 self._analyze_sites(),
+                categories=None,
+                debug=active_config.debug,
             )
         ).items():
             for result in results:

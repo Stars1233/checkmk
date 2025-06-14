@@ -8,20 +8,20 @@ from __future__ import annotations
 import uuid
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Annotated, Any, Literal, NamedTuple, NewType, NotRequired, TypedDict
+from typing import Annotated, Any, Literal, NamedTuple, NewType, NotRequired, override, TypedDict
 
-from pydantic import BaseModel, PlainValidator
+from pydantic import BaseModel, PlainValidator, WithJsonSchema
 
 from cmk.ccc.site import SiteId
+from cmk.ccc.user import UserId
 
 from cmk.utils.cpu_tracking import Snapshot
 from cmk.utils.labels import Labels
 from cmk.utils.metrics import MetricName
 from cmk.utils.notify_types import DisabledNotificationsOptions, EventRule
 from cmk.utils.structured_data import SDPath
-from cmk.utils.user import UserId
 
 from cmk.gui.exceptions import FinalizeRequest
 from cmk.gui.utils.speaklater import LazyString
@@ -120,12 +120,6 @@ class SessionInfo:
 
     logged_out: bool = field(default=False)
     auth_type: AuthType | None = None
-
-    def to_json(self) -> dict:
-        # We assume here that asdict() does the right thing for the
-        # webauthn_action_state field. This can be the case, but it's not very
-        # obvious.
-        return asdict(self)
 
     def invalidate(self) -> None:
         """Called when a user logged out"""
@@ -248,6 +242,7 @@ class UserSpec(TypedDict, total=False):
     icons_per_item: NotRequired[Literal["entry"] | None]
     temperature_unit: NotRequired[Literal["celsius", "fahrenheit"] | None]
     contextual_help_icon: NotRequired[Literal["hide_icon"] | None]
+    ldap_pw_last_changed: NotRequired[str]  # On attribute sync, this is added, then removed.
 
 
 class UserObjectValue(TypedDict):
@@ -257,7 +252,11 @@ class UserObjectValue(TypedDict):
 
 UserObject = dict[UserId, UserObjectValue]
 
-AnnotatedUserId = Annotated[UserId, PlainValidator(UserId.parse)]
+AnnotatedUserId = Annotated[
+    UserId,
+    PlainValidator(UserId.parse),
+    WithJsonSchema({"type": "string"}, mode="serialization"),
+]
 
 Users = dict[AnnotatedUserId, UserSpec]  # TODO: Improve this type
 
@@ -414,7 +413,9 @@ class ColumnSpec:
 
         if isinstance(value, dict):
 
-            def _get_join_value(value: _RawColumnSpec | _RawLegacyColumnSpec) -> ColumnName | None:
+            def _get_join_value(
+                value: _RawColumnSpec | _RawLegacyColumnSpec,
+            ) -> ColumnName | None:
                 if isinstance(join_value := value.get("join_value"), str):
                     return join_value
                 if isinstance(join_value := value.get("join_index"), str):
@@ -473,6 +474,7 @@ class ColumnSpec:
             "column_type": self.column_type,
         }
 
+    @override
     def __repr__(self) -> str:
         """
         Used to serialize user-defined visuals
@@ -496,6 +498,7 @@ class SorterSpec:
             self.join_key,
         )
 
+    @override
     def __repr__(self) -> str:
         """
         Used to serialize user-defined visuals
@@ -557,12 +560,14 @@ class SetOnceDict(dict):
 
     """
 
-    def __setitem__(self, key, value):
+    @override
+    def __setitem__(self, key, value):  # type: ignore[no-untyped-def]
         if key in self:
             raise ValueError(f"key {key!r} already set")
         dict.__setitem__(self, key, value)
 
-    def __delitem__(self, key):
+    @override
+    def __delitem__(self, key):  # type: ignore[no-untyped-def]
         raise NotImplementedError("Deleting items are not supported.")
 
 
@@ -592,25 +597,49 @@ class _Icon(TypedDict):
 Icon = str | _Icon
 
 
-class TopicMenuItem(NamedTuple):
+# TODO: rename prefixes and names "MegaMenu" and "TopicMenu" to "MainMenu"
+#       https://jira.lan.tribe29.com/browse/CMK-23667
+@dataclass(kw_only=True, slots=True)
+class _TopicMenuEntry:
     name: str
     title: str
     sort_index: int
-    url: str
-    target: str = "main"
     is_show_more: bool = False
     icon: Icon | None = None
+
+
+@dataclass(kw_only=True, slots=True)
+class TopicMenuItem(_TopicMenuEntry):
+    url: str
+    target: str = "main"
     button_title: str | None = None
     megamenu_search_terms: Sequence[str] = ()
+
+
+@dataclass(kw_only=True, slots=True)
+class TopicMenuTopicSegment(_TopicMenuEntry):
+    mode: Literal["multilevel", "indented"]
+    entries: list[TopicMenuItem | TopicMenuTopicSegment]
+    max_entries: int = 10
+    hide: bool = False
+
+
+TopicMenuTopicEntries = list[TopicMenuItem | TopicMenuTopicSegment]
 
 
 class TopicMenuTopic(NamedTuple):
     name: str
     title: str
-    items: list[TopicMenuItem]
+    entries: TopicMenuTopicEntries
     max_entries: int = 10
     icon: Icon | None = None
     hide: bool = False
+
+
+class MegaMenuVueApp(NamedTuple):
+    name: str
+    data: dict = {}
+    class_: list[str] = []
 
 
 class MegaMenu(NamedTuple):
@@ -618,10 +647,12 @@ class MegaMenu(NamedTuple):
     title: str | LazyString
     icon: Icon
     sort_index: int
-    topics: Callable[[], list[TopicMenuTopic]]
+    topics: Callable[[], list[TopicMenuTopic]] | None
     search: ABCMegaMenuSearch | None = None
     info_line: Callable[[], str] | None = None
     hide: Callable[[], bool] = lambda: False
+    vue_app: MegaMenuVueApp | None = None
+    onopen: str | None = None
 
 
 SearchQuery = str

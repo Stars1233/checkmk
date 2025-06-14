@@ -32,6 +32,7 @@ def test_registered_pages() -> None:
         "ajax_fetch_ca",
         "ajax_inv_render_tree",
         "ajax_nagvis_maps_snapin",
+        "ajax_ping_host",
         "ajax_popup_action_menu",
         "ajax_popup_host_action_menu",
         "ajax_popup_service_action_menu",
@@ -142,6 +143,7 @@ def test_registered_pages() -> None:
         "user_webauthn_login_begin",
         "view",
         "wato",
+        "wato_ajax_diag_cmk_agent",
         "wato_ajax_diag_host",
         "wato_ajax_execute_check",
         "wato_ajax_fetch_site_status",
@@ -227,6 +229,8 @@ def test_registered_pages() -> None:
             "robotmk_suite_log",
             "robotmk_suite_report",
             "download_robotmk_suite_report",
+            "ajax_fetch_metric_color",
+            "ajax_fetch_ajax_graph",
         ]
 
     if cmk_version.edition(paths.omd_root) is cmk_version.Edition.CSE:

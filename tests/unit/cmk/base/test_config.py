@@ -17,16 +17,14 @@ from pytest import MonkeyPatch
 
 from tests.testlib.unit.base_configuration_scenario import Scenario
 
-from tests.unit.cmk.base.emptyconfig import EMPTYCONFIG
-
 import cmk.ccc.debug
 from cmk.ccc.exceptions import MKGeneralException
+from cmk.ccc.hostaddress import HostName
 from cmk.ccc.site import SiteId
 from cmk.ccc.version import Edition, edition
 
 import cmk.utils.paths
 from cmk.utils.config_path import VersionedConfigPath
-from cmk.utils.hostaddress import HostName
 from cmk.utils.ip_lookup import IPStackConfig
 from cmk.utils.rulesets import RuleSetName
 from cmk.utils.rulesets.ruleset_matcher import RulesetMatcher, RuleSpec
@@ -1853,21 +1851,17 @@ def test_get_sorted_check_table_no_cmc(
 
     monkeypatch.setattr(config, "is_cmc", lambda: False)
     monkeypatch.setattr(config_cache, "_sorted_services", lambda *args: service_list)
-    monkeypatch.setattr(
-        config,
-        "service_depends_on",
-        lambda _cc, _hn, descr: {
-            "description A": ["description C"],
-            "description B": ["description D"],
-            "description D": ["description A", "description F"],
-        }.get(descr, []),
-    )
     service_name_config = config_cache.make_passive_service_name_config()
     services = config_cache.configured_services(
         host_name,
         {},
         config_cache.make_service_configurer({}, service_name_config),
         service_name_config,
+        service_depends_on=lambda hn, descr: {
+            "description A": ["description C"],
+            "description B": ["description D"],
+            "description D": ["description A", "description F"],
+        }.get(descr, []),
     )
     assert [s.description for s in services] == [
         "description F",  #
@@ -1889,15 +1883,6 @@ def test_resolve_service_dependencies_cyclic(
 
     monkeypatch.setattr(config, "is_cmc", lambda: False)
     monkeypatch.setattr(config_cache, "_sorted_services", lambda *args: service_list)
-    monkeypatch.setattr(
-        config,
-        "service_depends_on",
-        lambda _cc, _hn, descr: {
-            "description A": ["description B"],
-            "description B": ["description D"],
-            "description D": ["description A"],
-        }.get(descr, []),
-    )
 
     service_name_config = config_cache.make_passive_service_name_config()
     with pytest.raises(
@@ -1914,31 +1899,40 @@ def test_resolve_service_dependencies_cyclic(
             {},
             config_cache.make_service_configurer({}, service_name_config),
             service_name_config,
+            service_depends_on=lambda _hn, descr: {
+                "description A": ["description B"],
+                "description B": ["description D"],
+                "description D": ["description A"],
+            }.get(descr, []),
         )
 
 
 def test_service_depends_on_unknown_host(monkeypatch: MonkeyPatch) -> None:
     config_cache = Scenario().apply(monkeypatch)
-    assert not config.service_depends_on(config_cache, HostName("test-host"), "svc")
+    service_depends_on = config.ServiceDependsOn(
+        tag_list=config_cache.tag_list, service_dependencies=()
+    )
+    assert not service_depends_on(HostName("test-host"), "svc")
 
 
 def test_service_depends_on(monkeypatch: MonkeyPatch) -> None:
     test_host = HostName("test-host")
     ts = Scenario()
     ts.add_host(test_host)
-    ts.set_option(
-        "service_dependencies",
-        [
+    config_cache = ts.apply(monkeypatch)
+
+    service_depends_on = config.ServiceDependsOn(
+        tag_list=config_cache.tag_list,
+        service_dependencies=[
             ("dep1", [], config.ALL_HOSTS, ["svc1"], {}),
             ("dep2-%s", [], config.ALL_HOSTS, ["svc1-(.*)"], {}),
             ("dep-disabled", [], config.ALL_HOSTS, ["svc1"], {"disabled": True}),
         ],
     )
-    config_cache = ts.apply(monkeypatch)
 
-    assert not config.service_depends_on(config_cache, test_host, "svc2")
-    assert config.service_depends_on(config_cache, test_host, "svc1") == ["dep1"]
-    assert config.service_depends_on(config_cache, test_host, "svc1-abc") == ["dep1", "dep2-abc"]
+    assert not service_depends_on(test_host, "svc2")
+    assert service_depends_on(test_host, "svc1") == ["dep1"]
+    assert service_depends_on(test_host, "svc1-abc") == ["dep1", "dep2-abc"]
 
 
 @pytest.fixture(name="cluster_config")
@@ -2763,7 +2757,11 @@ def test_host_config_add_discovery_check(
     assert config_cache.discovery_check_parameters(xyz_host).commandline_only is result
 
 
-def test_get_config_file_paths_with_confd(folder_path_test_config: None) -> None:
+def test_get_config_file_paths_with_confd(
+    folder_path_test_config: config.LoadedConfigFragment,
+) -> None:
+    # NOTE: there are still some globals at play here, otherwise we would have to use
+    # the folder_path_test_config somewhere.
     rel_paths = [
         "%s" % p.relative_to(cmk.utils.paths.default_config_dir)
         for p in config.get_config_file_paths(with_conf_d=True)
@@ -2781,8 +2779,8 @@ def test_get_config_file_paths_with_confd(folder_path_test_config: None) -> None
     ]
 
 
-def test_load_config_folder_paths(folder_path_test_config: None) -> None:
-    config_cache = config.ConfigCache(EMPTYCONFIG)
+def test_load_config_folder_paths(folder_path_test_config: config.LoadedConfigFragment) -> None:
+    config_cache = config.ConfigCache(folder_path_test_config)
 
     assert config_cache.host_path(HostName("main-host")) == "/"
     assert config_cache.host_path(HostName("lvl0-host")) == "/wato/"
@@ -2834,11 +2832,13 @@ def test_load_config_folder_paths(folder_path_test_config: None) -> None:
 
 
 @pytest.fixture(name="folder_path_test_config")
-def folder_path_test_config_fixture(monkeypatch: MonkeyPatch) -> Iterator[None]:
-    config_dir = Path(cmk.utils.paths.check_mk_config_dir)
+def folder_path_test_config_fixture(
+    monkeypatch: MonkeyPatch,
+) -> Iterator[config.LoadedConfigFragment]:
+    config_dir = cmk.utils.paths.check_mk_config_dir
     config_dir.mkdir(parents=True, exist_ok=True)
 
-    with Path(cmk.utils.paths.main_config_file).open("w", encoding="utf-8") as f:
+    with cmk.utils.paths.main_config_file.open("w", encoding="utf-8") as f:
         f.write(
             """
 all_hosts += ['%(name)s']
@@ -2890,12 +2890,10 @@ cmc_host_rrd_config = [
     _add_host_in_folder(wato_lvl2_folder, "lvl2-host")
     _add_rule_in_folder(wato_lvl2_folder, "LVL2")
 
-    config.load(discovery_rulesets=())
-
-    yield
+    yield config.load(discovery_rulesets=()).loaded_config
 
     # Cleanup after the test. Would be better to use a dedicated test directory
-    Path(cmk.utils.paths.main_config_file).unlink()
+    cmk.utils.paths.main_config_file.unlink()
     (wato_main_folder / "hosts.mk").unlink()
     (wato_main_folder / "rules.mk").unlink()
     (wato_lvl1_folder / "hosts.mk").unlink()
@@ -2969,14 +2967,14 @@ explicit_host_conf['{setting_name}'].update({values_})
 
 
 def test_explicit_setting_loading(patch_omd_site: None) -> None:
-    main_mk_file = Path(cmk.utils.paths.main_config_file)
+    main_mk_file = cmk.utils.paths.main_config_file
     settings = [
         ("sub1", "parents", {HostName("hostA"): "setting1"}),
         ("sub2", "parents", {HostName("hostB"): "setting2"}),
         ("sub3", "other", {HostName("hostA"): "setting3"}),
         ("sub4", "other", {HostName("hostB"): "setting4"}),
     ]
-    config_dir = Path(cmk.utils.paths.check_mk_config_dir)
+    config_dir = cmk.utils.paths.check_mk_config_dir
     wato_main_folder = config_dir / "wato"
     try:
         main_mk_file.touch()
@@ -2995,15 +2993,15 @@ def test_explicit_setting_loading(patch_omd_site: None) -> None:
 
 
 @pytest.fixture(name="config_path")
-def fixture_config_path() -> VersionedConfigPath:
-    return VersionedConfigPath(13)
+def fixture_config_path() -> Path:
+    return Path(VersionedConfigPath(13))
 
 
-def test_save_packed_config(monkeypatch: MonkeyPatch, config_path: VersionedConfigPath) -> None:
+def test_save_packed_config(monkeypatch: MonkeyPatch, config_path: Path) -> None:
     ts = Scenario()
     ts.add_host(HostName("bla1"))
     config_cache = ts.apply(monkeypatch)
-    precompiled_check_config = Path(config_path) / "precompiled_check_config.mk"
+    precompiled_check_config = config_path / "precompiled_check_config.mk"
 
     assert not precompiled_check_config.exists()
 
@@ -3012,7 +3010,7 @@ def test_save_packed_config(monkeypatch: MonkeyPatch, config_path: VersionedConf
     assert precompiled_check_config.exists()
 
 
-def test_load_packed_config(config_path: VersionedConfigPath) -> None:
+def test_load_packed_config(config_path: Path) -> None:
     config.PackedConfigStore.from_serial(config_path).write({"abcd": 1})
 
     assert "abcd" not in config.__dict__
@@ -3024,15 +3022,15 @@ def test_load_packed_config(config_path: VersionedConfigPath) -> None:
 
 class TestPackedConfigStore:
     @pytest.fixture()
-    def store(self, config_path: VersionedConfigPath) -> config.PackedConfigStore:
+    def store(self, config_path: Path) -> config.PackedConfigStore:
         return config.PackedConfigStore.from_serial(config_path)
 
     def test_read_not_existing_file(self, store: config.PackedConfigStore) -> None:
         with pytest.raises(FileNotFoundError):
             store.read()
 
-    def test_write(self, store: config.PackedConfigStore, config_path: VersionedConfigPath) -> None:
-        precompiled_check_config = Path(config_path) / "precompiled_check_config.mk"
+    def test_write(self, store: config.PackedConfigStore, config_path: Path) -> None:
+        precompiled_check_config = config_path / "precompiled_check_config.mk"
         assert not precompiled_check_config.exists()
 
         store.write({"abc": 1})
@@ -3117,38 +3115,6 @@ def test__extract_agent_and_snmp_sections(monkeypatch: MonkeyPatch) -> None:
         raise_errors=True,  # we don't expect any errors
     )
     assert plugins.snmp_sections[SectionName("duplicate_plugin")].detect_spec
-
-
-@pytest.mark.parametrize(
-    ["input_rulesets", "expected"],
-    [
-        pytest.param({}, {}, id="empty"),
-        pytest.param(
-            {
-                "plugin_name": [
-                    {"cmk-match-type": "dict", "normal_key": 2},
-                    {"cmk-match-type": "dict"},
-                ]
-            },
-            {"plugin_name": {"normal_key": 2}},
-            id="cmk-match-type exists",
-        ),
-        pytest.param(
-            {"mk_logwatch": [{"normal_key": 2}, {"normal_key": 3}]},
-            {"mk_logwatch": [{"normal_key": 2}, {"normal_key": 3}]},
-            id="special matchtype configured",
-        ),
-        pytest.param(
-            {"old_plugin_name": [{"normal_key": 2}, {"normal_key": 3}]},
-            {"old_plugin_name": {"normal_key": 2}},
-            id="default matchtype",
-        ),
-    ],
-)
-def test_boil_down_agent_rules(
-    input_rulesets: Mapping[str, Any], expected: Mapping[str, Any]
-) -> None:
-    assert config.boil_down_agent_rules(defaults={}, rulesets=input_rulesets) == expected
 
 
 @pytest.mark.parametrize(

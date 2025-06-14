@@ -21,6 +21,7 @@ from cmk.gui.exceptions import MKUserError
 from cmk.gui.htmllib.html import html
 from cmk.gui.http import request
 from cmk.gui.i18n import _
+from cmk.gui.logged_in import user
 from cmk.gui.page_menu import (
     make_simple_link,
     PageMenu,
@@ -204,8 +205,15 @@ def render_connections_page(
             html.write_text_permissive(connection["description"])
 
 
-def add_change(action_name: str, text: LogMessage, sites: list[SiteId]) -> None:
-    _changes.add_change(action_name, text, domains=[ConfigDomainGUI()], sites=sites)
+def add_change(*, action_name: str, text: LogMessage, sites: list[SiteId]) -> None:
+    _changes.add_change(
+        action_name=action_name,
+        text=text,
+        user_id=user.id,
+        domains=[ConfigDomainGUI()],
+        sites=sites,
+        use_git=active_config.wato_use_git,
+    )
 
 
 def get_affected_sites(connection: ConfigurableUserConnectionSpec) -> list[SiteId]:
@@ -227,9 +235,9 @@ def _delete_connection(
     connection = connections[index]
     connection_id = connection["id"]
     add_change(
-        f"delete-{connection_type}-connection",
-        _("Deleted connection %s") % (connection_id),
-        get_affected_sites(connection),
+        action_name=f"delete-{connection_type}-connection",
+        text=_("Deleted connection %s") % (connection_id),
+        sites=get_affected_sites(connection),
     )
 
     for dir_ in custom_config_dirs:
@@ -250,9 +258,9 @@ def _move_connection(from_index: int, to_index: int, connection_type: str) -> No
     connections = UserConnectionConfigFile().load_for_modification()
     connection = connections[from_index]
     add_change(
-        f"move-{connection_type}-connection",
-        _("Changed position of connection %s to %d") % (connection["id"], to_index),
-        get_affected_sites(connection),
+        action_name=f"move-{connection_type}-connection",
+        text=_("Changed position of connection %s to %d") % (connection["id"], to_index),
+        sites=get_affected_sites(connection),
     )
     del connections[from_index]  # make to_pos now match!
     connections[to_index:to_index] = [connection]

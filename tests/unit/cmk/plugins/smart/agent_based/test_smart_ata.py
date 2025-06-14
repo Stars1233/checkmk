@@ -11,11 +11,14 @@ from cmk.agent_based.v2 import (
     Metric,
     Result,
     Service,
+    ServiceLabel,
     State,
 )
 from cmk.plugins.smart.agent_based.smart_ata import (
     _check_command_timeout,
     _check_smart_ata,
+    AtaParams,
+    DEFAULT_PARAMS,
     discover_smart_ata,
 )
 from cmk.plugins.smart.agent_based.smart_posix import (
@@ -24,7 +27,9 @@ from cmk.plugins.smart.agent_based.smart_posix import (
     ATARawValue,
     ATATable,
     ATATableEntry,
-    parse_smart_posix_all,
+    parse_smart_posix,
+    SCSIAll,
+    SCSIDevice,
     Section,
     Temperature,
 )
@@ -37,7 +42,7 @@ STRING_TABLE_ATA = [
 
 SECTION_ATA = Section(
     devices={
-        ("WDC WD3200BUCT-63TWBY0", "XXXATA"): ATAAll(
+        "WDC WD3200BUCT-63TWBY0 XXXATA": ATAAll(
             device=ATADevice(protocol="ATA", name="/dev/sda"),
             model_name="WDC WD3200BUCT-63TWBY0",
             serial_number="XXXATA",
@@ -110,23 +115,40 @@ SECTION_ATA = Section(
     failures=[],
 )
 
+SECTION_SCAN_ARG = Section(
+    devices={
+        "WDC WD3200BUCT-63TWBY0 XXXATA": SCSIAll(
+            device=SCSIDevice(protocol="SCSI", name="/dev/sda"),
+            model_name="WDC WD3200BUCT-63TWBY0",
+            serial_number="XXXATA",
+            temperature=Temperature(current=0),
+        ),
+    },
+    failures=[],
+)
+
 
 def test_parse_smart_ata() -> None:
-    section = parse_smart_posix_all(STRING_TABLE_ATA)
+    section = parse_smart_posix(STRING_TABLE_ATA)
     assert section == SECTION_ATA
 
 
 def test_discover_smart_ata_stat() -> None:
     assert list(
         discover_smart_ata(
-            {"item_type": ("device_name", None)},
             SECTION_ATA,
+            SECTION_SCAN_ARG,
         )
     ) == [
         Service(
-            item="/dev/sda",
+            item="WDC WD3200BUCT-63TWBY0 XXXATA",
+            labels=[
+                ServiceLabel("cmk/smart/type", "ATA"),
+                ServiceLabel("cmk/smart/device", "/dev/sda"),
+                ServiceLabel("cmk/smart/model", "WDC WD3200BUCT-63TWBY0"),
+                ServiceLabel("cmk/smart/serial", "XXXATA"),
+            ],
             parameters={
-                "key": ("WDC WD3200BUCT-63TWBY0", "XXXATA"),
                 "id_5": 0,
                 "id_10": 0,
                 "id_184": None,
@@ -141,29 +163,30 @@ def test_discover_smart_ata_stat() -> None:
 
 
 def test_check_smart_ata_stat() -> None:
+    ata_params: AtaParams = DEFAULT_PARAMS | {  # type: ignore[assignment]
+        "id_5": 0,
+        "id_10": 0,
+        "id_184": None,
+        "id_187": None,
+        "id_188": None,
+        "id_196": 0,
+        "id_197": 0,
+        "id_199": 0,
+    }
     assert list(
         _check_smart_ata(
-            "/dev/sda",
-            {
-                "key": ("WDC WD3200BUCT-63TWBY0", "XXXATA"),
-                "id_5": 0,
-                "id_10": 0,
-                "id_184": None,
-                "id_187": None,
-                "id_188": None,
-                "id_196": 0,
-                "id_197": 0,
-                "id_199": 0,
-            },
+            "WDC WD3200BUCT-63TWBY0 XXXATA",
+            ata_params,
             SECTION_ATA,
+            SECTION_SCAN_ARG,
             {},
             0,
         )
     ) == [
         Result(state=State.OK, summary="Reallocated sectors: 0"),
         Metric("harddrive_reallocated_sectors", 0.0),
-        Result(state=State.OK, summary="Powered on: 48 minutes 21 seconds"),
-        Metric("uptime", 2901.0),
+        Result(state=State.OK, summary="Powered on: 120 days 21 hours"),
+        Metric("uptime", 10443600.0),
         Result(state=State.OK, summary="Spin retries: 0"),
         Metric("harddrive_spin_retries", 0.0),
         Result(state=State.OK, summary="Power cycles: 669"),
@@ -251,4 +274,47 @@ def test_check_command_timeout_critical() -> None:
             summary="Command Timeout Counter: 94 (counter increased more than 100 counts / h (!!))",
         ),
         Metric("harddrive_cmd_timeouts", 94.0),
+    ]
+
+
+def test_check_smart_ata_configured() -> None:
+    services = list(
+        discover_smart_ata(
+            SECTION_ATA,
+            SECTION_SCAN_ARG,
+        )
+    )
+    service = services[0]
+    assert service.item is not None
+    params = {
+        "levels_5": ("levels_upper", ("fixed", (0, 1))),
+        "levels_10": ("levels_upper", ("fixed", (0, 1))),
+        "levels_184": ("levels_upper", ("fixed", (0, 1))),
+        "levels_187": ("levels_upper", ("fixed", (0, 1))),
+        "levels_196": ("levels_upper", ("fixed", (0, 1))),
+        "levels_197": ("levels_upper", ("fixed", (0, 1))),
+        "levels_199": ("levels_upper", ("fixed", (0, 1))),
+    }
+    ata_params: AtaParams = dict(service.parameters) | DEFAULT_PARAMS | params  # type: ignore[assignment]
+
+    check_results = list(
+        _check_smart_ata(service.item, ata_params, SECTION_ATA, SECTION_SCAN_ARG, {}, 0)
+    )
+
+    assert check_results == [
+        Result(state=State.WARN, summary="Reallocated sectors: 0 (warn/crit at 0/1)"),
+        Metric("harddrive_reallocated_sectors", 0.0, levels=(0.0, 1.0)),
+        Result(state=State.OK, summary="Powered on: 120 days 21 hours"),
+        Metric("uptime", 10443600.0),
+        Result(state=State.WARN, summary="Spin retries: 0 (warn/crit at 0/1)"),
+        Metric("harddrive_spin_retries", 0.0, levels=(0.0, 1.0)),
+        Result(state=State.OK, summary="Power cycles: 669"),
+        Metric("harddrive_power_cycles", 669.0),
+        Result(state=State.WARN, summary="Reallocated events: 0 (warn/crit at 0/1)"),
+        Metric("harddrive_reallocated_events", 0.0, levels=(0.0, 1.0)),
+        Result(state=State.OK, summary="Normalized value: 200.00"),
+        Result(state=State.WARN, summary="Pending sectors: 0 (warn/crit at 0/1)"),
+        Metric("harddrive_pending_sectors", 0.0, levels=(0.0, 1.0)),
+        Result(state=State.WARN, summary="UDMA CRC errors: 0 (warn/crit at 0/1)"),
+        Metric("harddrive_udma_crc_errors", 0.0, levels=(0.0, 1.0)),
     ]

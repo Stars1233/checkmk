@@ -16,8 +16,8 @@ from pytest import MonkeyPatch
 from tests.testlib.unit.base_configuration_scenario import Scenario
 
 from cmk.ccc.exceptions import MKSNMPError
+from cmk.ccc.hostaddress import HostAddress, HostName
 
-from cmk.utils.hostaddress import HostAddress, HostName
 from cmk.utils.log import logger
 from cmk.utils.sectionname import SectionName
 
@@ -246,7 +246,6 @@ def test_walk_raises_on_timeout_without_snmpv3_context_stop_on_timeout() -> None
             backend=Backend(
                 dataclasses.replace(
                     SNMPConfig,
-                    credentials=(),  # for `is_snmpv3_host`
                     snmpv3_contexts=[
                         SNMPContextConfig(
                             section=section_name,

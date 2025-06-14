@@ -12,10 +12,10 @@ from pathlib import Path
 from typing import Any
 
 import cmk.ccc.debug
+from cmk.ccc.hostaddress import HostName
 from cmk.ccc.version import Edition, edition
 
 import cmk.utils.paths
-from cmk.utils.hostaddress import HostName
 
 from cmk.snmplib import get_single_oid, OID, SNMPBackend, SNMPBackendEnum, SNMPHostConfig
 
@@ -40,10 +40,10 @@ params: tuple[OID, str, Mapping[str, Any], str] = ast.literal_eval(sys.stdin.rea
 oid = params[0]
 backend_type = SNMPBackendEnum.deserialize(params[1])
 config = SNMPHostConfig.deserialize(params[2])
-cmk.utils.paths.snmpwalks_dir = params[3]
+cmk.utils.paths.snmpwalks_dir = Path(params[3])
 
 snmp_cache.initialize_single_oid_cache(
-    HostName("abc"), None, cache_dir=Path(cmk.utils.paths.snmp_scan_cache_dir)
+    HostName("abc"), None, cache_dir=cmk.utils.paths.snmp_scan_cache_dir
 )
 
 backend: Callable[[SNMPHostConfig, logging.Logger], SNMPBackend]
@@ -54,7 +54,7 @@ match backend_type:
         backend = ClassicSNMPBackend
     case SNMPBackendEnum.STORED_WALK:
         backend = partial(
-            StoredWalkSNMPBackend, path=Path(cmk.utils.paths.snmpwalks_dir) / config.hostname
+            StoredWalkSNMPBackend, path=cmk.utils.paths.snmpwalks_dir / config.hostname
         )
     case _:
         raise ValueError(backend_type)

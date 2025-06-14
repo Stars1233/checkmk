@@ -5,9 +5,9 @@
 
 from collections.abc import Iterable, Mapping, Sequence
 
+from cmk.ccc.hostaddress import HostName
 from cmk.ccc.site import SiteId
 
-from cmk.utils.hostaddress import HostName
 from cmk.utils.servicename import ServiceName
 
 from cmk.gui import pagetypes, visuals
@@ -182,7 +182,7 @@ class View:
         return sorters
 
     @property
-    def row_limit(self):
+    def row_limit(self) -> int | None:
         return self._row_limit
 
     @row_limit.setter

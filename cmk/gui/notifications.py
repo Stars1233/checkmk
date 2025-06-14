@@ -2,9 +2,8 @@
 # Copyright (C) 2019 Checkmk GmbH - License: GNU General Public License v2
 # This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
 # conditions defined in the file COPYING, which is part of this source code package.
-
 import time
-from typing import NamedTuple
+from typing import NamedTuple, override
 
 from livestatus import LivestatusResponse, MKLivestatusNotFoundError
 
@@ -48,7 +47,7 @@ def register(
     page_registry: PageRegistry, permission_section_registry: PermissionSectionRegistry
 ) -> None:
     page_registry.register_page("clear_failed_notifications")(ClearFailedNotificationPage)
-    permission_section_registry.register(PermissionSectionNotificationPlugins)
+    permission_section_registry.register(PERMISSION_SECTION_NOTIFICATION_PLUGINS)
 
 
 class FailedNotificationTimes(NamedTuple):
@@ -65,19 +64,11 @@ g_columns: list[str] = [
     "comment",
 ]
 
-
-class PermissionSectionNotificationPlugins(PermissionSection):
-    @property
-    def name(self) -> str:
-        return "notification_plugin"
-
-    @property
-    def title(self) -> str:
-        return _("Notification plug-ins")
-
-    @property
-    def do_sort(self) -> bool:
-        return True
+PERMISSION_SECTION_NOTIFICATION_PLUGINS = PermissionSection(
+    name="notification_plugin",
+    title=_("Notification plug-ins"),
+    do_sort=True,
+)
 
 
 def load_plugins() -> None:
@@ -111,7 +102,7 @@ def acknowledged_time() -> float:
                 user.acknowledged_notifications, now
             )
 
-    return g.failed_notification_times.acknowledged_unitl
+    return g.failed_notification_times.acknowledged_unitl  # type: ignore[no-any-return]
 
 
 def number_of_failed_notifications(after: float | None) -> int:
@@ -203,6 +194,7 @@ class ClearFailedNotificationPage(Page):
         if not _may_see_failed_notifications():
             raise MKAuthException(_("You are not allowed to view the failed notifications."))
 
+    @override
     def page(self) -> None:
         acktime = request.get_float_input_mandatory("acktime", time.time())
         if request.var("_confirm"):

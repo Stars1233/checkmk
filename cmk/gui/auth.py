@@ -13,13 +13,13 @@ import re
 import uuid
 from collections.abc import Callable
 from datetime import datetime
-from pathlib import Path
 from typing import Literal
+
+from cmk.ccc.user import UserId
 
 import cmk.utils.paths
 from cmk.utils.local_secrets import SiteInternalSecret
 from cmk.utils.log.security_event import log_security_event
-from cmk.utils.user import UserId
 
 from cmk.gui import userdb
 from cmk.gui.config import active_config
@@ -369,7 +369,7 @@ def _verify_automation_login(user_id: UserId, secret: str) -> bool:
         True if user_id is an automation user and the secret matches.
     """
 
-    htpwd_entries = Htpasswd(Path(cmk.utils.paths.htpasswd_file)).load(allow_missing_file=True)
+    htpwd_entries = Htpasswd(cmk.utils.paths.htpasswd_file).load(allow_missing_file=True)
     password_hash = htpwd_entries.get(user_id)
 
     return (

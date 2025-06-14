@@ -29,8 +29,6 @@ _GLOBAL_EXCLUDES = [
 _PERMISSIONS: list[tuple[str, Callable[[Path], bool], list[str], list[str]]] = [
     # globbing pattern                check function,   explicit excludes, exclude patterns
     ("active_checks/*", is_executable, ["Makefile", "check_mkevents.cc"], []),
-    ("agents/special/agent_*", is_executable, [], []),
-    ("agents/special/lib/*", is_not_executable, [], []),
     ("agents/check_mk_agent.*", is_executable, ["check_mk_agent.spec"], []),
     (
         "agents/plugins/*",
@@ -38,9 +36,14 @@ _PERMISSIONS: list[tuple[str, Callable[[Path], bool], list[str], list[str]]] = [
         ["BUILD", "README", "Makefile", "__init__.py"],
         ["*.checksum", "*.pyc", "*_2.py"],
     ),
-    ("checks/*", is_not_executable, [], []),
+    ("cmk/plugins/*/agent_based/*", is_not_executable, [], []),
+    ("cmk/plugins/*/bakery/*", is_not_executable, [], []),
+    ("cmk/plugins/*/graphing/*", is_not_executable, [], []),
+    ("cmk/plugins/*/libexec/*", is_executable, [], []),
     ("cmk/plugins/*/manpages/*", is_not_executable, [], []),
     ("cmk/plugins/*/manpages/*/*", is_executable, [], []),  # THIS SHOULD FAIL
+    ("cmk/plugins/*/rulesets/*", is_not_executable, [], []),
+    ("cmk/plugins/*/server_side_calls/*", is_not_executable, [], []),
     ("pnp-templates/*", is_not_executable, [], []),
     ("notifications/*", is_executable, ["README", "debug"], []),
     ("bin/*", is_executable, ["Makefile", "mkevent.cc", "mkeventd_open514.cc"], []),
@@ -48,7 +51,7 @@ _PERMISSIONS: list[tuple[str, Callable[[Path], bool], list[str], list[str]]] = [
     ("omd/packages/enterprise/bin/*", is_executable, [], []),
     ("omd/packages/enterprise/active_checks/*", is_executable, [], []),
     (
-        "non-free/cmk-update-agent/*",
+        "non-free/packages/cmk-update-agent/*",
         is_executable,
         [
             "chroot_version",
@@ -64,10 +67,12 @@ _PERMISSIONS: list[tuple[str, Callable[[Path], bool], list[str], list[str]]] = [
             "cmk-update-agent.spec",
             "cmk-update-agent-32.spec",
             "build",
+            "BUILD",
+            "pyproject.toml",
+            "ci.json",
         ],
         [],
     ),
-    ("omd/packages/enterprise/alert_handlers/*", is_executable, [], []),
     ("omd/packages/enterprise/alert_handlers/*", is_executable, [], []),
 ]
 

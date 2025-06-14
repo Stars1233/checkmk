@@ -9,7 +9,7 @@ import copy
 from collections.abc import Collection
 from typing import cast, override
 
-from cmk.utils.hostaddress import HostName
+from cmk.ccc.hostaddress import HostName
 
 from cmk.checkengine.discovery import DiscoverySettings
 
@@ -140,6 +140,8 @@ class ModeBulkDiscovery(WatoMode):
                     self._do_full_scan,
                     self._ignore_errors,
                     self._bulk_size,
+                    pprint_value=active_config.wato_pprint_config,
+                    debug=active_config.debug,
                 )
             ).is_error():
                 raise result.error

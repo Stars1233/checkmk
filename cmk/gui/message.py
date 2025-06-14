@@ -11,15 +11,15 @@ from email.mime.text import MIMEText
 from typing import Any, Literal, NotRequired, TypedDict
 
 from cmk.ccc import store
+from cmk.ccc.user import UserId
 
 import cmk.utils.paths
 from cmk.utils.mail import default_from_address, MailString, send_mail_sendmail, set_mail_headers
-from cmk.utils.user import UserId
 
 from cmk.gui import userdb, utils
 from cmk.gui.breadcrumb import Breadcrumb, make_simple_page_breadcrumb
 from cmk.gui.config import active_config
-from cmk.gui.default_permissions import PermissionSectionGeneral
+from cmk.gui.default_permissions import PERMISSION_SECTION_GENERAL
 from cmk.gui.exceptions import MKAuthException, MKInternalError, MKUserError
 from cmk.gui.htmllib.generator import HTMLWriter
 from cmk.gui.htmllib.header import make_header
@@ -147,7 +147,7 @@ def get_gui_messages(user_id: UserId | None = None) -> MutableSequence[Message]:
                 updated = True
 
     if updated:
-        save_gui_messages(messages)
+        save_gui_messages(messages, user_id)
 
     return messages
 
@@ -188,7 +188,7 @@ def save_gui_messages(messages: MutableSequence[Message], user_id: UserId | None
     if user_id is None:
         user_id = user.ident
     path = cmk.utils.paths.profile_dir / user_id / "messages.mk"
-    store.mkdir(path.parent)
+    path.parent.mkdir(mode=0o770, exist_ok=True)
     store.save_object_to_file(path, messages)
 
 
@@ -219,7 +219,7 @@ def _messaging_methods() -> dict[MessageMethod, dict[str, Any]]:
 
 permission_registry.register(
     Permission(
-        section=PermissionSectionGeneral,
+        section=PERMISSION_SECTION_GENERAL,
         name="message",
         title=_l("Send user message"),
         description=_l(
@@ -402,36 +402,8 @@ def _process_message(msg_from_vs: MessageFromVS) -> None:  # pylint: disable=too
         acknowledged=False,
     )
 
-    if isinstance(msg["dest"], str):
-        dest_what = msg["dest"]
-    else:
-        dest_what = msg["dest"][0]
-
-    if dest_what == "all_users":
-        recipients = list(map(UserId, active_config.multisite_users.keys()))
-    elif dest_what == "online":
-        recipients = userdb.get_online_user_ids(datetime.now())
-    elif dest_what == "list":
-        recipients = list(map(UserId, msg["dest"][1]))
-    else:
-        recipients = []
-
+    recipients, num_success, errors = send_message(msg)
     num_recipients = len(recipients)
-
-    num_success: dict[str, int] = {}
-    for method in msg["methods"]:
-        num_success[method] = 0
-
-    # Now loop all messaging methods to send the messages
-    errors: dict[MessageMethod, list[tuple]] = {}
-    for user_id in recipients:
-        for method in msg["methods"]:
-            try:
-                handler = _messaging_methods()[method]["handler"]
-                handler(user_id, msg)
-                num_success[method] = num_success[method] + 1
-            except MKInternalError as e:
-                errors.setdefault(method, []).append((user_id, e))
 
     message = HTML.with_escaping(_("The message has successfully been sent..."))
     message += HTMLWriter.render_br()
@@ -465,6 +437,41 @@ def _process_message(msg_from_vs: MessageFromVS) -> None:  # pylint: disable=too
                 )
             error_message += HTMLWriter.render_table(table_rows) + HTMLWriter.render_br()
         html.show_error(error_message)
+
+
+def send_message(
+    msg: Message,
+) -> tuple[list[UserId], dict[str, int], dict[MessageMethod, list[tuple]]]:
+    if isinstance(msg["dest"], str):
+        dest_what = msg["dest"]
+    else:
+        dest_what = msg["dest"][0]
+
+    if dest_what == "all_users":
+        recipients = list(map(UserId, active_config.multisite_users.keys()))
+    elif dest_what == "online":
+        recipients = userdb.get_online_user_ids(datetime.now())
+    elif dest_what == "list":
+        recipients = list(map(UserId, msg["dest"][1]))
+    else:
+        recipients = []
+
+    num_success: dict[str, int] = {}
+    for method in msg["methods"]:
+        num_success[method] = 0
+
+    # Now loop all messaging methods to send the messages
+    errors: dict[MessageMethod, list[tuple]] = {}
+    for user_id in recipients:
+        for method in msg["methods"]:
+            try:
+                handler = _messaging_methods()[method]["handler"]
+                handler(user_id, msg)
+                num_success[method] = num_success[method] + 1
+            except MKInternalError as e:
+                errors.setdefault(method, []).append((user_id, e))
+
+    return recipients, num_success, errors
 
 
 #   ---Message Plugins-------------------------------------------------------

@@ -5,101 +5,106 @@ conditions defined in the file COPYING, which is part of this source code packag
 -->
 
 <script setup lang="ts">
-import FormEdit from '@/form/components/FormEdit.vue'
 import { computed, watch } from 'vue'
-import { makeString } from '@/graph-designer/specs'
-import { type ValidationMessages } from '@/form'
+import type { Autocompleter } from 'cmk-shared-typing/typescript/vue_formspec_components'
+import FormAutocompleter from '@/form/private/FormAutocompleter.vue'
+
+const props = defineProps<{
+  placeholder_host_name: string
+  placeholder_service_name: string
+  placeholder_metric_name: string
+}>()
 
 export interface Metric {
-  hostName: string
-  serviceName: string
-  metricName: string
+  hostName: string | null
+  serviceName: string | null
+  metricName: string | null
 }
 
-const data = defineModel<Metric>('data', {
-  default: { hostName: '', serviceName: '', metricName: '' }
-})
+const hostName = defineModel<string | null>('hostName', { default: null })
+const serviceName = defineModel<string | null>('serviceName', { default: null })
+const metricName = defineModel<string | null>('metricName', { default: null })
 
-const specHostName = makeString('', 'Host name', {
+const hostNameAutocompleter: Autocompleter = {
   fetch_method: 'ajax_vs_autocomplete',
   data: {
     ident: 'monitored_hostname',
     params: { strict: true }
   }
-})
-const backendValidationHostName: ValidationMessages = []
+}
 
-const specServiceName = computed(() => {
-  return makeString('', 'Service name', {
-    fetch_method: 'ajax_vs_autocomplete',
-    data: {
-      ident: 'monitored_service_description',
-      params: {
-        strict: true,
-        context: { host: { host: data.value.hostName } }
-      }
-    }
-  })
-})
-const backendValidationServiceName: ValidationMessages = []
-
-const specMetricName = computed(() => {
-  return makeString('', 'Metric name', {
-    fetch_method: 'ajax_vs_autocomplete',
-    data: {
-      ident: 'monitored_metrics',
-      params: {
-        strict: true,
-        context: {
-          host: { host: data.value.hostName },
-          service: { service: data.value.serviceName }
+const serviceNameAutocompleter = computed(
+  () =>
+    ({
+      fetch_method: 'ajax_vs_autocomplete',
+      data: {
+        ident: 'monitored_service_description',
+        params: {
+          strict: true,
+          context: { host: { host: hostName.value } }
         }
       }
-    }
-  })
-})
-const backendValidationMetricName: ValidationMessages = []
+    }) as Autocompleter
+)
+
+const metricNameAutocompleter = computed(
+  () =>
+    ({
+      fetch_method: 'ajax_vs_autocomplete',
+      data: {
+        ident: 'monitored_metrics',
+        params: {
+          strict: true,
+          context: {
+            host: { host: hostName.value },
+            service: { service: serviceName.value }
+          }
+        }
+      }
+    }) as Autocompleter
+)
 
 // Clear form fields if one changes
 
 watch(
-  () => data.value.hostName,
+  () => hostName.value,
   () => {
-    data.value.serviceName = ''
-    data.value.metricName = ''
+    serviceName.value = null
+    metricName.value = null
   }
 )
 
 watch(
-  () => data.value.serviceName,
+  () => serviceName.value,
   () => {
-    data.value.metricName = ''
+    metricName.value = null
   }
 )
 </script>
 
 <template>
   <td>
-    <FormEdit
-      v-model:data="data.hostName"
-      :spec="specHostName"
-      :backend-validation="backendValidationHostName"
+    <FormAutocompleter
+      v-model="hostName"
+      :autocompleter="hostNameAutocompleter"
+      :size="0"
+      :placeholder="props.placeholder_host_name"
     />
   </td>
   <td>
-    <FormEdit
-      :key="data.hostName"
-      v-model:data="data.serviceName"
-      :spec="specServiceName"
-      :backend-validation="backendValidationServiceName"
+    <FormAutocompleter
+      v-model="serviceName"
+      :autocompleter="serviceNameAutocompleter"
+      :size="0"
+      :placeholder="props.placeholder_service_name"
     />
   </td>
   <td>
-    <FormEdit
-      :key="data.serviceName"
-      v-model:data="data.metricName"
-      :spec="specMetricName"
-      :backend-validation="backendValidationMetricName"
+    <FormAutocompleter
+      v-model="metricName"
+      :autocompleter="metricNameAutocompleter"
+      :size="0"
+      :placeholder="props.placeholder_metric_name"
     />
   </td>
 </template>

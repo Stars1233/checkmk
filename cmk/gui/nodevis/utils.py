@@ -3,15 +3,14 @@
 # This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
 # conditions defined in the file COPYING, which is part of this source code package.
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 from livestatus import lqencode
 
 from cmk.ccc import store
+from cmk.ccc.hostaddress import HostName
 
 import cmk.utils.paths
-from cmk.utils.hostaddress import HostName
 from cmk.utils.servicename import ServiceName
 
 from cmk.gui import sites
@@ -20,7 +19,7 @@ from cmk.gui.i18n import _
 from cmk.gui.page_menu import make_javascript_link, PageMenuEntry
 from cmk.gui.watolib.utils import multisite_dir
 
-topology_dir = Path(cmk.utils.paths.var_dir) / "topology"
+topology_dir = cmk.utils.paths.var_dir / "topology"
 topology_data_dir = topology_dir / "data"
 topology_settings_lookup = topology_dir / "topology_settings"
 topology_configs_dir = topology_dir / "configs"
@@ -49,14 +48,14 @@ class CMCServiceObject:
 
 
 class BILayoutManagement:
-    _config_file = Path(multisite_dir()) / "bi_layouts.mk"
+    _config_file = multisite_dir() / "bi_layouts.mk"
 
     @classmethod
     def save_layouts(cls) -> None:
         store.save_to_mk_file(
-            str(BILayoutManagement._config_file),
-            "bi_layouts",
-            active_config.bi_layouts,
+            BILayoutManagement._config_file,
+            key="bi_layouts",
+            value=active_config.bi_layouts,
             pprint_value=True,
         )
 

@@ -8,7 +8,6 @@ import os
 import re
 import shlex
 import subprocess
-import time
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from enum import IntEnum
@@ -18,11 +17,13 @@ from typing import Any
 import pytest
 
 from tests.testlib.common.repo import qa_test_data_path
+from tests.testlib.common.utils import wait_until
 from tests.testlib.site import Site
 from tests.testlib.utils import run
 
 logger = logging.getLogger(__name__)
 dump_path_site = Path("var/check_mk/dumps")
+dcd_interval = 5  # seconds
 
 
 class CheckModes(IntEnum):
@@ -36,7 +37,6 @@ class CheckConfig:
         self,
         mode: CheckModes = CheckModes.DEFAULT,
         skip_cleanup: bool = False,
-        dump_types: list[str] | None = None,
         data_dir_integration: Path | None = None,
         dump_dir_integration: Path | None = None,
         response_dir_integration: Path | None = None,
@@ -44,7 +44,6 @@ class CheckConfig:
         dump_dir_siteless: Path | None = None,
         response_dir_siteless: str | None = None,
         diff_dir: Path | None = None,
-        host_names: list[str] | None = None,
         check_names: list[str] | None = None,
         api_services_cols: list[str] | None = None,
     ) -> None:
@@ -66,14 +65,8 @@ class CheckConfig:
         self.response_dir_siteless = response_dir_siteless or (self.data_dir_siteless / "responses")
 
         self.diff_dir = diff_dir or Path(os.getenv("DIFF_DIR", "/tmp"))
-        self.host_names = host_names or [
-            _.strip() for _ in str(os.getenv("HOST_NAMES", "")).split(",") if _.strip()
-        ]
         self.check_names = check_names or [
             _.strip() for _ in str(os.getenv("CHECK_NAMES", "")).split(",") if _.strip()
-        ]
-        self.dump_types = dump_types or [
-            _.strip() for _ in str(os.getenv("DUMP_TYPES", "agent,snmp")).split(",") if _.strip()
         ]
 
         # these SERVICES table columns will be returned via the get_host_services() openapi call
@@ -128,13 +121,10 @@ def get_host_names(
     site: Site | None = None, dump_dir: Path | None = None, piggyback: bool = False
 ) -> list[str]:
     """Return the list of agent/snmp hosts via filesystem or site.openapi."""
-    host_names = []
     dump_dir = (dump_dir or config.dump_dir_integration) / ("piggyback" if piggyback else "")
     if site:
         hosts = [_ for _ in site.openapi.hosts.get_all() if _.get("id") not in (None, "", site.id)]
-        agent_host_names = [
-            _.get("id") for _ in hosts if "tag_snmp_ds" not in _.get("attributes", {})
-        ]
+        agent_host_names = [_["id"] for _ in hosts if "tag_snmp_ds" not in _.get("attributes", {})]
         snmp_host_names = [_.get("id") for _ in hosts if "tag_snmp_ds" in _.get("attributes", {})]
     else:
         agent_host_names = []
@@ -165,18 +155,7 @@ def get_host_names(
                 logger.error('Could not access dump file "%s"!', dump_file_name)
             except UnicodeDecodeError:
                 logger.error('Could not decode dump file "%s"!', dump_file_name)
-    if not config.dump_types or "agent" in config.dump_types:
-        host_names += agent_host_names
-    if not config.dump_types or "snmp" in config.dump_types:
-        host_names += snmp_host_names
-    host_names = [
-        _
-        for _ in host_names
-        if not config.host_names
-        or _ in config.host_names
-        or any(re.fullmatch(pattern, _) for pattern in config.host_names)
-    ]
-    return host_names
+    return agent_host_names + snmp_host_names
 
 
 def read_disk_dump(host_name: str, piggyback: bool = False) -> str:
@@ -366,7 +345,7 @@ def setup_site(site: Site, dump_path: Path, dump_dirs: Sequence[Path] | None = N
                 == 0
             )
 
-    for dump_type in config.dump_types:
+    for dump_type in ["agent", "snmp"]:
         host_folder = f"/{dump_type}"
         if site.openapi.folders.get(host_folder):
             logger.info('Host folder "%s" already exists!', host_folder)
@@ -385,14 +364,28 @@ def setup_site(site: Site, dump_path: Path, dump_dirs: Sequence[Path] | None = N
 
 
 @contextmanager
-def setup_host(site: Site, host_name: str, skip_cleanup: bool = False) -> Iterator:
+def setup_host(
+    site: Site,
+    host_name: str,
+    skip_cleanup: bool = False,
+    management_board: bool = False,
+) -> Iterator:
     logger.info('Creating host "%s"...', host_name)
     host_attributes = {
         "ipaddress": "127.0.0.1",
         "tag_agent": ("no-agent" if "snmp" in host_name else "cmk-agent"),
     }
-    if "snmp" in host_name:
+
+    if management_board:
+        host_attributes.update(
+            {
+                "tag_agent": "no-agent",
+                "management_protocol": "snmp",
+            }
+        )
+    elif "snmp" in host_name:
         host_attributes["tag_snmp_ds"] = "snmp-v2"
+
     site.openapi.hosts.create(
         hostname=host_name,
         folder="/snmp" if "snmp" in host_name else "/agent",
@@ -469,11 +462,15 @@ def setup_source_host_piggyback(
     site.openapi.service_discovery.run_discovery_and_wait_for_completion(source_host_name)
 
     with _dcd_connector(site):
+        pb_hosts_from_dump = read_piggyback_hosts_from_dump(
+            read_disk_dump(source_host_name, piggyback=True)
+        )
         try:
-            _wait_for_piggyback_hosts_discovery(site, source_host=source_host_name)
-            wait_for_dcd_pend_changes(site)
+            execute_dcd_cycle(site, expected_pb_hosts=len(pb_hosts_from_dump))
+            piggyback_hosts = get_piggyback_hosts(site, source_host_name)
+            assert piggyback_hosts, f'No piggyback hosts found for source host "{source_host_name}"'
 
-            hostnames = get_piggyback_hosts(site, source_host_name) + [source_host_name]
+            hostnames = piggyback_hosts + [source_host_name]
             for hostname in hostnames:
                 assert site.get_host_services(hostname)["Check_MK"].state == 0
                 logger.info("Scheduling checks & checking for pending services...")
@@ -506,136 +503,19 @@ def setup_source_host_piggyback(
                 logger.info('Deleting source host "%s"...', source_host_name)
                 site.openapi.hosts.delete(source_host_name)
 
-                assert (
-                    run(["sudo", "rm", "-f", f"{dump_path_site}/{source_host_name}"]).returncode
-                    == 0
-                )
+                site.run(["rm", "-f", f"{dump_path_site}/{source_host_name}"])
 
                 site.openapi.changes.activate_and_wait_for_completion(
                     force_foreign_changes=True, strict=False
                 )
-                _wait_for_piggyback_hosts_deletion(site, source_host=source_host_name)
-                wait_for_dcd_pend_changes(site)
-
-
-def setup_hosts(site: Site, host_names: list[str]) -> None:
-    agent_host_names = [_ for _ in host_names if "snmp" not in _]
-    snmp_host_names = [_ for _ in host_names if "snmp" in _]
-    host_entries = [
-        {
-            "host_name": host_name,
-            "folder": "/agent",
-            "attributes": {
-                "ipaddress": "127.0.0.1",
-                "tag_agent": "cmk-agent",
-            },
-        }
-        for host_name in agent_host_names
-    ] + [
-        {
-            "host_name": host_name,
-            "folder": "/snmp",
-            "attributes": {
-                "ipaddress": "127.0.0.1",
-                "tag_agent": "no-agent",
-                "tag_snmp_ds": "snmp-v2",
-            },
-        }
-        for host_name in snmp_host_names
-    ]
-    logger.info("Bulk-creating %s hosts...", len(host_entries))
-    site.openapi.hosts.bulk_create(
-        host_entries,
-        bake_agent=False,
-        ignore_existing=True,
-    )
-
-    logger.info("Activating changes & reloading core...")
-    site.activate_changes_and_wait_for_core_reload()
-
-    logger.info("Running service discovery...")
-    site.openapi.service_discovery.run_bulk_discovery_and_wait_for_completion(
-        host_names, bulk_size=10
-    )
-
-    logger.info("Activating changes & reloading core...")
-    site.activate_changes_and_wait_for_core_reload()
-
-    logger.info("Checking for pending services...")
-    pending_checks = {
-        _: site.openapi.services.get_host_services(_, pending=True) for _ in host_names
-    }
-    for idx in range(3):
-        # we have to schedule the checks multiple times (twice at least):
-        # => once to get baseline data
-        # => a second time to calculate differences
-        # => a third time since some checks require it
-        for host_name in list(pending_checks.keys())[:]:
-            site.schedule_check(host_name, "Check_MK", 0, 60)
-            pending_checks[host_name] = site.openapi.services.get_host_services(
-                host_name, pending=True
-            )
-            if idx > 0 and len(pending_checks[host_name]) == 0:
-                pending_checks.pop(host_name, None)
-                continue
-
-    for host_name, value in pending_checks.items():
-        logger.info(
-            '%s pending service(s) found on host "%s": %s',
-            len(value),
-            host_name,
-            ",".join(_.get("extensions", {}).get("description", _.get("id")) for _ in value),
-        )
-
-
-def cleanup_hosts(site: Site, host_names: list[str]) -> None:
-    logger.info("Bulk-deleting %s hosts...", len(host_names))
-    site.openapi.hosts.bulk_delete(host_names)
-
-    logger.info("Activating changes & reloading core...")
-    site.activate_changes_and_wait_for_core_reload()
+                execute_dcd_cycle(site, expected_pb_hosts=0)
+                assert not get_piggyback_hosts(site, source_host_name), (
+                    "Piggyback hosts still found: %s" % piggyback_hosts
+                )
 
 
 def get_piggyback_hosts(site: Site, source_host: str) -> list[str]:
     return [_ for _ in site.openapi.hosts.get_all_names() if _ != source_host]
-
-
-def _wait_for_piggyback_hosts_discovery(site: Site, source_host: str, strict: bool = True) -> None:
-    """Wait up to 60 seconds for DCD to discover new piggyback hosts."""
-    max_count = 60
-    count = 0
-    while not (piggyback_hosts := get_piggyback_hosts(site, source_host)) and count < max_count:
-        logger.info("Waiting for piggyback hosts to be discovered. Count: %s/%s", count, max_count)
-        time.sleep(1)
-        count += 1
-    if strict:
-        assert piggyback_hosts, f'No piggyback hosts found for source host "{source_host}".'
-
-
-def _wait_for_piggyback_hosts_deletion(site: Site, source_host: str, strict: bool = True) -> None:
-    max_count = 30
-    count = 0
-    while piggyback_hosts := get_piggyback_hosts(site, source_host) and count < max_count:
-        logger.info("Waiting for all piggyback hosts to be removed. Count: %s/%s", count, max_count)
-        time.sleep(5)
-        count += 1
-    if strict:
-        assert not piggyback_hosts, "Piggyback hosts still found: %s" % piggyback_hosts
-
-
-def wait_for_dcd_pend_changes(site: Site) -> None:
-    """Wait for DCD to activate changes."""
-    max_count = 180
-    count = 0
-    while (n_pending_changes := len(site.openapi.changes.get_pending())) > 0 and count < max_count:
-        logger.info(
-            "Waiting for changes to be activated by the DCD connector. Count: %s/%s",
-            count,
-            max_count,
-        )
-        time.sleep(1)
-        count += 1
-    assert n_pending_changes == 0, "Pending changes found!"
 
 
 @contextmanager
@@ -652,7 +532,7 @@ def _dcd_connector(test_site_piggyback: Site) -> Iterator[None]:
         dcd_id=dcd_id,
         title="DCD Connector for piggyback hosts",
         host_attributes=host_attributes,
-        interval=1,
+        interval=dcd_interval,
         validity_period=60,
         max_cache_age=60,
         delete_hosts=True,
@@ -668,3 +548,66 @@ def _dcd_connector(test_site_piggyback: Site) -> Iterator[None]:
             test_site_piggyback.openapi.changes.activate_and_wait_for_completion(
                 force_foreign_changes=True
             )
+
+
+def execute_dcd_cycle(site: Site, expected_pb_hosts: int = 0) -> None:
+    """Execute a DCD cycle and wait for its completion.
+
+    Trigger a DCD cycle until:
+    1) One batch that computes all expected PB hosts is completed;
+    2) The last batch in the queue contains the expected number of PB hosts.
+
+    This is needed to ensure that the DCD has processed all piggyback hosts and those hosts persist
+    in the following batches.
+
+    Args:
+        site: The Site instance where the DCD cycle should be executed
+        expected_pb_hosts: The number of piggyback hosts expected to be discovered
+    """
+
+    def _wait_for_hosts_in_batch() -> bool:
+        site.run(["cmk-dcd", "--execute-cycle"])
+
+        logger.info(
+            "Waiting for DCD to compute the expected number of PB hosts.\nExpected PB hosts: %s",
+            expected_pb_hosts,
+        )
+        all_batches_stdout = site.check_output(["cmk-dcd", "--batches"]).strip("\n").split("\n")
+        logger.info("DCD batches:\n%s", "\n".join(all_batches_stdout[:]))
+
+        # check if the last batch contains the expected number of PB hosts
+        if f"{expected_pb_hosts} hosts" in all_batches_stdout[-1]:
+            # check if there is at least one completed batch containing the expected number of PB
+            # hosts
+            for batch_stdout in all_batches_stdout:
+                if all(string in batch_stdout for string in ["Done", f"{expected_pb_hosts} hosts"]):
+                    return True
+        return False
+
+    max_count = 30
+    interval = dcd_interval
+
+    try:
+        wait_until(
+            _wait_for_hosts_in_batch,
+            (max_count * interval) + 1,
+            interval,
+            "dcd: wait for hosts in DCD batch",
+        )
+    except TimeoutError as excp:
+        excp.add_note(
+            f"The expected number of piggyback hosts was not computed within {max_count} cycles."
+        )
+
+
+def read_piggyback_hosts_from_dump(dump: str) -> set[str]:
+    """Read piggyback hosts from the agent dump.
+
+    A piggyback host is defined by the pattern '<<<<host_name>>>>' within the agent dump.
+    """
+    piggyback_hosts: set[str] = set()
+    pattern = r"<<<<(.*?)>>>>"
+    matches = re.findall(pattern, dump)
+    piggyback_hosts.update(matches)
+    piggyback_hosts.discard("")  # '<<<<>>>>' pattern will match an empty string
+    return piggyback_hosts

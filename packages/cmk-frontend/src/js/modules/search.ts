@@ -149,7 +149,7 @@ export function on_input_search(id: string) {
     }
 }
 
-export function on_click_show_all_topics(topic: string) {
+export function on_click_collapse_topic(topic: string) {
     const current_topic = document.getElementById(topic)!;
     const topic_results = current_topic.getElementsByTagName("li");
     remove_class(current_topic, "extended");
@@ -164,7 +164,7 @@ export function on_click_show_all_topics(topic: string) {
             add_class(li, "hidden");
         }
     });
-    resize_mega_menu_popup(current_topic.closest(".main_menu_popup"));
+    resize_mega_menu_popup(current_topic.closest(".popup_menu_handler"));
 }
 
 export function on_click_show_all_results(

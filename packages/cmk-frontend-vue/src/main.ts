@@ -9,11 +9,15 @@
 
 import { createApp } from 'vue'
 
+import AgentDownload from './setup/AgentDownloadApp.vue'
 import QuickSetup from './quick-setup/QuickSetupApp.vue'
 import NotificationOverview from './notification/NotificationOverviewApp.vue'
 import { FormApp } from '@/form'
 import NotificationParametersOverviewApp from '@/notification/NotificationParametersOverviewApp.vue'
 import GraphDesignerApp from '@/graph-designer/GraphDesignerApp.vue'
+import { graphRenderer } from '@/graph-designer/graph'
+import ModeHostApp from '@/mode-host/ModeHostApp.vue'
+import AgentConnectionTestApp from '@/mode-host/AgentConnectionTestApp.vue'
 
 import '@/assets/variables.css'
 
@@ -68,6 +72,13 @@ function setupVue() {
           })
           break
         }
+        case 'agent_download': {
+          app = createApp(AgentDownload, {
+            url: appData.url,
+            i18n: appData.i18n
+          })
+          break
+        }
         case 'notification_parameters_overview': {
           app = createApp(NotificationParametersOverviewApp, {
             parameters: appData.parameters,
@@ -77,9 +88,28 @@ function setupVue() {
         }
         case 'graph_designer': {
           app = createApp(GraphDesignerApp, {
+            graph_id: appData.graph_id,
             graph_lines: appData.graph_lines,
             graph_options: appData.graph_options,
+            i18n: appData.i18n,
+            graph_renderer: graphRenderer
+          })
+          break
+        }
+        case 'mode_host': {
+          app = createApp(ModeHostApp, {
+            formKeys: appData.form_keys,
             i18n: appData.i18n
+          })
+          break
+        }
+        case 'agent_connection_test': {
+          app = createApp(AgentConnectionTestApp, {
+            url: appData.url,
+            i18n: appData.i18n,
+            input_hostname: appData.input_hostname,
+            input_ipv4: appData.input_ipv4,
+            input_ipv6: appData.input_ipv6
           })
           break
         }

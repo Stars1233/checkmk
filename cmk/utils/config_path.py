@@ -6,126 +6,73 @@
 
 from __future__ import annotations
 
-import abc
 import os
 import shutil
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Final
+from typing import Final, Self
 
-from cmk.ccc import store
+from cmk.ccc.store import DimSerializer, ObjectStore
 
-import cmk.utils.paths
+from cmk.utils.paths import omd_root
 
-__all__ = ["ConfigPath", "VersionedConfigPath", "LATEST_CONFIG"]
+__all__ = ["VersionedConfigPath"]
 
 
-class ConfigPath(abc.ABC):
-    __slots__ = ()
-
+class VersionedConfigPath:
     # Note - Security: This must remain hard-coded to a path not writable by others.
     #                  See BNS:c3c5e9.
-    ROOT: Final = cmk.utils.paths.core_helper_config_dir
+    ROOT: Final = omd_root / "var/check_mk/core/helper_config"
 
-    @property
-    @abc.abstractmethod
-    def _path_elem(self) -> str:
-        raise NotImplementedError()
-
-    def __str__(self) -> str:
-        return self._path_elem
-
-    def __eq__(self, other: Any) -> bool:
-        return Path(self) == Path(other) if isinstance(other, os.PathLike) else False
-
-    def __hash__(self) -> int:
-        return hash(type(self)) ^ hash(self._path_elem)
-
-    def __fspath__(self) -> str:
-        return str(self.ROOT / self._path_elem)
-
-
-class VersionedConfigPath(ConfigPath, Iterator):
-    __slots__ = ("serial",)
-
-    _SERIAL_MK: Final = ConfigPath.ROOT / "serial.mk"
+    LATEST_CONFIG: Final = ROOT / "latest"
+    _SERIAL_MK: Final = ROOT / "serial.mk"
 
     def __init__(self, serial: int) -> None:
         super().__init__()
         self.serial: Final = serial
 
-    def __repr__(self) -> str:
-        return f"{type(self).__name__}({self.serial})"
+    def __str__(self) -> str:
+        return str(self.ROOT / str(self.serial))
 
-    @property
-    def _path_elem(self) -> str:
-        return str(self.serial)
+    def __fspath__(self) -> str:
+        return str(self)
+
+    def __repr__(self) -> str:
+        return f"{self.__class__.__name__}({self.serial})"
+
+    def __eq__(self, other: object) -> bool:
+        return Path(self) == Path(other) if isinstance(other, os.PathLike) else NotImplemented
+
+    def __hash__(self) -> int:
+        return hash(Path(self))
 
     @classmethod
-    def current(cls) -> VersionedConfigPath:
-        serial: int = store.load_object_from_file(
-            VersionedConfigPath._SERIAL_MK,
-            default=0,
-            lock=True,
-        )
-        return cls(serial)
-
-    def __iter__(self) -> Iterator[VersionedConfigPath]:
-        serial = self.serial
-        while True:
-            serial += 1
-            store.save_object_to_file(VersionedConfigPath._SERIAL_MK, serial)
-            yield VersionedConfigPath(serial)
-
-    def __next__(self) -> VersionedConfigPath:
-        serial = self.serial + 1
-        store.save_object_to_file(VersionedConfigPath._SERIAL_MK, serial)
-        return VersionedConfigPath(serial)
+    def next(cls) -> Self:
+        store = ObjectStore(cls._SERIAL_MK, serializer=DimSerializer())
+        with store.locked():
+            old_serial: int = store.read_obj(default=0)
+            new_serial = old_serial + 1
+            store.write_obj(new_serial)
+        return cls(new_serial)
 
     def previous_config_path(self) -> VersionedConfigPath:
         return VersionedConfigPath(self.serial - 1)
 
     @contextmanager
     def create(self, *, is_cmc: bool) -> Iterator[None]:
-        if not is_cmc:
-            # CMC manages the configs on its own.
-            self._cleanup()
+        if not is_cmc:  # CMC manages the configs on its own.
+            for path in self.ROOT.iterdir() if self.ROOT.exists() else []:
+                if (
+                    not path.is_symlink()  # keep "lates" symlink
+                    and path.is_dir()  # keep "serial.mk"
+                    and path.resolve() != self.LATEST_CONFIG.resolve()  # keep latest config
+                ):
+                    shutil.rmtree(path)
         Path(self).mkdir(parents=True, exist_ok=True)
         yield
         # TODO(ml) We should probably remove the files that were created
         #          previously and not update `serial.mk` on error.
         # TODO: Should this be in a "finally" or not? Unclear...
-        self._link_latest()
-
-    def _cleanup(self) -> None:
-        if not self.ROOT.exists():
-            return
-
-        for path in self.ROOT.iterdir():
-            if path.is_symlink() or not path.is_dir():
-                continue
-
-            if path.resolve() == Path(LATEST_CONFIG).resolve():
-                continue
-
-            shutil.rmtree(path)
-
-    def _link_latest(self) -> None:
-        Path(LATEST_CONFIG).unlink(missing_ok=True)
-        Path(LATEST_CONFIG).symlink_to(Path(self).name)
-
-
-class _LatestConfigPath(ConfigPath):
-    __slots__ = ()
-
-    @property
-    def _path_elem(self) -> str:
-        return "latest"
-
-    def __repr__(self) -> str:
-        return f"{type(self).__name__}()"
-
-
-# Singleton
-LATEST_CONFIG: Final = _LatestConfigPath()
+        self.LATEST_CONFIG.unlink(missing_ok=True)
+        self.LATEST_CONFIG.symlink_to(Path(self).name)

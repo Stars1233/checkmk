@@ -23,8 +23,13 @@ import {
   makeSingleChoice,
   makeString
 } from '@/graph-designer/specs'
-import { computed, ref, type Ref } from 'vue'
-import { convertToUnit, convertToExplicitVerticalRange } from '@/graph-designer/converters'
+import { computed, onMounted, ref, type Ref, watch } from 'vue'
+import {
+  convertFromExplicitVerticalRange,
+  convertFromUnit,
+  convertToExplicitVerticalRange,
+  convertToUnit
+} from '@/graph-designer/converters'
 import {
   type GraphLine,
   type GraphLines,
@@ -33,32 +38,36 @@ import {
   type Operation,
   type Transformation
 } from 'cmk-shared-typing/typescript/graph_designer'
-import { type SpecLineType, type Topic } from '@/graph-designer/components/type_defs'
+import { type SpecLineType, type Topic } from '@/graph-designer/type_defs'
 import { type ValidationMessages } from '@/form'
 import useDragging from '@/lib/useDragging'
+import { fetchMetricColor } from '@/graph-designer/fetch_metric_color'
+import { type GraphRenderer } from '@/graph-designer/graph'
 
 const props = defineProps<{
+  graph_id: string
   graph_lines: GraphLines
   graph_options: GraphOptions
   i18n: I18N
+  graph_renderer: GraphRenderer
 }>()
 
 // Specs
 
 const dataConsolidationType = ref<'average' | 'min' | 'max'>('max')
 const specConsolidationType = makeSingleChoice('', [
-  { name: 'average', title: props.i18n.graph_lines.average },
-  { name: 'min', title: props.i18n.graph_lines.minimum },
-  { name: 'max', title: props.i18n.graph_lines.maximum }
+  { name: 'average', title: props.i18n.average },
+  { name: 'min', title: props.i18n.minimum },
+  { name: 'max', title: props.i18n.maximum }
 ])
 const backendValidationConsolidationType: ValidationMessages = []
 
 const dataScalarType = ref<'warn' | 'crit' | 'min' | 'max'>('crit')
 const specScalarType = makeSingleChoice('', [
-  { name: 'warn', title: props.i18n.graph_lines.warning },
-  { name: 'crit', title: props.i18n.graph_lines.critical },
-  { name: 'min', title: props.i18n.graph_lines.minimum },
-  { name: 'max', title: props.i18n.graph_lines.maximum }
+  { name: 'warn', title: props.i18n.warning },
+  { name: 'crit', title: props.i18n.critical },
+  { name: 'min', title: props.i18n.minimum },
+  { name: 'max', title: props.i18n.maximum }
 ])
 const backendValidationScalarType: ValidationMessages = []
 
@@ -67,87 +76,65 @@ const specConstant = makeFloat('', '')
 const backendValidationConstant: ValidationMessages = []
 
 const specLineType: SpecLineType = {
-  line: props.i18n.graph_lines.line,
-  area: props.i18n.graph_lines.area,
-  stack: props.i18n.graph_lines.stack
+  line: props.i18n.line,
+  area: props.i18n.area,
+  stack: props.i18n.stack
 }
 
 const dataTransformation = ref(95)
-const specTransformation = makeFloat('', props.i18n.graph_operations.percentile)
+const specTransformation = makeFloat('', props.i18n.percentile)
 const backendValidationTransformation: ValidationMessages = []
 
-const dataUnit = computed(() => {
-  return convertToUnit(props.graph_options.unit)
-})
+const dataUnit = ref(convertToUnit(props.graph_options.unit))
 const specUnit = makeCascadingSingleChoice('', [
   {
     name: 'first_entry_with_unit',
-    title: props.i18n.graph_options.unit_first_entry_with_unit,
+    title: props.i18n.unit_first_entry_with_unit,
     parameter_form: makeFixedValue(),
     default_value: null
   },
   {
     name: 'custom',
-    title: props.i18n.graph_options.unit_custom,
+    title: props.i18n.unit_custom,
     parameter_form: makeDictionary('', [
       {
         name: 'notation',
         render_only: false,
         required: true,
-        parameter_form: makeCascadingSingleChoice(props.i18n.graph_options.unit_custom_notation, [
+        parameter_form: makeCascadingSingleChoice(props.i18n.unit_custom_notation, [
           {
             name: 'decimal',
-            title: props.i18n.graph_options.unit_custom_notation_decimal,
-            parameter_form: makeString(
-              props.i18n.graph_options.unit_custom_notation_symbol,
-              'symbol',
-              null
-            ),
+            title: props.i18n.unit_custom_notation_decimal,
+            parameter_form: makeString(props.i18n.unit_custom_notation_symbol, 'symbol', null),
             default_value: ''
           },
           {
             name: 'si',
-            title: props.i18n.graph_options.unit_custom_notation_si,
-            parameter_form: makeString(
-              props.i18n.graph_options.unit_custom_notation_symbol,
-              'symbol',
-              null
-            ),
+            title: props.i18n.unit_custom_notation_si,
+            parameter_form: makeString(props.i18n.unit_custom_notation_symbol, 'symbol', null),
             default_value: ''
           },
           {
             name: 'iec',
-            title: props.i18n.graph_options.unit_custom_notation_iec,
-            parameter_form: makeString(
-              props.i18n.graph_options.unit_custom_notation_symbol,
-              'symbol',
-              null
-            ),
+            title: props.i18n.unit_custom_notation_iec,
+            parameter_form: makeString(props.i18n.unit_custom_notation_symbol, 'symbol', null),
             default_value: ''
           },
           {
             name: 'standard_scientific',
-            title: props.i18n.graph_options.unit_custom_notation_standard_scientific,
-            parameter_form: makeString(
-              props.i18n.graph_options.unit_custom_notation_symbol,
-              'symbol',
-              null
-            ),
+            title: props.i18n.unit_custom_notation_standard_scientific,
+            parameter_form: makeString(props.i18n.unit_custom_notation_symbol, 'symbol', null),
             default_value: ''
           },
           {
             name: 'engineering_scientific',
-            title: props.i18n.graph_options.unit_custom_notation_engineering_scientific,
-            parameter_form: makeString(
-              props.i18n.graph_options.unit_custom_notation_symbol,
-              'symbol',
-              null
-            ),
+            title: props.i18n.unit_custom_notation_engineering_scientific,
+            parameter_form: makeString(props.i18n.unit_custom_notation_symbol, 'symbol', null),
             default_value: ''
           },
           {
             name: 'time',
-            title: props.i18n.graph_options.unit_custom_notation_time,
+            title: props.i18n.unit_custom_notation_time,
             parameter_form: makeFixedValue(),
             default_value: null
           }
@@ -159,19 +146,19 @@ const specUnit = makeCascadingSingleChoice('', [
         name: 'precision',
         render_only: false,
         required: true,
-        parameter_form: makeDictionary(props.i18n.graph_options.unit_custom_precision, [
+        parameter_form: makeDictionary(props.i18n.unit_custom_precision, [
           {
             name: 'type',
             render_only: false,
             required: true,
-            parameter_form: makeSingleChoice(props.i18n.graph_options.unit_custom_precision_type, [
+            parameter_form: makeSingleChoice(props.i18n.unit_custom_precision_type, [
               {
                 name: 'auto',
-                title: props.i18n.graph_options.unit_custom_precision_type_auto
+                title: props.i18n.unit_custom_precision_type_auto
               },
               {
                 name: 'strict',
-                title: props.i18n.graph_options.unit_custom_precision_type_strict
+                title: props.i18n.unit_custom_precision_type_strict
               }
             ]),
             default_value: 'auto',
@@ -181,7 +168,7 @@ const specUnit = makeCascadingSingleChoice('', [
             name: 'digits',
             render_only: false,
             required: true,
-            parameter_form: makeFloat(props.i18n.graph_options.unit_custom_precision_digits, ''),
+            parameter_form: makeFloat(props.i18n.unit_custom_precision_digits, ''),
             default_value: 2,
             group: null
           }
@@ -195,28 +182,25 @@ const specUnit = makeCascadingSingleChoice('', [
 ])
 const backendValidationUnit: ValidationMessages = []
 
-const dataExplicitVerticalRange = computed(() => {
-  return convertToExplicitVerticalRange(props.graph_options.explicit_vertical_range)
-})
+const dataExplicitVerticalRange = ref(
+  convertToExplicitVerticalRange(props.graph_options.explicit_vertical_range)
+)
 const specExplicitVerticalRange = makeCascadingSingleChoice('', [
   {
     name: 'auto',
-    title: props.i18n.graph_options.explicit_vertical_range_auto,
+    title: props.i18n.explicit_vertical_range_auto,
     parameter_form: makeFixedValue(),
     default_value: null
   },
   {
     name: 'explicit',
-    title: props.i18n.graph_options.explicit_vertical_range_explicit,
+    title: props.i18n.explicit_vertical_range_explicit,
     parameter_form: makeDictionary('', [
       {
         name: 'lower',
         render_only: false,
         required: true,
-        parameter_form: makeFloat(
-          props.i18n.graph_options.explicit_vertical_range_explicit_lower,
-          ''
-        ),
+        parameter_form: makeFloat(props.i18n.explicit_vertical_range_explicit_lower, ''),
         default_value: 0.0,
         group: null
       },
@@ -224,10 +208,7 @@ const specExplicitVerticalRange = makeCascadingSingleChoice('', [
         name: 'upper',
         render_only: false,
         required: true,
-        parameter_form: makeFloat(
-          props.i18n.graph_options.explicit_vertical_range_explicit_upper,
-          ''
-        ),
+        parameter_form: makeFloat(props.i18n.explicit_vertical_range_explicit_upper, ''),
         default_value: 1.0,
         group: null
       }
@@ -237,39 +218,37 @@ const specExplicitVerticalRange = makeCascadingSingleChoice('', [
 ])
 const backendValidationExplicitVerticalRange: ValidationMessages = []
 
-const dataOmitZeroMetrics = computed(() => {
-  return props.graph_options.omit_zero_metrics
-})
+const dataOmitZeroMetrics = ref(props.graph_options.omit_zero_metrics)
 const specOmitZeroMetrics = makeBooleanChoice()
 const backendValidationOmitZeroMetrics: ValidationMessages = []
 
 const topics: Topic[] = [
   {
     ident: 'graph_lines',
-    title: props.i18n.topics.graph_lines,
+    title: props.i18n.graph_lines,
     elements: [
-      { ident: 'metric', title: props.i18n.topics.metric },
-      { ident: 'scalar', title: props.i18n.topics.scalar },
-      { ident: 'constant', title: props.i18n.topics.constant }
+      { ident: 'metric', title: props.i18n.metric },
+      { ident: 'scalar', title: props.i18n.scalar },
+      { ident: 'constant', title: props.i18n.constant }
     ]
   },
   {
     ident: 'graph_operations',
-    title: props.i18n.topics.graph_operations,
+    title: props.i18n.graph_operations,
     elements: [
-      { ident: 'operations', title: props.i18n.topics.operations },
-      { ident: 'transformation', title: props.i18n.topics.transformation }
+      { ident: 'operations', title: props.i18n.operations },
+      { ident: 'transformation', title: props.i18n.transformation }
     ]
   },
   {
     ident: 'graph_options',
-    title: props.i18n.topics.graph_options,
+    title: props.i18n.graph_options,
     elements: [
-      { ident: 'unit', title: props.i18n.topics.unit },
-      { ident: 'explicit_vertical_range', title: props.i18n.topics.explicit_vertical_range },
+      { ident: 'unit', title: props.i18n.unit },
+      { ident: 'explicit_vertical_range', title: props.i18n.explicit_vertical_range },
       {
         ident: 'omit_zero_metrics',
-        title: props.i18n.topics.omit_zero_metrics
+        title: props.i18n.omit_zero_metrics
       }
     ]
   }
@@ -284,40 +263,47 @@ function formulaOf(graphLine: GraphLine): string {
     case 'constant':
       return ''
     case 'sum':
-      return `${props.i18n.graph_operations.sum} ${props.i18n.graph_lines.of}`
+      return `${props.i18n.sum} ${props.i18n.of}`
     case 'product':
-      return `${props.i18n.graph_operations.product} ${props.i18n.graph_lines.of}`
+      return `${props.i18n.product} ${props.i18n.of}`
     case 'difference':
-      return `${props.i18n.graph_operations.difference} ${props.i18n.graph_lines.of}`
+      return `${props.i18n.difference} ${props.i18n.of}`
     case 'fraction':
-      return `${props.i18n.graph_operations.fraction} ${props.i18n.graph_lines.of}`
+      return `${props.i18n.fraction} ${props.i18n.of}`
     case 'average':
-      return `${props.i18n.graph_operations.average} ${props.i18n.graph_lines.of}`
+      return `${props.i18n.average} ${props.i18n.of}`
     case 'minimum':
-      return `${props.i18n.graph_operations.minimum} ${props.i18n.graph_lines.of}`
+      return `${props.i18n.minimum} ${props.i18n.of}`
     case 'maximum':
-      return `${props.i18n.graph_operations.maximum} ${props.i18n.graph_lines.of}`
+      return `${props.i18n.maximum} ${props.i18n.of}`
     case 'transformation':
-      return `${props.i18n.graph_operations.percentile} ${props.i18n.graph_lines.of}`
+      return `${props.i18n.percentile} ${props.i18n.of}`
     default:
       return ''
   }
 }
 
 const dataMetric = ref<Metric>({
-  hostName: '',
-  serviceName: '',
-  metricName: ''
+  hostName: null,
+  serviceName: null,
+  metricName: null
 })
 const dataScalar = ref<Metric>({
-  hostName: '',
-  serviceName: '',
-  metricName: ''
+  hostName: null,
+  serviceName: null,
+  metricName: null
 })
 
-let id = 0
-const graphLines: Ref<GraphLines> = ref([])
+const graphLines: Ref<GraphLines> = ref(props.graph_lines)
 const selectedGraphLines: Ref<GraphLines> = ref([])
+
+function nextIndex(): number {
+  if (graphLines.value.length === 0) {
+    return 0
+  } else {
+    return Math.max(...graphLines.value.map((v) => v['id'])) + 1
+  }
+}
 
 function isDissolvable(graphLine: GraphLine) {
   switch (graphLine.type) {
@@ -370,10 +356,11 @@ function generateOperation(graphLine: Operation): Operation {
     operands.push(generateGraphLine(operand))
   }
   return {
-    id: id++,
+    id: nextIndex(),
     type: graphLine.type,
     color: graphLine.color,
-    title: graphLine.title,
+    auto_title: graphLine.auto_title,
+    custom_title: graphLine.custom_title,
     visible: graphLine.visible,
     line_type: graphLine.line_type,
     mirrored: graphLine.mirrored,
@@ -385,10 +372,11 @@ function generateGraphLine(graphLine: GraphLine): GraphLine {
   switch (graphLine.type) {
     case 'metric':
       return {
-        id: id++,
+        id: nextIndex(),
         type: graphLine.type,
         color: graphLine.color,
-        title: graphLine.title,
+        auto_title: graphLine.auto_title,
+        custom_title: graphLine.custom_title,
         visible: graphLine.visible,
         line_type: graphLine.line_type,
         mirrored: graphLine.mirrored,
@@ -399,10 +387,11 @@ function generateGraphLine(graphLine: GraphLine): GraphLine {
       }
     case 'scalar':
       return {
-        id: id++,
+        id: nextIndex(),
         type: graphLine.type,
         color: graphLine.color,
-        title: graphLine.title,
+        auto_title: graphLine.auto_title,
+        custom_title: graphLine.custom_title,
         visible: graphLine.visible,
         line_type: graphLine.line_type,
         mirrored: graphLine.mirrored,
@@ -413,10 +402,11 @@ function generateGraphLine(graphLine: GraphLine): GraphLine {
       }
     case 'constant':
       return {
-        id: id++,
+        id: nextIndex(),
         type: graphLine.type,
         color: graphLine.color,
-        title: graphLine.title,
+        auto_title: graphLine.auto_title,
+        custom_title: graphLine.custom_title,
         visible: graphLine.visible,
         line_type: graphLine.line_type,
         mirrored: graphLine.mirrored,
@@ -432,10 +422,11 @@ function generateGraphLine(graphLine: GraphLine): GraphLine {
       return generateOperation(graphLine)
     case 'transformation':
       return {
-        id: id++,
+        id: nextIndex(),
         type: graphLine.type,
         color: graphLine.color,
-        title: graphLine.title,
+        auto_title: graphLine.auto_title,
+        custom_title: graphLine.custom_title,
         visible: graphLine.visible,
         line_type: graphLine.line_type,
         mirrored: graphLine.mirrored,
@@ -453,6 +444,22 @@ function deleteGraphLine(graphLine: GraphLine) {
   graphLines.value = graphLines.value.filter((l) => l !== graphLine)
 }
 
+function updateGraphLineAutoTitle(graphLine: GraphLine) {
+  switch (graphLine.type) {
+    case 'metric':
+    case 'scalar': {
+      const autoTitleParts = [graphLine.host_name, graphLine.service_name, graphLine.metric_name]
+      graphLine.auto_title = `${autoTitleParts.filter((p) => p !== '').join(' > ')}`
+      break
+    }
+    case 'constant':
+      graphLine.auto_title = `${props.i18n.constant} ${graphLine.value}`
+      break
+    case 'transformation':
+      graphLine.auto_title = `${props.i18n.percentile} ${graphLine.percentile} ${props.i18n.of} ${graphLine.operand.auto_title}`
+  }
+}
+
 function isOperation(graphLine: GraphLine) {
   switch (graphLine.type) {
     case 'sum':
@@ -468,18 +475,25 @@ function isOperation(graphLine: GraphLine) {
   }
 }
 
-function addMetric() {
+async function addMetric() {
   if (
     dataMetric.value.hostName !== '' &&
+    dataMetric.value.hostName !== null &&
     dataMetric.value.serviceName !== '' &&
-    dataMetric.value.metricName !== ''
+    dataMetric.value.serviceName !== null &&
+    dataMetric.value.metricName !== '' &&
+    dataMetric.value.metricName !== null
   ) {
-    // TODO set color, title, ...
+    const color: string = await fetchMetricColor(
+      dataMetric.value.metricName,
+      dataConsolidationType.value
+    )
     graphLines.value.push({
-      id: id++,
+      id: nextIndex(),
       type: 'metric',
-      color: '#ff0000',
-      title: `${dataMetric.value.hostName} > ${dataMetric.value.serviceName} > ${dataMetric.value.metricName}`,
+      color: color,
+      auto_title: `${dataMetric.value.hostName} > ${dataMetric.value.serviceName} > ${dataMetric.value.metricName}`,
+      custom_title: '',
       visible: true,
       line_type: 'line',
       mirrored: false,
@@ -489,25 +503,29 @@ function addMetric() {
       consolidation_type: dataConsolidationType.value
     })
     dataMetric.value = {
-      hostName: '',
-      serviceName: '',
-      metricName: ''
+      hostName: null,
+      serviceName: null,
+      metricName: null
     }
   }
 }
 
-function addScalar() {
+async function addScalar() {
   if (
     dataScalar.value.hostName !== '' &&
+    dataScalar.value.hostName !== null &&
     dataScalar.value.serviceName !== '' &&
-    dataScalar.value.metricName !== ''
+    dataScalar.value.serviceName !== null &&
+    dataScalar.value.metricName !== '' &&
+    dataScalar.value.metricName !== null
   ) {
-    // TODO set color, title, ...
+    const color: string = await fetchMetricColor(dataScalar.value.metricName, dataScalarType.value)
     graphLines.value.push({
-      id: id++,
+      id: nextIndex(),
       type: 'scalar',
-      color: '#ff0000',
-      title: `${dataScalar.value.hostName} > ${dataScalar.value.serviceName} > ${dataScalar.value.metricName}`,
+      color: color,
+      auto_title: `${dataScalar.value.hostName} > ${dataScalar.value.serviceName} > ${dataScalar.value.metricName}`,
+      custom_title: '',
       visible: true,
       line_type: 'line',
       mirrored: false,
@@ -517,19 +535,20 @@ function addScalar() {
       scalar_type: dataScalarType.value
     })
     dataScalar.value = {
-      hostName: '',
-      serviceName: '',
-      metricName: ''
+      hostName: null,
+      serviceName: null,
+      metricName: null
     }
   }
 }
 
 function addConstant() {
   graphLines.value.push({
-    id: id++,
+    id: nextIndex(),
     type: 'constant',
     color: '#ff0000',
-    title: `${props.i18n.topics.constant} ${dataConstant.value}`,
+    auto_title: `${props.i18n.constant} ${dataConstant.value}`,
+    custom_title: '',
     visible: true,
     line_type: 'line',
     mirrored: false,
@@ -544,7 +563,7 @@ function operationIsApplicable() {
   return Object.keys(selectedGraphLines.value).length >= 2
 }
 
-function showSelectedIds(operator: string) {
+function showSelectedIds(operator: '-' | '/') {
   return ` (${selectedGraphLines.value.map((l) => `#${l.id}`).join(` ${operator} `)})`
 }
 
@@ -560,14 +579,14 @@ function addGraphLineWithSelection(graphLine: GraphLine) {
 }
 
 function applySum() {
-  // TODO use other attributes from first operand?
   const firstOperand = selectedGraphLines.value[0]
   if (firstOperand) {
     addGraphLineWithSelection({
-      id: id++,
+      id: nextIndex(),
       type: 'sum',
       color: firstOperand.color,
-      title: `${props.i18n.graph_operations.sum} ${props.i18n.graph_lines.of} ${selectedGraphLines.value.map((l) => l.title).join(', ')}`,
+      auto_title: `${props.i18n.sum} ${props.i18n.of} ${selectedGraphLines.value.map((l) => l.auto_title).join(', ')}`,
+      custom_title: '',
       visible: true,
       line_type: 'line',
       mirrored: false,
@@ -577,14 +596,14 @@ function applySum() {
 }
 
 function applyProduct() {
-  // TODO use other attributes from first operand?
   const firstOperand = selectedGraphLines.value[0]
   if (firstOperand) {
     addGraphLineWithSelection({
-      id: id++,
+      id: nextIndex(),
       type: 'product',
       color: firstOperand.color,
-      title: `${props.i18n.graph_operations.product} ${props.i18n.graph_lines.of} ${selectedGraphLines.value.map((l) => l.title).join(', ')}`,
+      auto_title: `${props.i18n.product} ${props.i18n.of} ${selectedGraphLines.value.map((l) => l.auto_title).join(', ')}`,
+      custom_title: '',
       visible: true,
       line_type: 'line',
       mirrored: false,
@@ -594,14 +613,14 @@ function applyProduct() {
 }
 
 function applyDifference() {
-  // TODO use other attributes from first operand?
   const firstOperand = selectedGraphLines.value[0]
   if (firstOperand) {
     addGraphLineWithSelection({
-      id: id++,
+      id: nextIndex(),
       type: 'difference',
       color: firstOperand.color,
-      title: `${props.i18n.graph_operations.difference} ${props.i18n.graph_lines.of} ${selectedGraphLines.value.map((l) => l.title).join(', ')}`,
+      auto_title: `${props.i18n.difference} ${props.i18n.of} ${selectedGraphLines.value.map((l) => l.auto_title).join(', ')}`,
+      custom_title: '',
       visible: true,
       line_type: 'line',
       mirrored: false,
@@ -611,14 +630,14 @@ function applyDifference() {
 }
 
 function applyFraction() {
-  // TODO use other attributes from first operand?
   const firstOperand = selectedGraphLines.value[0]
   if (firstOperand) {
     addGraphLineWithSelection({
-      id: id++,
+      id: nextIndex(),
       type: 'fraction',
       color: firstOperand.color,
-      title: `${props.i18n.graph_operations.fraction} ${props.i18n.graph_lines.of} ${selectedGraphLines.value.map((l) => l.title).join(', ')}`,
+      auto_title: `${props.i18n.fraction} ${props.i18n.of} ${selectedGraphLines.value.map((l) => l.auto_title).join(', ')}`,
+      custom_title: '',
       visible: true,
       line_type: 'line',
       mirrored: false,
@@ -628,14 +647,14 @@ function applyFraction() {
 }
 
 function applyAverage() {
-  // TODO use other attributes from first operand?
   const firstOperand = selectedGraphLines.value[0]
   if (firstOperand) {
     addGraphLineWithSelection({
-      id: id++,
+      id: nextIndex(),
       type: 'average',
       color: firstOperand.color,
-      title: `${props.i18n.graph_operations.average} ${props.i18n.graph_lines.of} ${selectedGraphLines.value.map((l) => l.title).join(', ')}`,
+      auto_title: `${props.i18n.average} ${props.i18n.of} ${selectedGraphLines.value.map((l) => l.auto_title).join(', ')}`,
+      custom_title: '',
       visible: true,
       line_type: 'line',
       mirrored: false,
@@ -645,14 +664,14 @@ function applyAverage() {
 }
 
 function applyMinimum() {
-  // TODO use other attributes from first operand?
   const firstOperand = selectedGraphLines.value[0]
   if (firstOperand) {
     addGraphLineWithSelection({
-      id: id++,
+      id: nextIndex(),
       type: 'minimum',
       color: firstOperand.color,
-      title: `${props.i18n.graph_operations.minimum} ${props.i18n.graph_lines.of} ${selectedGraphLines.value.map((l) => l.title).join(', ')}`,
+      auto_title: `${props.i18n.minimum} ${props.i18n.of} ${selectedGraphLines.value.map((l) => l.auto_title).join(', ')}`,
+      custom_title: '',
       visible: true,
       line_type: 'line',
       mirrored: false,
@@ -662,14 +681,14 @@ function applyMinimum() {
 }
 
 function applyMaximum() {
-  // TODO use other attributes from first operand?
   const firstOperand = selectedGraphLines.value[0]
   if (firstOperand) {
     addGraphLineWithSelection({
-      id: id++,
+      id: nextIndex(),
       type: 'maximum',
       color: firstOperand.color,
-      title: `${props.i18n.graph_operations.maximum} ${props.i18n.graph_lines.of} ${selectedGraphLines.value.map((l) => l.title).join(', ')}`,
+      auto_title: `${props.i18n.maximum} ${props.i18n.of} ${selectedGraphLines.value.map((l) => l.auto_title).join(', ')}`,
+      custom_title: '',
       visible: true,
       line_type: 'line',
       mirrored: false,
@@ -679,19 +698,19 @@ function applyMaximum() {
 }
 
 function applyTransformation() {
-  // TODO use other attributes from operand?
-  const selectedGraphLine = selectedGraphLines.value[0]
-  if (selectedGraphLine) {
+  const firstOperand = selectedGraphLines.value[0]
+  if (firstOperand) {
     addGraphLineWithSelection({
-      id: id++,
+      id: nextIndex(),
       type: 'transformation',
-      color: '#ff0000',
-      title: `${props.i18n.graph_operations.percentile} ${props.i18n.graph_lines.of} ${selectedGraphLine.title}`,
+      color: firstOperand.color,
+      auto_title: `${props.i18n.percentile} ${dataTransformation.value} ${props.i18n.of} ${firstOperand.auto_title}`,
+      custom_title: '',
       visible: true,
       line_type: 'line',
       mirrored: false,
       percentile: dataTransformation.value,
-      operand: selectedGraphLine
+      operand: firstOperand
     })
   }
 }
@@ -713,21 +732,76 @@ function dragElement(event: DragEvent) {
   const movedEntry = graphLines.value.splice(dragReturn.draggedIndex, 1)[0]!
   graphLines.value.splice(dragReturn.targetIndex, 0, movedEntry)
 }
+
+// Graph update
+
+const graphContainerRef = ref()
+
+onMounted(() => {
+  props.graph_renderer(
+    props.graph_id,
+    graphLines.value,
+    {
+      unit: convertFromUnit(dataUnit.value),
+      explicit_vertical_range: convertFromExplicitVerticalRange(dataExplicitVerticalRange.value),
+      omit_zero_metrics: dataOmitZeroMetrics.value
+    },
+    graphContainerRef.value
+  )
+})
+
+watch(
+  () => [
+    graphLines.value,
+    dataUnit.value,
+    dataExplicitVerticalRange.value,
+    dataOmitZeroMetrics.value
+  ],
+  () => {
+    props.graph_renderer(
+      props.graph_id,
+      graphLines.value,
+      {
+        unit: convertFromUnit(dataUnit.value),
+        explicit_vertical_range: convertFromExplicitVerticalRange(dataExplicitVerticalRange.value),
+        omit_zero_metrics: dataOmitZeroMetrics.value
+      },
+      graphContainerRef.value
+    )
+  },
+  { deep: true }
+)
+
+// Form
+
+const graphDesignerContentAsJson = computed(() => {
+  return JSON.stringify({
+    graph_lines: graphLines.value,
+    graph_options: {
+      unit: convertFromUnit(dataUnit.value),
+      explicit_vertical_range: convertFromExplicitVerticalRange(dataExplicitVerticalRange.value),
+      omit_zero_metrics: dataOmitZeroMetrics.value
+    }
+  })
+})
 </script>
 
 <template>
+  <div ref="graphContainerRef"></div>
+
   <table ref="tableRef" class="data oddeven graph_designer_metrics">
     <tbody>
       <tr>
         <th class="header_narrow nowrap">#</th>
         <th class="header_buttons"></th>
-        <th class="header_buttons">{{ props.i18n.graph_lines.actions }}</th>
-        <th class="header_narrow">{{ props.i18n.graph_lines.color }}</th>
-        <th class="header_nobr narrow">{{ props.i18n.graph_lines.title }}</th>
-        <th class="header_buttons">{{ props.i18n.graph_lines.visible }}</th>
-        <th class="header_narrow">{{ props.i18n.graph_lines.line_style }}</th>
-        <th class="header_buttons">{{ props.i18n.graph_lines.mirrored }}</th>
-        <th>{{ props.i18n.graph_lines.formula }}</th>
+        <th class="header_buttons">{{ props.i18n.actions }}</th>
+        <th class="header_narrow">{{ props.i18n.color }}</th>
+        <th class="header_nobr narrow">{{ props.i18n.auto_title }}</th>
+        <th class="header_nobr narrow">{{ props.i18n.custom_title }}</th>
+        <th class="header_buttons">{{ props.i18n.visible }}</th>
+        <th class="header_narrow">{{ props.i18n.line_style }}</th>
+        <th class="header_buttons">{{ props.i18n.mirrored }}</th>
+        <th>{{ props.i18n.formula }}</th>
       </tr>
       <tr
         v-for="(graphLine, index) in graphLines"
@@ -750,19 +824,19 @@ function dragElement(event: DragEvent) {
         <td class="buttons">
           <img
             v-if="isDissolvable(graphLine)"
-            :title="props.i18n.graph_lines.dissolve_operation"
+            :title="props.i18n.dissolve_operation"
             src="themes/facelift/images/icon_dissolve_operation.png"
             class="icon iconbutton png"
             @click="dissolveGraphLine(graphLine)"
           />
           <img
-            :title="props.i18n.graph_lines.clone_this_entry"
+            :title="props.i18n.clone_this_entry"
             src="themes/facelift/images/icon_clone.svg"
             class="icon iconbutton"
             @click="cloneGraphLine(graphLine)"
           />
           <img
-            :title="props.i18n.graph_lines.move_this_entry"
+            :title="props.i18n.move_this_entry"
             src="themes/modern-dark/images/icon_drag.svg"
             class="icon iconbutton"
             @dragstart="dragStart"
@@ -770,14 +844,15 @@ function dragElement(event: DragEvent) {
             @dragend="dragEnd"
           />
           <img
-            :title="props.i18n.graph_lines.delete_this_entry"
+            :title="props.i18n.delete_this_entry"
             src="themes/facelift/images/icon_delete.svg"
             class="icon iconbutton"
             @click="deleteGraphLine(graphLine)"
           />
         </td>
         <td class="narrow"><CmkColorPicker v-model:data="graphLine.color" /></td>
-        <td class="nobr narrow"><FormTitle v-model:data="graphLine.title" /></td>
+        <td class="nobr narrow">{{ graphLine.auto_title }}</td>
+        <td class="nobr narrow"><FormTitle v-model:data="graphLine.custom_title" /></td>
         <td class="buttons"><CmkSwitch v-model:data="graphLine.visible" /></td>
         <td class="narrow">
           <FormLineType v-model:data="graphLine.line_type" :spec="specLineType" />
@@ -786,6 +861,19 @@ function dragElement(event: DragEvent) {
         <td>
           <div v-if="graphLine.type === 'metric'">
             <FixedMetricRowRenderer>
+              <template #metric_cells>
+                <FormMetricCells
+                  v-model:host-name="graphLine.host_name"
+                  v-model:service-name="graphLine.service_name"
+                  v-model:metric-name="graphLine.metric_name"
+                  :placeholder_host_name="props.i18n.placeholder_host_name"
+                  :placeholder_service_name="props.i18n.placeholder_service_name"
+                  :placeholder_metric_name="props.i18n.placeholder_metric_name"
+                  @update:host-name="updateGraphLineAutoTitle(graphLine)"
+                  @update:service-name="updateGraphLineAutoTitle(graphLine)"
+                  @update:metric-name="updateGraphLineAutoTitle(graphLine)"
+                />
+              </template>
               <template #metric_type>
                 <FormEdit
                   v-model:data="graphLine.consolidation_type"
@@ -793,16 +881,23 @@ function dragElement(event: DragEvent) {
                   :backend-validation="backendValidationConsolidationType"
                 />
               </template>
-              <template #metric_of>
-                {{ props.i18n.graph_lines.of }}
-              </template>
-              <template #metric_title>
-                {{ graphLine.title }}
-              </template>
             </FixedMetricRowRenderer>
           </div>
           <div v-else-if="graphLine.type === 'scalar'">
             <FixedMetricRowRenderer>
+              <template #metric_cells>
+                <FormMetricCells
+                  v-model:host-name="graphLine.host_name"
+                  v-model:service-name="graphLine.service_name"
+                  v-model:metric-name="graphLine.metric_name"
+                  :placeholder_host_name="props.i18n.placeholder_host_name"
+                  :placeholder_service_name="props.i18n.placeholder_service_name"
+                  :placeholder_metric_name="props.i18n.placeholder_metric_name"
+                  @update:host-name="updateGraphLineAutoTitle(graphLine)"
+                  @update:service-name="updateGraphLineAutoTitle(graphLine)"
+                  @update:metric-name="updateGraphLineAutoTitle(graphLine)"
+                />
+              </template>
               <template #metric_type>
                 <FormEdit
                   v-model:data="graphLine.scalar_type"
@@ -810,19 +905,25 @@ function dragElement(event: DragEvent) {
                   :backend-validation="backendValidationScalarType"
                 />
               </template>
-              <template #metric_of>
-                {{ props.i18n.graph_lines.of }}
-              </template>
-              <template #metric_title>
-                {{ graphLine.title }}
-              </template>
             </FixedMetricRowRenderer>
           </div>
           <div v-else-if="graphLine.type === 'constant'">
-            {{ graphLine.title }}
+            {{ props.i18n.constant }}
+            <FormEdit
+              v-model:data="graphLine.value"
+              :spec="specConstant"
+              :backend-validation="backendValidationConstant"
+              @update:data="updateGraphLineAutoTitle(graphLine)"
+            />
           </div>
           <div v-else-if="graphLine.type === 'transformation'">
-            {{ formulaOf(graphLine) }}
+            <FormEdit
+              v-model:data="graphLine.percentile"
+              :spec="specTransformation"
+              :backend-validation="backendValidationTransformation"
+              @update:data="updateGraphLineAutoTitle(graphLine)"
+            />
+            {{ props.i18n.of }}
             <br />
             <div
               :style="{
@@ -831,7 +932,7 @@ function dragElement(event: DragEvent) {
               }"
               class="color"
             ></div>
-            {{ graphLine.operand.title }}
+            {{ graphLine.operand.auto_title }}
           </div>
           <div v-else-if="isOperation(graphLine)">
             {{ formulaOf(graphLine) }}
@@ -840,7 +941,7 @@ function dragElement(event: DragEvent) {
                 :style="{ 'background-color': operand.color, 'border-color': operand.color }"
                 class="color"
               ></div>
-              {{ operand.title }}
+              {{ operand.auto_title }}
             </div>
           </div>
         </td>
@@ -853,7 +954,14 @@ function dragElement(event: DragEvent) {
       <div>
         <MetricRowRenderer>
           <template #metric_cells>
-            <FormMetricCells v-model:data="dataMetric" />
+            <FormMetricCells
+              v-model:host-name="dataMetric.hostName"
+              v-model:service-name="dataMetric.serviceName"
+              v-model:metric-name="dataMetric.metricName"
+              :placeholder_host_name="props.i18n.placeholder_host_name"
+              :placeholder_service_name="props.i18n.placeholder_service_name"
+              :placeholder_metric_name="props.i18n.placeholder_metric_name"
+            />
           </template>
           <template #metric_type>
             <FormEdit
@@ -863,14 +971,13 @@ function dragElement(event: DragEvent) {
             />
           </template>
           <template #metric_action>
-            <button @click="addMetric">
+            <button @click.prevent="addMetric">
               <img
-                :title="props.i18n.graph_lines.add"
+                :title="props.i18n.add"
                 src="themes/facelift/images/icon_new.svg"
                 class="icon iconbutton"
-                @click="addMetric"
               />
-              {{ props.i18n.graph_lines.add }}
+              {{ props.i18n.add }}
             </button>
           </template>
         </MetricRowRenderer>
@@ -880,7 +987,14 @@ function dragElement(event: DragEvent) {
       <div>
         <MetricRowRenderer>
           <template #metric_cells>
-            <FormMetricCells v-model:data="dataScalar" />
+            <FormMetricCells
+              v-model:host-name="dataScalar.hostName"
+              v-model:service-name="dataScalar.serviceName"
+              v-model:metric-name="dataScalar.metricName"
+              :placeholder_host_name="props.i18n.placeholder_host_name"
+              :placeholder_service_name="props.i18n.placeholder_service_name"
+              :placeholder_metric_name="props.i18n.placeholder_metric_name"
+            />
           </template>
           <template #metric_type>
             <FormEdit
@@ -890,14 +1004,13 @@ function dragElement(event: DragEvent) {
             />
           </template>
           <template #metric_action>
-            <button @click="addScalar">
+            <button @click.prevent="addScalar">
               <img
-                :title="props.i18n.graph_lines.add"
+                :title="props.i18n.add"
                 src="themes/facelift/images/icon_new.svg"
                 class="icon iconbutton"
-                @click="addMetric"
               />
-              {{ props.i18n.graph_lines.add }}
+              {{ props.i18n.add }}
             </button>
           </template>
         </MetricRowRenderer>
@@ -910,32 +1023,29 @@ function dragElement(event: DragEvent) {
           :spec="specConstant"
           :backend-validation="backendValidationConstant"
         />
-        <button @click="addConstant">
+        <button @click.prevent="addConstant">
           <img
-            :title="props.i18n.graph_lines.add"
+            :title="props.i18n.add"
             src="themes/facelift/images/icon_new.svg"
             class="icon iconbutton"
-            @click="addMetric"
           />
-          {{ props.i18n.graph_lines.add }}
+          {{ props.i18n.add }}
         </button>
       </div>
     </template>
     <template #operations>
       <div v-if="operationIsApplicable()">
-        <button @click="applySum">{{ props.i18n.graph_operations.sum }}</button>
-        <button @click="applyProduct">{{ props.i18n.graph_operations.product }}</button>
+        <button @click="applySum">{{ props.i18n.sum }}</button>
+        <button @click="applyProduct">{{ props.i18n.product }}</button>
         <button @click="applyDifference">
-          {{ props.i18n.graph_operations.difference }} {{ showSelectedIds('-') }}
+          {{ props.i18n.difference }} {{ showSelectedIds('-') }}
         </button>
-        <button @click="applyFraction">
-          {{ props.i18n.graph_operations.fraction }} {{ showSelectedIds('/') }}
-        </button>
-        <button @click="applyAverage">{{ props.i18n.graph_operations.average }}</button>
-        <button @click="applyMinimum">{{ props.i18n.graph_operations.minimum }}</button>
-        <button @click="applyMaximum">{{ props.i18n.graph_operations.maximum }}</button>
+        <button @click="applyFraction">{{ props.i18n.fraction }} {{ showSelectedIds('/') }}</button>
+        <button @click="applyAverage">{{ props.i18n.average }}</button>
+        <button @click="applyMinimum">{{ props.i18n.minimum }}</button>
+        <button @click="applyMaximum">{{ props.i18n.maximum }}</button>
       </div>
-      <div v-else>{{ props.i18n.graph_operations.no_selected_graph_lines }}</div>
+      <div v-else>{{ props.i18n.no_selected_graph_lines }}</div>
     </template>
     <template #transformation>
       <div v-if="transformationIsApplicable()">
@@ -944,9 +1054,9 @@ function dragElement(event: DragEvent) {
           :spec="specTransformation"
           :backend-validation="backendValidationTransformation"
         />
-        <button @click="applyTransformation">{{ props.i18n.graph_operations.apply }}</button>
+        <button @click="applyTransformation">{{ props.i18n.apply }}</button>
       </div>
-      <div v-else>{{ props.i18n.graph_operations.no_selected_graph_line }}</div>
+      <div v-else>{{ props.i18n.no_selected_graph_line }}</div>
     </template>
     <template #unit>
       <div>
@@ -976,4 +1086,7 @@ function dragElement(event: DragEvent) {
       </div>
     </template>
   </TopicsRenderer>
+
+  <!-- This input field contains the computed json value which is sent when the form is submitted -->
+  <input v-model="graphDesignerContentAsJson" name="graph_designer_content" type="hidden" />
 </template>

@@ -9,9 +9,9 @@ from typing import Any
 
 import cmk.ccc.version as cmk_version
 from cmk.ccc.plugin_registry import Registry
+from cmk.ccc.user import UserId
 
 from cmk.utils import paths
-from cmk.utils.user import UserId
 
 from cmk.gui.config import Config
 from cmk.gui.data_source import DataSourceRegistry
@@ -309,6 +309,10 @@ builtin_views.update(
             "num_columns": 1,
             "painters": [
                 ColumnSpec(name="service_state"),
+                ColumnSpec(
+                    name="host",
+                    link_spec=VisualLinkSpec(type_name="views", name="host"),
+                ),
                 ColumnSpec(
                     name="service_description",
                     link_spec=VisualLinkSpec(type_name="views", name="service"),

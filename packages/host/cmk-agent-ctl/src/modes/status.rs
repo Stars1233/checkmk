@@ -2,7 +2,7 @@
 // This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
 // conditions defined in the file COPYING, which is part of this source code package.
 
-use crate::{agent_receiver_api, certs, config, constants, site_spec};
+use crate::{agent_receiver_api, certs, config, site_spec, version};
 use anyhow::{Context, Result as AnyhowResult};
 use log::debug;
 use serde::ser::SerializeStruct;
@@ -278,7 +278,7 @@ impl Status {
         }
 
         Status {
-            version: String::from(constants::VERSION),
+            version: String::from(version::VERSION),
             agent_socket_operational: pull_config.agent_channel.operational(),
             ip_allowlist: pull_config.allowed_ip.to_vec(),
             allow_legacy_pull: pull_config.allow_legacy_pull(),
@@ -442,8 +442,8 @@ mod test_status {
                     remote: Remote::StatusResponse(Ok(
                         agent_receiver_api::RegistrationStatusV2Response::Registered(
                             agent_receiver_api::RegistrationStatusV2ResponseRegistered {
-                            connection_mode: config::ConnectionMode::Pull,
-                            hostname: String::from("my-host"),
+                                connection_mode: config::ConnectionMode::Pull,
+                                hostname: String::from("my-host"),
                             }
                         )
                     ))
@@ -752,7 +752,7 @@ mod test_status {
                  \tRemote:\n\
                  \t\tConnection mode: pull-agent (!!)\n\
                  \t\tHostname: host",
-                constants::VERSION,
+                version::VERSION,
                 if cfg!(unix) {
                     "inoperational (!!)"
                 } else {

@@ -13,16 +13,17 @@ defineProps<{
 </script>
 
 <template>
-  <div class="notification_stats">
-    <div class="section">
-      <h3 class="table">{{ notification_stats['i18n']['failed_notifications'] }}</h3>
-      <div class="content">
-        <p v-if="notification_stats['num_failed_notifications'] === 0" class="count">
-          <CmkIcon name="checkmark" size="xlarge" />
-          {{ notification_stats['num_failed_notifications'] }}
-        </p>
-        <p v-else class="count">
-          <CmkIcon name="crit-problem" size="xlarge" />
+  <div class="notification-stats">
+    <div class="notification-stats__section">
+      <h3>{{ notification_stats['i18n']['failed_notifications'] }}</h3>
+      <div class="notification-stats__content">
+        <p class="notification-stats__count">
+          <CmkIcon
+            v-if="notification_stats['num_failed_notifications'] === 0"
+            name="checkmark"
+            size="xlarge"
+          />
+          <CmkIcon v-else name="crit-problem" size="xlarge" />
           {{ notification_stats['num_failed_notifications'] }}
         </p>
         <a
@@ -32,10 +33,10 @@ defineProps<{
         >
       </div>
     </div>
-    <div class="section">
+    <div class="notification-stats__section">
       <h3 class="table">{{ notification_stats['i18n']['sent_notifications'] }}</h3>
-      <div class="content">
-        <p class="count">
+      <div class="notification-stats__content">
+        <p class="notification-stats__count">
           {{ notification_stats['num_sent_notifications'] }}
         </p>
         <a
@@ -49,32 +50,35 @@ defineProps<{
 </template>
 
 <style scoped>
-.notification_stats {
+.notification-stats {
   height: 134px;
   width: 355px;
   display: flex;
   flex-grow: 2;
 
-  div.section:first-child {
-    margin-right: 4px;
-  }
-
-  div.section {
+  .notification-stats__section {
     margin: 0;
     flex-grow: 1;
     border: 1px solid var(--default-border-color);
 
-    .table {
+    &:first-child {
+      margin-right: 4px;
+    }
+
+    h3 {
       margin-top: 0;
+      font-size: var(--font-size-normal);
     }
   }
 
-  div.content {
+  .notification-stats__content {
     height: 113px;
+    padding: 10px;
+    box-sizing: border-box;
     align-content: center;
     text-align: center;
 
-    p.count {
+    .notification-stats__count {
       font-size: 24px;
       margin-top: var(--spacing-half);
       margin-bottom: var(--spacing-half);

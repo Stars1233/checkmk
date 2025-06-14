@@ -3,6 +3,8 @@
 # This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
 # conditions defined in the file COPYING, which is part of this source code package.
 
+# mypy: disable-error-code="explicit-override, no-untyped-call, no-untyped-def"
+
 import re
 from collections.abc import Callable, Collection, Sequence
 
@@ -215,7 +217,7 @@ def label_autocompleter(value: str, params: dict) -> Choices:
 def check_types_autocompleter(value: str, params: dict) -> Choices:
     return [
         (str(cn), (str(cn) + " - " + c["title"]))
-        for (cn, c) in get_check_information_cached().items()
+        for (cn, c) in get_check_information_cached(debug=active_config.debug).items()
         if not cn.is_management_name()
     ]
 
@@ -249,7 +251,7 @@ class PageVsAutocomplete(AjaxPage):
         # Check for correct result_data format
         assert isinstance(result_data, list)
         if result_data:
-            assert isinstance(result_data[0], (list, tuple))
+            assert isinstance(result_data[0], list | tuple)
             assert len(result_data[0]) == 2
 
         return {"choices": result_data}

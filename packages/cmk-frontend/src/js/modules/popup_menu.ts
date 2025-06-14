@@ -13,6 +13,7 @@ import type {Nullable} from "./utils";
 import {
     add_class,
     add_event_handler,
+    change_class,
     del_event_handler,
     get_computed_style,
     has_class,
@@ -155,7 +156,7 @@ interface MethodColorpicker extends PopupMethod {
     value: string | null;
 }
 
-type JSPopopMethod = MethodColorpicker | MethodInline | MethodAjax;
+type JSPopupMethod = MethodColorpicker | MethodInline | MethodAjax;
 
 // event:       The browser event that triggered the action
 // trigger_obj: DOM object of the action
@@ -191,7 +192,7 @@ export function toggle_popup(
     event: Event | undefined,
     trigger_obj: HTMLElement,
     ident: string,
-    method: JSPopopMethod,
+    method: JSPopupMethod,
     data: any,
     onclose: string | null,
     onopen: string | null,
@@ -513,7 +514,7 @@ export function initialize_mega_menus() {
 }
 
 function resize_all_mega_menu_popups() {
-    for (const popup of querySelectorAllByClassName("main_menu_popup")) {
+    for (const popup of querySelectorAllByClassName("popup_menu_handler")) {
         resize_mega_menu_popup(popup);
     }
 }
@@ -623,19 +624,86 @@ function maximum_popup_width() {
 
 export function mega_menu_show_all_items(current_topic_id: string) {
     const current_topic = document.getElementById(current_topic_id);
+    const main_menu: HTMLElement = current_topic!.closest(".main_menu")!;
+
+    // Check whether we're already coming from an extended topic. In that case we set a class
+    // "previously_extended" to be able to reopen that topic again.
+    // We assume here that only one level of previously extended topics is possible
+    // (i.e. "Show all" > multilevel topic segment)
+    // Multiple multilevel topic segments cannot be handled by this show/collapse code.
+    const previously_extended_topic = main_menu.getElementsByClassName(
+        "topic extended",
+    )[0] as HTMLElement;
+    if (previously_extended_topic) {
+        change_class(
+            previously_extended_topic,
+            "extended",
+            "previously_extended",
+        );
+    }
+
+    // Preserve the popup menu's height so there's no vertical jump
+    // This only concerns our small menus "help" and "user"
+    const popup_menu: HTMLElement = main_menu.closest(".main_menu_popup")!;
+    popup_menu.style.minHeight = `${popup_menu.clientHeight}px`;
+
     remove_class(current_topic, "extendable");
     add_class(current_topic, "extended");
-    add_class(current_topic!.closest(".main_menu"), "extended_topic");
-    resize_mega_menu_popup(current_topic!.closest(".main_menu_popup")!);
+    add_class(main_menu, "extended_topic");
+    resize_mega_menu_popup(popup_menu);
 }
 
-export function mega_menu_show_all_topics(current_topic_id: string) {
+export function mega_menu_collapse_topic(current_topic_id: string) {
     const current_topic = document.getElementById(current_topic_id);
+    const main_menu: HTMLElement = current_topic!.closest(".main_menu")!;
+
     remove_class(current_topic, "extended");
-    remove_class(current_topic!.closest(".main_menu"), "extended_topic");
-    mega_menu_hide_entries(current_topic!.closest(".main_menu")!.id);
     current_topic?.getElementsByTagName("ul")[0].removeAttribute("style");
-    resize_mega_menu_popup(current_topic!.closest(".main_menu_popup")!);
+
+    // See comment in mega_menu_show_all_items
+    const previously_extended_topic = main_menu.getElementsByClassName(
+        "topic previously_extended",
+    )[0] as HTMLElement;
+    if (previously_extended_topic) {
+        change_class(
+            previously_extended_topic,
+            "previously_extended",
+            "extended",
+        );
+        return;
+    }
+
+    const popup_menu: HTMLElement = main_menu.closest(".main_menu_popup")!;
+    popup_menu.style.minHeight = "";
+
+    remove_class(main_menu, "extended_topic");
+    mega_menu_hide_entries(main_menu.id);
+    resize_mega_menu_popup(popup_menu);
+}
+
+export function mega_menu_reset_default_expansion(main_menu_name: string) {
+    const main_menu: HTMLElement | null = document.getElementById(
+        "main_menu_" + main_menu_name,
+    );
+    if (main_menu === null) {
+        return;
+    }
+
+    const extended_topics = main_menu.querySelectorAll(
+        ".topic.extended, .topic.previously_extended",
+    ) as NodeListOf<HTMLElement>;
+    if (extended_topics.length === 0) {
+        return;
+    }
+
+    for (const topic of extended_topics) {
+        remove_class(topic, "extended");
+        topic.getElementsByTagName("ul")[0].removeAttribute("style");
+    }
+
+    remove_class(main_menu, "extended_topic");
+    mega_menu_hide_entries(main_menu.id);
+    resize_mega_menu_popup(main_menu.closest(".popup_menu_handler")!);
 }
 
 export function mega_menu_hide_entries(menu_id: string) {
