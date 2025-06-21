@@ -19,6 +19,7 @@ from cmk.utils import man_pages
 from cmk.utils.rulesets.definition import RuleGroup
 
 from cmk.gui.breadcrumb import Breadcrumb, BreadcrumbItem
+from cmk.gui.config import active_config
 from cmk.gui.exceptions import MKUserError
 from cmk.gui.htmllib.generator import HTMLWriter
 from cmk.gui.htmllib.html import html
@@ -55,6 +56,7 @@ class CatalogEntry(TypedDict):
     title: str
 
 
+# NOTE: We can't use the '|' operator because of the recursion.
 CatalogTree = dict[str, Union["CatalogTree", Sequence[CatalogEntry]]]
 
 
@@ -510,7 +512,7 @@ class ModeCheckManPage(WatoMode):
         self._manpage = man_pages.parse_man_page(self._check_plugin_name, man_page_path)
         self._check_default_parameters: object = None
 
-        checks = get_check_information().plugin_infos
+        checks = get_check_information(debug=active_config.debug).plugin_infos
         if (check_info := checks.get(self._check_plugin_name)) is not None:
             self._check_type = "check_mk"
             self._service_description = check_info["service_description"]

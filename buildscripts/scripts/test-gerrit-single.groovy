@@ -10,6 +10,7 @@ def main() {
         "CIPARAM_ENV_VAR_LIST_STR",
         "CIPARAM_SEC_VAR_LIST_STR",
         "CIPARAM_GIT_FETCH_TAGS",
+        "CIPARAM_GIT_FETCH_NOTES",
         "CIPARAM_COMMAND",
         "CIPARAM_RESULT_CHECK_FILE_PATTERN",
         "CIPARAM_BAZEL_LOCKS_AMOUNT",
@@ -24,7 +25,7 @@ def main() {
     def env_var_list = [];
     def sec_var_list = [];
     def credentials = [];
-    def bazel_locks_amount = params.BAZEL_LOCKS_AMOUNT ? params.BAZEL_LOCKS_AMOUNT.toInteger() : -1;
+    def bazel_locks_amount = params.CIPARAM_BAZEL_LOCKS_AMOUNT ? params.CIPARAM_BAZEL_LOCKS_AMOUNT.toInteger() : -1;
 
     if (params.CIPARAM_ENV_VAR_LIST_STR) {
         env_var_list = params.CIPARAM_ENV_VAR_LIST_STR.split("#").collect { "${it}".replace("JOB_SPECIFIC_SPACE_PLACEHOLDER", "${checkout_dir}") };
@@ -53,6 +54,37 @@ def main() {
         |result_dir.........................|${result_dir}|
         |===================================================
         """.stripMargin());
+
+    smart_stage(
+        name: "Fetch git notes",
+        condition: params.CIPARAM_GIT_FETCH_NOTES,
+    ) {
+        dir("${checkout_dir}") {
+            withCredentials([
+                sshUserPrivateKey(
+                    credentialsId: "jenkins-gerrit-fips-compliant-ssh-key",
+                    keyFileVariable: 'KEYFILE')]
+            ) {
+                withEnv(["GIT_SSH_COMMAND=ssh -o 'StrictHostKeyChecking no' -i ${KEYFILE} -l jenkins"]) {
+                    // Since checkmk_ci:df2be57e we don't have the notes available anymore in the checkout
+                    // however the werk commands tests heavily rely on them, so fetch them here.
+                    // The order of the operations is important, because we rely on FETCH_HEAD
+                    // being the checked out revision.
+                    // Fetching with --shallow-since requires an explicit git commit hash to
+                    // work properly.
+                    // We use the same commit limitation as the werk commands uses in stages.yml.
+                    sh("""
+                        git fetch \
+                            --no-tags \
+                            --shallow-since=\$(date --date='4 weeks ago' --iso=seconds) \
+                            origin \
+                            \$(cat .git/FETCH_HEAD | cut -f 1)
+                        git fetch origin 'refs/notes/*:refs/notes/*'
+                    """)
+                }
+            }
+        }
+    }
 
     smart_stage(
         name: "Fetch git tags",
@@ -84,9 +116,6 @@ def main() {
 
     stage(params.CIPARAM_NAME) {
         dir("${checkout_dir}") {
-            sh(script: "figlet -w 150 '${params.CIPARAM_NAME}'", returnStatus: true);
-            println("Execute: ${extended_cmd} in ${params.CIPARAM_DIR}");
-
             inside_container(privileged: true, set_docker_group_id: true) {
                 withCredentials(credentials) {
                     withEnv(env_var_list) {

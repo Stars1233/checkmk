@@ -11,23 +11,23 @@ from abc import ABC, abstractmethod
 from ast import literal_eval
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, astuple, dataclass, field
-from typing import Any, Literal, TypedDict, TypeVar
+from enum import StrEnum
+from typing import Any, Literal, Self, TypedDict, TypeVar
 
 from cmk.ccc import version as cmk_version
+from cmk.ccc.hostaddress import HostAddress, HostName
 from cmk.ccc.plugin_registry import Registry
 
 from cmk.utils.agentdatatype import AgentRawData
 from cmk.utils.check_utils import ParametersTypeAlias
 from cmk.utils.config_warnings import ConfigurationWarnings
-from cmk.utils.hostaddress import HostAddress, HostName
 from cmk.utils.ip_lookup import IPStackConfig
 from cmk.utils.labels import HostLabel, HostLabelValueDict, Labels, LabelSources
 from cmk.utils.notify_types import NotifyAnalysisInfo, NotifyBulks
 from cmk.utils.rulesets.ruleset_matcher import RulesetName
 from cmk.utils.servicename import Item, ServiceName
 
-from cmk.checkengine.discovery import CheckPreviewEntry
-from cmk.checkengine.discovery import DiscoveryResult as SingleHostDiscoveryResult
+from cmk.checkengine.discovery import CheckPreviewEntry, DiscoveryReport, TransitionCounter
 from cmk.checkengine.legacy import LegacyCheckParameters
 from cmk.checkengine.parameters import TimespecificParameters
 from cmk.checkengine.plugins import AutocheckEntry
@@ -73,21 +73,60 @@ class ABCAutomationResult(ABC):
         return SerializedResult(repr(astuple(self)))
 
 
+def _serialize_discovery_report(
+    report: DiscoveryReport, for_cmk_version: cmk_version.Version
+) -> Mapping[str, object]:
+    if for_cmk_version >= cmk_version.Version.from_str("2.5.0b1"):
+        return asdict(report)
+
+    return {
+        "self_new": report.services.new,
+        "self_changed": report.services.changed,
+        "self_removed": report.services.removed,
+        "self_kept": report.services.kept,
+        "self_new_host_labels": report.host_labels.new,
+        "self_total_host_labels": report.host_labels.total,
+        "clustered_new": report.clustered_new,
+        "clustered_old": report.clustered_old,
+        "clustered_vanished": report.clustered_vanished,
+        "clustered_ignored": report.clustered_ignored,
+        "error_text": report.error_text,
+        "diff_text": report.diff_text,
+    }
+
+
+def _deserialize_discovery_report(
+    serialized: Mapping[str, Any],
+) -> DiscoveryReport:
+    return DiscoveryReport(
+        services=TransitionCounter(**serialized["services"]),
+        host_labels=TransitionCounter(**serialized["host_labels"]),
+        clustered_new=serialized["clustered_new"],
+        clustered_old=serialized["clustered_old"],
+        clustered_vanished=serialized["clustered_vanished"],
+        clustered_ignored=serialized["clustered_ignored"],
+        error_text=serialized["error_text"],
+        diff_text=serialized["diff_text"],
+    )
+
+
 @dataclass
 class ServiceDiscoveryResult(ABCAutomationResult):
-    hosts: Mapping[HostName, SingleHostDiscoveryResult]
+    hosts: Mapping[HostName, DiscoveryReport]
 
-    def _to_dict(self) -> Mapping[HostName, Mapping[str, Any]]:
-        return {k: asdict(v) for k, v in self.hosts.items()}
+    def _to_dict(
+        self, for_cmk_version: cmk_version.Version
+    ) -> Mapping[HostName, Mapping[str, Any]]:
+        return {k: _serialize_discovery_report(v, for_cmk_version) for k, v in self.hosts.items()}
 
     @staticmethod
     def _from_dict(
         serialized: Mapping[HostName, Mapping[str, Any]],
-    ) -> Mapping[HostName, SingleHostDiscoveryResult]:
-        return {k: SingleHostDiscoveryResult(**v) for k, v in serialized.items()}
+    ) -> Mapping[HostName, DiscoveryReport]:
+        return {k: _deserialize_discovery_report(v) for k, v in serialized.items()}
 
     def serialize(self, for_cmk_version: cmk_version.Version) -> SerializedResult:
-        return SerializedResult(repr(self._to_dict()))
+        return SerializedResult(repr(self._to_dict(for_cmk_version)))
 
     @classmethod
     def deserialize(cls, serialized_result: SerializedResult) -> ServiceDiscoveryResult:
@@ -99,16 +138,6 @@ class ServiceDiscoveryResult(ABCAutomationResult):
 
 
 result_type_registry.register(ServiceDiscoveryResult)
-
-
-# Should be droped in 2.3
-class DiscoveryPre22NameResult(ServiceDiscoveryResult):
-    @staticmethod
-    def automation_call() -> str:
-        return "inventory"
-
-
-result_type_registry.register(DiscoveryPre22NameResult)
 
 
 @dataclass
@@ -197,23 +226,27 @@ result_type_registry.register(SpecialAgentDiscoveryPreviewResult)
 
 @dataclass
 class AutodiscoveryResult(ABCAutomationResult):
-    hosts: Mapping[HostName, SingleHostDiscoveryResult]
+    hosts: Mapping[HostName, DiscoveryReport]
     changes_activated: bool
 
-    def _hosts_to_dict(self) -> Mapping[HostName, Mapping[str, Any]]:
-        return {k: asdict(v) for k, v in self.hosts.items()}
+    def _hosts_to_dict(
+        self, for_cmk_version: cmk_version.Version
+    ) -> Mapping[HostName, Mapping[str, Any]]:
+        return {k: _serialize_discovery_report(v, for_cmk_version) for k, v in self.hosts.items()}
 
     @staticmethod
     def _hosts_from_dict(
         serialized: Mapping[HostName, Mapping[str, Any]],
-    ) -> Mapping[HostName, SingleHostDiscoveryResult]:
-        return {k: SingleHostDiscoveryResult(**v) for k, v in serialized.items()}
+    ) -> Mapping[HostName, DiscoveryReport]:
+        return {k: _deserialize_discovery_report(v) for k, v in serialized.items()}
 
     def serialize(self, for_cmk_version: cmk_version.Version) -> SerializedResult:
-        return SerializedResult(repr((self._hosts_to_dict(), self.changes_activated)))
+        return SerializedResult(
+            repr((self._hosts_to_dict(for_cmk_version), self.changes_activated))
+        )
 
     @classmethod
-    def deserialize(cls, serialized_result: SerializedResult) -> AutodiscoveryResult:
+    def deserialize(cls, serialized_result: SerializedResult) -> Self:
         hosts, changes_activated = literal_eval(serialized_result)
         return cls(cls._hosts_from_dict(hosts), changes_activated)
 
@@ -391,6 +424,18 @@ class AnalyzeServiceRuleMatchesResult(ABCAutomationResult):
 
 
 result_type_registry.register(AnalyzeServiceRuleMatchesResult)
+
+
+@dataclass
+class AnalyzeHostRuleEffectivenessResult(ABCAutomationResult):
+    results: dict[str, bool]
+
+    @staticmethod
+    def automation_call() -> str:
+        return "analyze-host-rule-effectiveness"
+
+
+result_type_registry.register(AnalyzeHostRuleEffectivenessResult)
 
 
 @dataclass
@@ -667,6 +712,51 @@ result_type_registry.register(DiagSpecialAgentResult)
 
 
 @dataclass
+class DiagCmkAgentInput:
+    host_name: HostName
+    ip_address: HostAddress
+    address_family: Literal["no-ip", "ip-v4-only", "ip-v6-only", "ip-v4v6"]
+    agent_port: int
+    timeout: int
+
+    @classmethod
+    def deserialize(cls, serialized_input: str) -> DiagCmkAgentInput:
+        raw = json.loads(serialized_input)
+        deserialized = {
+            "host_name": HostName(raw["host_name"]),
+            "ip_address": HostAddress(raw["ip_address"]),
+            "address_family": raw["address_family"],
+            "agent_port": raw["agent_port"],
+            "timeout": raw["timeout"],
+        }
+        return cls(**deserialized)
+
+    def serialize(self, _for_cmk_version: cmk_version.Version) -> str:
+        return json.dumps(
+            {
+                "host_name": self.host_name,
+                "ip_address": self.ip_address,
+                "address_family": self.address_family,
+                "agent_port": self.agent_port,
+                "timeout": self.timeout,
+            }
+        )
+
+
+@dataclass
+class DiagCmkAgentResult(ABCAutomationResult):
+    return_code: int
+    response: str
+
+    @staticmethod
+    def automation_call() -> str:
+        return "diag-cmk-agent"
+
+
+result_type_registry.register(DiagCmkAgentResult)
+
+
+@dataclass
 class DiagHostResult(ABCAutomationResult):
     return_code: int
     response: str
@@ -677,6 +767,48 @@ class DiagHostResult(ABCAutomationResult):
 
 
 result_type_registry.register(DiagHostResult)
+
+
+@dataclass
+class PingHostResult(ABCAutomationResult):
+    return_code: int
+    response: str
+
+    @staticmethod
+    def automation_call() -> str:
+        return "ping-host"
+
+
+result_type_registry.register(PingHostResult)
+
+
+class PingHostCmd(StrEnum):
+    PING = "ping"
+    PING6 = "ping6"
+    PING4 = "ping4"
+
+
+@dataclass
+class PingHostInput:
+    ip_or_dns_name: str
+    base_cmd: PingHostCmd = PingHostCmd.PING
+
+    @classmethod
+    def deserialize(cls, serialized_input: str) -> PingHostInput:
+        raw = json.loads(serialized_input)
+        deserialized = {
+            "ip_or_dns_name": raw["ip_or_dns_name"],
+            "base_cmd": PingHostCmd(raw.get("base_cmd", PingHostCmd.PING)),
+        }
+        return cls(**deserialized)
+
+    def serialize(self, _for_cmk_version: cmk_version.Version) -> str:
+        return json.dumps(
+            {
+                "ip_or_dns_name": self.ip_or_dns_name,
+                "base_cmd": self.base_cmd.value,
+            }
+        )
 
 
 @dataclass

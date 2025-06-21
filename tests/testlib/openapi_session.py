@@ -112,6 +112,7 @@ class CMKOpenApiSession(requests.Session):
 
         self.changes = ChangesAPI(self)
         self.users = UsersAPI(self)
+        self.user_role = UserRoleAPI(self)
         self.folders = FoldersAPI(self)
         self.hosts = HostsAPI(self)
         self.host_groups = HostGroupsAPI(self)
@@ -457,6 +458,15 @@ class UsersAPI(BaseAPI):
             raise UnexpectedResponse.from_response(response)
 
 
+class UserRoleAPI(BaseAPI):
+    """Wrap REST-API interface to interact with `user role`."""
+
+    def delete(self, role_id: str) -> None:
+        response = self.session.delete(f"/objects/user_role/{role_id}")
+        if response.status_code != 204:
+            raise UnexpectedResponse.from_response(response)
+
+
 class FoldersAPI(BaseAPI):
     def create(
         self,
@@ -748,6 +758,11 @@ class ServiceDiscoveryAPI(BaseAPI):
 
     def get_discovery_status(self, hostname: str) -> str:
         job_status_response = self.get_discovery_job_status(hostname)
+
+        if job_status_response["extensions"]["state"] == "exception":
+            progress_log = job_status_response["extensions"]["logs"]["progress"]
+            raise RuntimeError(f"Job failed with the following output:\n{'\n'.join(progress_log)}")
+
         status: str = job_status_response["extensions"]["state"]
         return status
 
@@ -764,10 +779,11 @@ class ServiceDiscoveryAPI(BaseAPI):
     ) -> None:
         with self.session.wait_for_completion(timeout, "get", "discover_services"):
             self.run_discovery(hostname, mode)
-            discovery_status = self.get_discovery_status(hostname)
-            assert discovery_status == "finished", (
-                f"Unexpected service discovery status: {discovery_status}"
-            )
+
+        discovery_status = self.get_discovery_status(hostname)
+        assert discovery_status == "finished", (
+            f"Unexpected service discovery status: {discovery_status}"
+        )
 
     def get_discovery_result(self, hostname: str) -> Mapping[str, object]:
         response = self.session.get(f"/objects/service_discovery/{hostname}")
@@ -880,6 +896,9 @@ class RulesAPI(BaseAPI):
         value: list[dict[str, Any]] = response.json()["value"]
         return value
 
+    def get_all_names(self, ruleset_name: str) -> list[str]:
+        return [_["id"] for _ in self.get_all(ruleset_name)]
+
 
 class RulesetsAPI(BaseAPI):
     def get_all(self) -> list[dict[str, Any]]:
@@ -890,6 +909,9 @@ class RulesetsAPI(BaseAPI):
             raise UnexpectedResponse.from_response(response)
         value: list[dict[str, Any]] = response.json()["value"]
         return value
+
+    def get_all_names(self) -> list[str]:
+        return [_["id"] for _ in self.get_all()]
 
 
 class BrokerConnectionsAPI(BaseAPI):

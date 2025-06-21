@@ -10,7 +10,7 @@ from collections.abc import Sequence
 from typing import Any, cast
 from urllib.parse import unquote
 
-from cmk.utils.user import UserId
+from cmk.ccc.user import UserId
 
 from cmk.gui import forms
 from cmk.gui.default_name import unique_default_name_suggestion
@@ -81,7 +81,7 @@ def page_edit_visual(  # type: ignore[no-untyped-def]
     visual: dict[str, Any] = {
         "link_from": {},
         "context": {},
-        "megamenu_search_terms": [],
+        "main_menu_search_terms": [],
     }
 
     mode = request.get_str_input_mandatory("mode", "edit")
@@ -223,10 +223,16 @@ def page_edit_visual(  # type: ignore[no-untyped-def]
         mode,
         what,
     )
-    context_specs = get_context_specs(
-        visual["single_infos"],
-        info_handler(visual) if info_handler else list(visual_info_registry.keys()),
-    )
+    if mode == "clone":
+        context_specs = get_context_specs(
+            [],
+            info_handler(visual) if info_handler else list(visual_info_registry.keys()),
+        )
+    else:
+        context_specs = get_context_specs(
+            visual["single_infos"],
+            info_handler(visual) if info_handler else list(visual_info_registry.keys()),
+        )
 
     # handle case of save or try or press on search button
     save_and_go = None
@@ -247,7 +253,7 @@ def page_edit_visual(  # type: ignore[no-untyped-def]
             # TODO: Currently not editable, but keep settings
             visual = {
                 "link_from": old_visual["link_from"],
-                "megamenu_search_terms": old_visual["megamenu_search_terms"],
+                "main_menu_search_terms": old_visual["main_menu_search_terms"],
             }
 
             # Important for saving

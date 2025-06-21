@@ -19,8 +19,7 @@ from typing import Any
 
 from cmk.ccc import store
 from cmk.ccc.exceptions import MKGeneralException
-
-from cmk.utils.hostaddress import HostName
+from cmk.ccc.hostaddress import HostName
 
 import cmk.gui.pages
 from cmk.gui.breadcrumb import Breadcrumb
@@ -147,7 +146,7 @@ class ModeBulkImport(WatoMode):
             csv_reader = self._open_csv_file()
 
             if request.var("_do_import"):
-                return self._import(csv_reader)
+                return self._import(csv_reader, debug=active_config.debug)
         return None
 
     def _file_path(self, file_id: str | None = None) -> Path:
@@ -161,7 +160,7 @@ class ModeBulkImport(WatoMode):
     # for this request. It needs to be available during several potential "confirm"
     # steps and then through the upload step.
     def _upload_csv_file(self) -> None:
-        store.makedirs(self._upload_tmp_path)
+        self._upload_tmp_path.mkdir(mode=0o770, exist_ok=True, parents=True)
 
         self._cleanup_old_files()
 
@@ -228,7 +227,7 @@ class ModeBulkImport(WatoMode):
 
         return csv.reader(csv_file, csv_dialect)
 
-    def _import(self, csv_reader: CSVReader) -> ActionResult:
+    def _import(self, csv_reader: CSVReader, *, debug: bool) -> ActionResult:
         def _emit_raw_rows(_reader: CSVReader) -> typing.Generator[dict, None, None]:
             if self._has_title_line:
                 try:
@@ -346,7 +345,7 @@ class ModeBulkImport(WatoMode):
             batch_size=100,
         )
 
-        bakery.try_bake_agents_for_hosts(imported_hosts)
+        bakery.try_bake_agents_for_hosts(imported_hosts, debug=debug)
 
         self._delete_csv_file()
 
@@ -404,7 +403,7 @@ class ModeBulkImport(WatoMode):
                 # NOTE
                 # Folder.create_hosts will either import all of them, or no host at all. The
                 # caught exceptions below will only trigger during the verification phase.
-                folder.create_hosts(batch)
+                folder.create_hosts(batch, pprint_value=active_config.wato_pprint_config)
                 index += len(batch)
                 # First column is host_name. Add all of them.
                 imported_hosts.extend(map(operator.itemgetter(0), batch))
@@ -412,7 +411,7 @@ class ModeBulkImport(WatoMode):
                 # We fall back to individual imports to determine the precise location of the error
                 for entry in batch:
                     try:
-                        folder.create_hosts([entry])
+                        folder.create_hosts([entry], pprint_value=active_config.wato_pprint_config)
                         index += 1
                         imported_hosts.append(entry[0])
                     except (MKAuthException, MKUserError, MKGeneralException) as exc:

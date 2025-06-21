@@ -18,10 +18,10 @@ from cmk.gui.config import active_config
 from cmk.gui.cron import CronJob, CronJobRegistry
 from cmk.gui.http import request
 from cmk.gui.log import logger
-from cmk.gui.site_config import get_site_config, is_wato_slave_site, wato_slave_sites
+from cmk.gui.site_config import is_wato_slave_site, wato_slave_sites
 from cmk.gui.watolib.audit_log import AuditLogStore
 from cmk.gui.watolib.automation_commands import AutomationCommand, AutomationCommandRegistry
-from cmk.gui.watolib.automations import do_remote_automation
+from cmk.gui.watolib.automations import do_remote_automation, RemoteAutomationConfig
 from cmk.gui.watolib.paths import wato_var_dir
 from cmk.gui.watolib.site_changes import ChangeSpec, SiteChanges
 
@@ -139,7 +139,7 @@ class SyncRemoteSitesJob:
         """Some basic preliminary check to decide quickly whether to start the job"""
         return bool(wato_slave_sites())
 
-    def do_execute(self) -> None:
+    def do_execute(self, *, debug: bool) -> None:
         with store.locked(self._last_audit_log_timestamps_path):
             prev_last_timestamps = self._last_audit_log_timestamps_store.load()
 
@@ -148,7 +148,7 @@ class SyncRemoteSitesJob:
             last_audit_logs,
             last_site_changes,
             last_timestamps,
-        ) = self._get_remote_changes(prev_last_timestamps)
+        ) = self._get_remote_changes(prev_last_timestamps, debug=debug)
 
         if failed_sites:
             logger.error("Failed to get changes from sites: %s.", ", ".join(sorted(failed_sites)))
@@ -164,7 +164,7 @@ class SyncRemoteSitesJob:
             logger.debug(
                 "Removing site changes from sites: %s.", ", ".join(site_changes_synced_sites)
             )
-            self._clear_site_changes_from_remote_sites(last_site_changes)
+            self._clear_site_changes_from_remote_sites(last_site_changes, debug=debug)
 
         with store.locked(self._last_audit_log_timestamps_path):
             self._last_audit_log_timestamps_store.write(last_timestamps)
@@ -178,8 +178,7 @@ class SyncRemoteSitesJob:
         )
 
     def _get_remote_changes(
-        self,
-        prev_last_timestamps: dict[SiteId, int],
+        self, prev_last_timestamps: dict[SiteId, int], *, debug: bool
     ) -> tuple[
         set[SiteId],
         Mapping[SiteId, AuditLogs],
@@ -199,7 +198,7 @@ class SyncRemoteSitesJob:
             logger.debug("Getting site changes from site %s", site_id)
 
             try:
-                sync_result = self._sync_remote_site(site_id, since)
+                sync_result = self._sync_remote_site(site_id, since, debug=debug)
             except Exception as e:
                 failed_sites.add(site_id)
                 logger.error(
@@ -231,14 +230,15 @@ class SyncRemoteSitesJob:
         return failed_sites, last_audit_logs, last_site_changes, last_timestamps
 
     def _sync_remote_site(
-        self, site_id: SiteId, last_audit_log_timestamp: int
+        self, site_id: SiteId, last_audit_log_timestamp: int, *, debug: bool
     ) -> SyncRemoteSitesResult:
         return SyncRemoteSitesResult.from_json(
             str(
                 do_remote_automation(
-                    get_site_config(active_config, site_id),
+                    RemoteAutomationConfig.from_site_config(active_config.sites[site_id]),
                     "sync-remote-site",
                     [("last_audit_log_timestamp", str(last_audit_log_timestamp))],
+                    debug=debug,
                 )
             )
         )
@@ -268,13 +268,16 @@ class SyncRemoteSitesJob:
         for site_id, num_entries in counter.items():
             logger.debug("Wrote %s %s entries from site %s", num_entries, change_name, site_id)
 
-    def _clear_site_changes_from_remote_sites(self, last_site_changes: LastSiteChanges) -> None:
+    def _clear_site_changes_from_remote_sites(
+        self, last_site_changes: LastSiteChanges, *, debug: bool
+    ) -> None:
         for site_id, site_changes in last_site_changes.items():
             if site_changes:
                 do_remote_automation(
-                    get_site_config(active_config, site_id),
+                    RemoteAutomationConfig.from_site_config(active_config.sites[site_id]),
                     "clear-site-changes",
                     [("last_change_id", str(site_changes[-1]["id"]))],
+                    debug=debug,
                 )
 
     def _get_result_message(
@@ -309,4 +312,4 @@ def _execute_sync_remote_sites() -> None:
         logger.debug("Job shall not start")
         return
 
-    SyncRemoteSitesJob().do_execute()
+    SyncRemoteSitesJob().do_execute(debug=active_config.debug)

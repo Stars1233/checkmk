@@ -6,8 +6,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-from pathlib import Path
-from typing import TypedDict
+from typing import override, TypedDict
 
 from livestatus import BrokerConnection, BrokerConnections, BrokerSite, ConnectionId
 
@@ -16,19 +15,19 @@ from cmk.ccc.site import SiteId
 
 from cmk.utils import paths
 
-from cmk.gui.config import active_config
 from cmk.gui.watolib.simple_config_file import ConfigFileRegistry, WatoSingleConfigFile
 
 
 class BrokerConnectionsConfigFile(WatoSingleConfigFile[BrokerConnections]):
     def __init__(self) -> None:
         super().__init__(
-            config_file_path=Path(paths.default_config_dir + "/multisite.d/broker_connections.mk"),
+            config_file_path=paths.default_config_dir / "multisite.d/broker_connections.mk",
             config_variable="broker_connections",
             spec_class=BrokerConnections,
         )
 
-    def _load_file(self, lock: bool) -> BrokerConnections:
+    @override
+    def _load_file(self, *, lock: bool) -> BrokerConnections:
         if not self._config_file_path.exists():
             return BrokerConnections({})
 
@@ -36,7 +35,7 @@ class BrokerConnectionsConfigFile(WatoSingleConfigFile[BrokerConnections]):
             connections_from_file := store.load_from_mk_file(
                 self._config_file_path,
                 key=self._config_variable,
-                default={},
+                default=dict[str, dict[str, dict[str, SiteId]]](),
                 lock=lock,
             )
         ) is None:
@@ -52,14 +51,15 @@ class BrokerConnectionsConfigFile(WatoSingleConfigFile[BrokerConnections]):
             }
         )
 
-    def save(self, cfg: BrokerConnections) -> None:
+    @override
+    def save(self, cfg: BrokerConnections, pprint_value: bool) -> None:
         connections_dict = {k: asdict(v) for k, v in cfg.items()}
         self._config_file_path.parent.mkdir(mode=0o770, exist_ok=True, parents=True)
         store.save_to_mk_file(
-            str(self._config_file_path),
-            self._config_variable,
-            connections_dict,
-            pprint_value=active_config.wato_pprint_config,
+            self._config_file_path,
+            key=self._config_variable,
+            value=connections_dict,
+            pprint_value=pprint_value,
         )
 
 

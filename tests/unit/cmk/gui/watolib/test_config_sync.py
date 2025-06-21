@@ -19,9 +19,9 @@ from livestatus import NetworkSocketDetails, SiteConfiguration, TLSParams
 
 import cmk.ccc.version as cmk_version
 from cmk.ccc.site import SiteId
+from cmk.ccc.user import UserId
 
 import cmk.utils.paths
-from cmk.utils.user import UserId
 
 import cmk.gui.mkeventd.wato
 from cmk.gui.config import active_config
@@ -98,22 +98,22 @@ def _create_sync_snapshot(
 @contextmanager
 def _create_test_sync_config(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     """Create some config files to be synchronized"""
-    conf_dir = Path(cmk.utils.paths.check_mk_config_dir, "wato")
+    conf_dir = cmk.utils.paths.check_mk_config_dir / "wato"
     conf_dir.mkdir(parents=True, exist_ok=True)
     with conf_dir.joinpath("hosts.mk").open("w", encoding="utf-8") as f:
         f.write("all_hosts = []\n")
 
     (cmk.utils.paths.omd_root / "local").mkdir(parents=True, exist_ok=True)
-    Path(cmk.utils.paths.var_dir, "packages").mkdir(parents=True, exist_ok=True)
+    (cmk.utils.paths.var_dir / "packages").mkdir(parents=True, exist_ok=True)
     frozen_aggregations_dir.mkdir(parents=True, exist_ok=True)
     topology_dir.mkdir(parents=True, exist_ok=True)
 
-    gui_conf_dir = Path(cmk.utils.paths.default_config_dir) / "multisite.d" / "wato"
+    gui_conf_dir = cmk.utils.paths.default_config_dir / "multisite.d/wato"
     gui_conf_dir.mkdir(parents=True, exist_ok=True)
     with gui_conf_dir.joinpath("global.mk").open("w", encoding="utf-8") as f:
         f.write("# 123\n")
 
-    stored_passwords_dir = Path(cmk.utils.paths.var_dir)
+    stored_passwords_dir = cmk.utils.paths.var_dir
     with stored_passwords_dir.joinpath("stored_passwords").open("w", encoding="utf-8") as f:
         f.write("DUMMY_PWD_ENTRY \n")
 
@@ -147,61 +147,67 @@ def _create_test_sync_config(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
 def _get_site_configuration(remote_site: SiteId) -> SiteConfiguration:
     # TODO: Make this better testable: Extract site snapshot setting calculation
     if remote_site == SiteId("unit_remote_1"):
-        return {
-            "customer": "provider",
-            "url_prefix": "/unit_remote_1/",
-            "status_host": None,
-            "user_sync": None,
-            "socket": (
-                "tcp",
-                NetworkSocketDetails(
-                    address=("127.0.0.1", 6790),
-                    tls=("encrypted", TLSParams(verify=True)),
+        return SiteConfiguration(
+            {
+                "id": SiteId("unit_remote_1"),
+                "customer": "provider",
+                "url_prefix": "/unit_remote_1/",
+                "status_host": None,
+                "user_sync": None,
+                "socket": (
+                    "tcp",
+                    NetworkSocketDetails(
+                        address=("127.0.0.1", 6790),
+                        tls=("encrypted", TLSParams(verify=True)),
+                    ),
                 ),
-            ),
-            "replication": "slave",
-            "user_login": True,
-            "insecure": False,
-            "disable_wato": True,
-            "disabled": False,
-            "alias": "unit_remote_1",
-            "secret": "watosecret",
-            "replicate_mkps": False,
-            "proxy": {"params": None},
-            "timeout": 2,
-            "persist": False,
-            "replicate_ec": True,
-            "multisiteurl": "http://localhost/unit_remote_1/check_mk/",
-            "message_broker_port": 5672,
-        }
+                "replication": "slave",
+                "user_login": True,
+                "insecure": False,
+                "disable_wato": True,
+                "disabled": False,
+                "alias": "unit_remote_1",
+                "secret": "watosecret",
+                "replicate_mkps": False,
+                "proxy": {"params": None},
+                "timeout": 2,
+                "persist": False,
+                "replicate_ec": True,
+                "multisiteurl": "http://localhost/unit_remote_1/check_mk/",
+                "message_broker_port": 5672,
+            }
+        )
     if remote_site == SiteId("unit_remote_2"):
-        return {
-            "customer": "provider",
-            "url_prefix": "/unit_remote_1/",
-            "status_host": None,
-            "user_sync": None,
-            "socket": (
-                "tcp",
-                NetworkSocketDetails(
-                    address=("127.0.0.1", 6790),
-                    tls=("encrypted", TLSParams(verify=True)),
+        return SiteConfiguration(
+            {
+                "id": SiteId("unit_remote_2"),
+                "customer": "provider",
+                "url_prefix": "/unit_remote_1/",
+                "status_host": None,
+                "user_sync": None,
+                "socket": (
+                    "tcp",
+                    NetworkSocketDetails(
+                        address=("127.0.0.1", 6790),
+                        tls=("encrypted", TLSParams(verify=True)),
+                    ),
                 ),
-            ),
-            "replication": "slave",
-            "user_login": True,
-            "insecure": False,
-            "disable_wato": True,
-            "disabled": False,
-            "alias": "unit_remote_1",
-            "secret": "watosecret",
-            "replicate_mkps": True,
-            "proxy": {"params": None},
-            "timeout": 2,
-            "persist": False,
-            "replicate_ec": True,
-            "multisiteurl": "http://localhost/unit_remote_1/check_mk/",
-            "message_broker_port": 5672,
-        }
+                "replication": "slave",
+                "user_login": True,
+                "insecure": False,
+                "disable_wato": True,
+                "disabled": False,
+                "alias": "unit_remote_1",
+                "secret": "watosecret",
+                "replicate_mkps": True,
+                "proxy": {"params": None},
+                "timeout": 2,
+                "persist": False,
+                "replicate_ec": True,
+                "multisiteurl": "http://localhost/unit_remote_1/check_mk/",
+                "message_broker_port": 5672,
+            }
+        )
     raise ValueError(remote_site)
 
 
@@ -214,20 +220,34 @@ def _get_activation_manager(
             active_config,
             "sites",
             {
-                "unit": {
-                    "alias": "Der Master",
-                    "disable_wato": True,
-                    "disabled": False,
-                    "insecure": False,
-                    "multisiteurl": "",
-                    "message_broker_port": 5672,
-                    "persist": False,
-                    "replicate_ec": False,
-                    "replication": "",
-                    "timeout": 10,
-                    "user_login": True,
-                    "proxy": None,
-                },
+                SiteId("unit"): SiteConfiguration(
+                    {
+                        "id": SiteId("unit"),
+                        "alias": "Die Zentrale",
+                        "disable_wato": True,
+                        "url_prefix": "/unit/",
+                        "disabled": False,
+                        "insecure": False,
+                        "multisiteurl": "",
+                        "message_broker_port": 5672,
+                        "persist": False,
+                        "replicate_ec": False,
+                        "replicate_mkps": False,
+                        "replication": "",
+                        "status_host": None,
+                        "socket": (
+                            "tcp",
+                            NetworkSocketDetails(
+                                address=("127.0.0.1", 6790),
+                                tls=("encrypted", TLSParams(verify=True)),
+                            ),
+                        ),
+                        "timeout": 10,
+                        "user_login": True,
+                        "proxy": None,
+                        "user_sync": None,
+                    }
+                ),
                 remote_site: _get_site_configuration(remote_site),
             },
         )
@@ -305,6 +325,7 @@ def _get_expected_paths(
         "var/check_mk/web/%s/last_pw_change.mk" % user_id,
         "var/check_mk/web/%s/num_failed_logins.mk" % user_id,
         "var/check_mk/web/%s/serial.mk" % user_id,
+        "var/check_mk/web/%s/start_url.mk" % user_id,
         "var/check_mk/stored_passwords",
         "var/check_mk/frozen_aggregations",
     ]
@@ -357,6 +378,8 @@ def _get_expected_paths(
             "etc/check_mk/mkeventd.d/wato/rules.mk",
             "local",
             "var/check_mk/packages",
+            "var/check_mk/packages_local",
+            "var/check_mk/disabled_packages",
             "var/check_mk/topology",
         ]
 

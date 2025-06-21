@@ -11,6 +11,9 @@ ENV \
     LANG=C.UTF-8 \
     PATH="/opt/bin:${PATH}"
 
+# fix for CMK-23806, url taken from https://launchpad.net/ubuntu/+archivemirrors
+RUN sed -i "s|http://.*.ubuntu.com/ubuntu|http://ftp.uni-stuttgart.de/ubuntu/|g" /etc/apt/sources.list.d/ubuntu.sources
+
 RUN apt-get update
 
 RUN apt-get install -y \
@@ -188,7 +191,7 @@ ENV RUSTUP_HOME=/opt/rust/rustup
 
 COPY ci.bazelrc /etc/
 RUN <<EOF cat >> /etc/ci.bazelrc
-common:ci --@//:filesystem_layout=lsb
+common:ci --@//bazel/cmk/filesystem_layout=lsb
 common:ci --action_env=DISTRO=${DISTRO}
 common:ci --action_env=BRANCH_VERSION=${BRANCH_VERSION}
 common:ci --action_env=RUSTUP_HOME=${RUSTUP_HOME}

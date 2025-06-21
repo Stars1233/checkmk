@@ -14,15 +14,22 @@ from cmk.utils.redis import disable_redis
 from cmk.utils.rulesets.definition import RuleGroup
 
 from cmk.gui import main_modules  # pylint: disable=cmk-module-layer-violation
+from cmk.gui.config import active_config  # pylint: disable=cmk-module-layer-violation
 from cmk.gui.rulespec import register_plugins  # pylint: disable=cmk-module-layer-violation
 from cmk.gui.utils.rule_specs.loader import (  # pylint: disable=cmk-module-layer-violation
     load_discovered_rule_specs,
     RuleSpec,
 )
 from cmk.gui.utils.script_helpers import gui_context  # pylint: disable=cmk-module-layer-violation
+from cmk.gui.watolib.notification_parameter import (  # pylint: disable=cmk-module-layer-violation
+    notification_parameter_registry,
+)
 from cmk.gui.watolib.rulesets import (  # pylint: disable=cmk-module-layer-violation
     AllRulesets,
     RulesetCollection,
+)
+from cmk.gui.watolib.rulespecs import (  # pylint: disable=cmk-module-layer-violation
+    rulespec_registry,
 )
 
 from cmk.discover_plugins import (
@@ -133,7 +140,7 @@ def _discover_load_plugins(modules: set[str]) -> set[str]:
     )
 
     _, loaded = load_discovered_rule_specs(discovered)
-    register_plugins(loaded)
+    register_plugins(rulespec_registry, notification_parameter_registry, loaded)
 
     def _add_name_prefix(plugin: RuleSpec) -> str:
         match plugin:
@@ -190,7 +197,7 @@ def _load_and_transform_rulesets(discovered_names: set[str]) -> None:
         for transformed_rulename, transformed_rule in rulesets.get_rulesets().items():
             all_rulesets.set(transformed_rulename, transformed_rule)
 
-        all_rulesets.save()
+        all_rulesets.save(pprint_value=active_config.wato_pprint_config, debug=active_config.debug)
 
 
 def migrate_extension_rulesets(args: argparse.Namespace) -> int:

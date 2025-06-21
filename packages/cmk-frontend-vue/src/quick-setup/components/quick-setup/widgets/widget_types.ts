@@ -46,6 +46,11 @@ export interface NoteTextWidgetProps {
   text: string
 }
 
+export interface DialogWidgetProps {
+  /** @property {string}  text - Text to be displayed */
+  text: string
+}
+
 export interface TextWidgetProps {
   /** @property {string}  text - Text to be displayed */
   text: string
@@ -80,9 +85,17 @@ export interface ConditionalNotificationStageWidgetProps extends CompositeWidget
   condition: boolean
 }
 
+type ConditionalNotificationDialogWidgetTarget = 'svc_filter' | 'recipient'
+
+export interface ConditionalNotificationDialogWidgetProps
+  extends ConditionalNotificationStageWidgetProps {
+  target: ConditionalNotificationDialogWidgetTarget
+}
+
 type SingleWidgetSpec =
   | TextWidgetProps
   | NoteTextWidgetProps
+  | DialogWidgetProps
   | ListWidgetProps
   | FormSpecWidgetProps
   | FormSpecRecapWidgetProps
@@ -94,6 +107,7 @@ type CompositeWidgetType =
   | 'conditional_notification_host_event_stage_widget'
   | 'conditional_notification_service_event_stage_widget'
   | 'conditional_notification_ec_alert_stage_widget'
+  | 'conditional_notification_dialog_widget'
 
 type SingleComponentSpec = SingleWidgetSpec & { widget_type: SingleWidgetType }
 type CompositeComponentSpec = CompositeWidgetSpec & { widget_type: CompositeWidgetType }

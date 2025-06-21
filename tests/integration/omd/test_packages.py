@@ -112,15 +112,15 @@ MONITORING_PLUGINS: Sequence[Plugin] = (
     CheckmkActiveCheck("check_sftp"),
     CheckmkActiveCheck(
         "check_mail",
-        path="lib/check_mk/plugins/emailchecks/libexec",
+        path="lib/python3/cmk/plugins/emailchecks/libexec",
     ),
     CheckmkActiveCheck(
         "check_mailboxes",
-        path="lib/check_mk/plugins/emailchecks/libexec",
+        path="lib/python3/cmk/plugins/emailchecks/libexec",
     ),
     CheckmkActiveCheck(
         "check_mail_loop",
-        path="lib/check_mk/plugins/emailchecks/libexec",
+        path="lib/python3/cmk/plugins/emailchecks/libexec",
     ),
     CheckmkActiveCheck("check_form_submit"),
     MonitoringPlugin(
@@ -138,7 +138,7 @@ MONITORING_PLUGINS: Sequence[Plugin] = (
     CheckmkActiveCheck("check_traceroute"),
     CheckmkActiveCheck(
         "check_disk_smb",
-        path="lib/check_mk/plugins/smb/libexec",
+        path="lib/python3/cmk/plugins/smb/libexec",
     ),
     CheckmkActiveCheck("check_uniserv"),
     CheckmkActiveCheck("check_bi_aggr"),
@@ -216,3 +216,11 @@ def test_navicli(site: Site) -> None:
     help_text = process.stdout if process.stdout else "<EXPECTED OUTPUT; OBSERVED NO OUTPUT>"
     # TODO: Sync this with a global version for navicli (like we do it for python)
     assert f"Revision {version}" in help_text, f"Expected '{tool}' to have version: {version}!"
+
+
+def test_nrpe(site: Site) -> None:
+    version = "3.2.1"
+    process = site.run([tool := "lib/nagios/plugins/check_nrpe", "-V"], check=False)
+    help_text = process.stdout if process.stdout else "<EXPECTED OUTPUT; OBSERVED NO OUTPUT>"
+    # TODO: Sync this with a global version for navicli (like we do it for python)
+    assert f"Version: {version}" in help_text, f"Expected '{tool}' to have version: {version}!"

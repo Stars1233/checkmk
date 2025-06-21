@@ -156,7 +156,14 @@ class ModeParentScan(WatoMode):
             user.save_file("parentscan", self._settings)
 
             if (
-                result := start_parent_scan(self._get_selected_hosts(), self._job, self._settings)
+                result := start_parent_scan(
+                    self._get_selected_hosts(),
+                    self._job,
+                    self._settings,
+                    site_configs=active_config.sites,
+                    pprint_value=active_config.wato_pprint_config,
+                    debug=active_config.debug,
+                )
             ).is_error():
                 raise result.error
         except Exception as e:

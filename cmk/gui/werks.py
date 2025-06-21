@@ -10,17 +10,13 @@ import itertools
 import time
 from collections.abc import Callable, Container, Iterable, Iterator
 from functools import partial
-from typing import Any, cast, Literal, TypedDict
+from typing import Any, cast, Literal, override, TypedDict
 
-from cmk.ccc.version import __version__, Edition, Version
+from cmk.ccc.version import Edition
 
 from cmk.utils.man_pages import make_man_page_path_map
-from cmk.utils.werks.acknowledgement import (
-    is_acknowledged,
-    load_werk_entries,
-    sort_by_date,
-    unacknowledged_incompatible_werks,
-)
+from cmk.utils.werks import load_werk_entries
+from cmk.utils.werks.acknowledgement import is_acknowledged
 from cmk.utils.werks.acknowledgement import load_acknowledgements as werks_load_acknowledgements
 from cmk.utils.werks.acknowledgement import save_acknowledgements as werks_save_acknowledgements
 
@@ -40,7 +36,7 @@ from cmk.gui.htmllib.tag_rendering import HTMLContent
 from cmk.gui.http import request
 from cmk.gui.i18n import _
 from cmk.gui.logged_in import user
-from cmk.gui.main_menu import mega_menu_registry
+from cmk.gui.main_menu import main_menu_registry
 from cmk.gui.num_split import cmp_version
 from cmk.gui.page_menu import (
     make_display_options_dropdown,
@@ -89,6 +85,20 @@ def get_werk_by_id(werk_id: int) -> Werk:
     raise MKUserError("werk", _("This werk does not exist."))
 
 
+def sort_by_date(werks: Iterable[Werk]) -> list[Werk]:
+    return sorted(werks, key=lambda werk: werk.date, reverse=True)
+
+
+def unacknowledged_incompatible_werks() -> list[Werk]:
+    acknowledged_werk_ids = load_acknowledgements()
+    return sort_by_date(
+        werk
+        for werk in load_werk_entries()
+        if werk.compatible == Compatibility.NOT_COMPATIBLE
+        and not is_acknowledged(werk, acknowledged_werk_ids)
+    )
+
+
 class WerkTableOptions(TypedDict):
     date_range: tuple[int, int]
     compatibility: Literal["incomp_unack"]
@@ -124,8 +134,9 @@ class ChangeLogPage(Page):
     def _title(self) -> str:
         return _("Change log (Werks)")
 
+    @override
     def page(self) -> PageResult:
-        breadcrumb = make_simple_page_breadcrumb(mega_menu_registry["help_links"], self._title())
+        breadcrumb = make_simple_page_breadcrumb(main_menu_registry["help"], self._title())
 
         werk_table_options = _werk_table_options_from_request()
 
@@ -274,7 +285,7 @@ def page_werk() -> None:
         werk.title,
     )
 
-    breadcrumb = make_main_menu_breadcrumb(mega_menu_registry["help_links"])
+    breadcrumb = make_main_menu_breadcrumb(main_menu_registry["help"])
     breadcrumb.append(
         BreadcrumbItem(
             title=_("Change log (Werks)"),
@@ -416,7 +427,12 @@ def _werk_table_option_entries() -> list[tuple[_WerkTableOptionColumns, str, Val
             ),
             [1, 2, 3],
         ),
-        ("date", "double", Timerange(title=_("Date")), ("date", (1383149313, int(time.time())))),
+        (
+            "date",
+            "double",
+            Timerange(title=_("Date")),
+            ("date", (1383149313, int(time.time()))),
+        ),
         (
             "id",
             "single",
@@ -464,7 +480,13 @@ def _werk_table_option_entries() -> list[tuple[_WerkTableOptionColumns, str, Val
                     (None, _("All editions")),
                     *(
                         (e.short, _("Werks only concerning the %s") % e.title)
-                        for e in (Edition.CCE, Edition.CME, Edition.CEE, Edition.CRE, Edition.CSE)
+                        for e in (
+                            Edition.CCE,
+                            Edition.CME,
+                            Edition.CEE,
+                            Edition.CRE,
+                            Edition.CSE,
+                        )
                     ),
                 ],
             ),
@@ -490,7 +512,7 @@ def _werk_table_option_entries() -> list[tuple[_WerkTableOptionColumns, str, Val
                     TextInput(label=_("to:"), size=12),
                 ],
             ),
-            (Version.from_str(__version__).version_base, ""),
+            ("", ""),
         ),
         (
             "grouping",

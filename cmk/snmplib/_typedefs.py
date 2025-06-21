@@ -14,8 +14,8 @@ from dataclasses import dataclass
 from typing import Any, Literal, NamedTuple, Protocol, Self
 
 from cmk.ccc.exceptions import MKSNMPError
+from cmk.ccc.hostaddress import HostAddress, HostName
 
-from cmk.utils.hostaddress import HostAddress, HostName
 from cmk.utils.sectionname import SectionName
 
 SNMPContext = str
@@ -42,12 +42,10 @@ class SNMPContextTimeout(MKSNMPError):
 # (5) privacy protocol (DES|AES|AES-192|AES-256) (-x)
 # (6) privacy protocol pass phrase (-X)
 SNMPCommunity = str
-# TODO: This does not work as intended
-# SNMPv3NoAuthNoPriv = tuple[str, str]
-# SNMPv3AuthNoPriv = tuple[str, str, str, str]
-# SNMPv3AuthPriv = tuple[str, str, str, str, str, str]
-# SNMPCredentials = SNMPCommunity | SNMPv3NoAuthNoPriv | SNMPv3AuthNoPriv | SNMPv3AuthPriv
-SNMPCredentials = SNMPCommunity | tuple[str, ...]
+SNMPv3NoAuthNoPriv = tuple[str, str]
+SNMPv3AuthNoPriv = tuple[str, str, str, str]
+SNMPv3AuthPriv = tuple[str, str, str, str, str, str]
+type SNMPCredentials = SNMPCommunity | SNMPv3NoAuthNoPriv | SNMPv3AuthNoPriv | SNMPv3AuthPriv
 # TODO: Cleanup to named tuple
 SNMPTiming = dict
 

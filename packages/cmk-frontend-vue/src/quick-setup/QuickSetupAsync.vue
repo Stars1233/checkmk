@@ -59,7 +59,7 @@ let overviewModeLabel = ''
 
 const props = withDefaults(defineProps<QuickSetupAppProps>(), {
   mode: GUIDED_MODE,
-  toggleEnabled: false
+  toggle_enabled: false
 })
 
 const loadedAllStages = ref(false)
@@ -131,7 +131,7 @@ const nextStage = async (actionId: string) => {
       nextStageStructure = await getStageStructure(
         props.quick_setup_id,
         nextStageNumber,
-        props.objectId
+        props.object_id
       )
     } catch (err: unknown) {
       handleExceptionError(err)
@@ -182,7 +182,7 @@ const prevStage = () => {
 }
 
 const loadAllStages = async (): Promise<QSStageStore[]> => {
-  const data = await getAllStages(props.quick_setup_id, props.objectId)
+  const data = await getAllStages(props.quick_setup_id, props.object_id)
   const result: QSStageStore[] = []
 
   guidedModeLabel = data.guided_mode_string
@@ -222,7 +222,7 @@ const loadAllStages = async (): Promise<QSStageStore[]> => {
       errors: [],
       user_input: ref(userInput),
       actions: acts,
-      background_job_log: useBackgroundJobLog()
+      background_job_log: useBackgroundJobLog(true)
     })
   }
 
@@ -237,14 +237,14 @@ const loadAllStages = async (): Promise<QSStageStore[]> => {
     user_input: ref({}),
     // eslint-disable-next-line @typescript-eslint/no-misused-promises
     actions: [...data.actions.map((action) => processActionData(ActionType.Save, action, save))],
-    background_job_log: useBackgroundJobLog()
+    background_job_log: useBackgroundJobLog(true)
   })
   loadedAllStages.value = true
   return result
 }
 
 const loadGuidedStages = async (): Promise<QSStageStore[]> => {
-  const data: QuickSetupGuidedResponse = await getOverview(props.quick_setup_id, props.objectId)
+  const data: QuickSetupGuidedResponse = await getOverview(props.quick_setup_id, props.object_id)
   const result: QSStageStore[] = []
 
   guidedModeLabel = data.guided_mode_string
@@ -275,7 +275,7 @@ const loadGuidedStages = async (): Promise<QSStageStore[]> => {
       errors: [],
       user_input: ref(userInput),
       actions: acts,
-      background_job_log: useBackgroundJobLog()
+      background_job_log: useBackgroundJobLog(true)
     })
   }
 
@@ -301,7 +301,7 @@ const loadGuidedStages = async (): Promise<QSStageStore[]> => {
         prevStage
       )
     ],
-    background_job_log: useBackgroundJobLog()
+    background_job_log: useBackgroundJobLog(true)
   })
 
   return result
@@ -328,7 +328,7 @@ const save = async (buttonId: string) => {
       props.quick_setup_id,
       buttonId,
       userInput,
-      props.objectId,
+      props.object_id,
       handleBackgroundJobLogUpdate
     )
     loading.value = true
@@ -420,6 +420,7 @@ const regularStages = computed((): QuickSetupStageSpec[] => {
         stg.components || [],
         (value) => update(index, value),
         stg.background_job_log.entries,
+        stg.background_job_log.isRunning,
         stg.form_spec_errors,
         stg.user_input
       ),
@@ -440,6 +441,7 @@ const saveStage = computed((): QuickSetupSaveStageSpec => {
       stg.components || [],
       () => {},
       stg.background_job_log.entries,
+      stg.background_job_log.isRunning,
       stg.form_spec_errors,
       stg.user_input
     )
@@ -547,7 +549,7 @@ showQuickSetup.value = true
 
 <template>
   <ToggleButtonGroup
-    v-if="toggleEnabled"
+    v-if="toggle_enabled"
     v-model="currentMode"
     :options="[
       { label: guidedModeLabel, value: GUIDED_MODE },

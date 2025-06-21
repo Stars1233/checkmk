@@ -29,7 +29,7 @@ def test_declare_permission_section(monkeypatch: pytest.MonkeyPatch) -> None:
     permissions.declare_permission_section("bla", "bla perm", do_sort=False)
     assert "bla" in permissions.permission_section_registry
 
-    section = permissions.permission_section_registry["bla"]()
+    section = permissions.permission_section_registry["bla"]
     assert section.title == "bla perm"
     assert section.sort_index == 50
     assert section.do_sort is False
@@ -68,24 +68,18 @@ def test_permission_sorting(do_sort: bool, result: Sequence[str]) -> None:
     sections = permissions.PermissionSectionRegistry()
     perms = permissions.PermissionRegistry()
 
-    @sections.register
-    class Sec1(permissions.PermissionSection):
-        @property
-        def name(self) -> str:
-            return "sec1"
+    sec1 = permissions.PermissionSection(
+        name="sec1",
+        title="SEC1",
+        do_sort=do_sort,
+    )
 
-        @property
-        def title(self) -> str:
-            return "SEC1"
-
-        @property
-        def do_sort(self):
-            return do_sort
+    sections.register(sec1)
 
     for permission_name in ["Z", "z", "A", "b", "a", "1", "g"]:
         perms.register(
             permissions.Permission(
-                section=Sec1,
+                section=sec1,
                 name=permission_name,
                 title=permission_name.title(),
                 description="bla",
@@ -93,5 +87,5 @@ def test_permission_sorting(do_sort: bool, result: Sequence[str]) -> None:
             )
         )
 
-    sorted_perms = [p.name for p in perms.get_sorted_permissions(Sec1())]
+    sorted_perms = [p.name for p in perms.get_sorted_permissions(sec1)]
     assert sorted_perms == result

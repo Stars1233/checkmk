@@ -15,9 +15,10 @@ export default defineConfig(() => {
     clearScreen: false,
     root: './src/components/_demo/',
     server: {
+      port: 5174,
       strictPort: true,
       fs: {
-        allow: ['.', '../../../../cmk-frontend/']
+        strict: false
       },
       proxy: {
         '/site-api': {

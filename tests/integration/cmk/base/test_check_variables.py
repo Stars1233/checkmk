@@ -10,8 +10,7 @@ import pytest
 from tests.integration.linux_test_host import create_linux_test_host
 
 from tests.testlib.site import Site
-
-from cmk.ccc import version as cmk_version
+from tests.testlib.version import CMKEdition
 
 from cmk.utils import paths
 
@@ -20,13 +19,13 @@ from cmk.checkengine.discovery._autochecks import _AutochecksSerializer
 
 # Test whether or not factory settings and checkgroup parameters work
 @pytest.mark.skipif(
-    cmk_version.edition(paths.omd_root) is cmk_version.Edition.CRE, reason="flaky on raw edition"
+    CMKEdition.edition_from_path(paths.omd_root).is_raw_edition(), reason="flaky on raw edition"
 )
 def test_check_default_parameters(request: pytest.FixtureRequest, site: Site) -> None:
     host_name = "check-variables-test-host"
 
     create_linux_test_host(request, site, host_name)
-    site.write_text_file(f"var/check_mk/agent_output/{host_name}", "<<<test_check_3>>>\n1 2\n")
+    site.write_file(f"var/check_mk/agent_output/{host_name}", "<<<test_check_3>>>\n1 2\n")
 
     test_check_path = "local/share/check_mk/checks/test_check_3"
 
@@ -38,7 +37,7 @@ def test_check_default_parameters(request: pytest.FixtureRequest, site: Site) ->
 
     request.addfinalizer(cleanup)
 
-    site.write_text_file(
+    site.write_file(
         test_check_path,
         """
 
@@ -78,7 +77,7 @@ check_info["test_check_3"] = LegacyCheckDefinition(
     assert p.returncode == 0
 
     # And now overwrite the setting in the config
-    site.write_text_file(
+    site.write_file(
         "etc/check_mk/conf.d/test_check_3.mk",
         """
 checkgroup_parameters.setdefault('asd', [])

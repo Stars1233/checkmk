@@ -17,8 +17,6 @@ import logging
 import pprint
 import sys
 import time
-from collections.abc import Callable, Generator
-from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -82,7 +80,7 @@ USAGE: agent_%s --section_url [{section_name},{url}]
         content: dict[str, list[str]] = {}
         for section_name, url in sections:
             content.setdefault(section_name, [])
-            c = requests.get(url)  # nosec B113 # BNS:0b0eac
+            c = requests.get(url, timeout=900)
             content[section_name].append(c.text.replace("\n", newline_replacement))
 
         if opt_debug:
@@ -205,7 +203,7 @@ class DataCache(abc.ABC):
         self._cache_file_dir.mkdir(parents=True, exist_ok=True)
 
         json_dump = json.dumps(raw_content, default=datetime_serializer)
-        store.save_text_to_file(str(self._cache_file), json_dump)
+        store.save_text_to_file(self._cache_file, json_dump)
 
 
 class _NullContext:
@@ -222,6 +220,15 @@ class _NullContext:
 
     def __bool__(self) -> bool:
         return False
+
+
+def _check_path(filename: str) -> None:
+    """make sure we are only writing/reading traces from tmp/debug"""
+
+    p = Path(filename).resolve()
+    allowed_path = (Path.home() / "tmp" / "debug").resolve()
+    if not p.is_relative_to(allowed_path):
+        raise ValueError(f"Traces can only be stored in {allowed_path}")
 
 
 def vcrtrace(**vcr_init_kwargs):
@@ -261,6 +268,14 @@ def vcrtrace(**vcr_init_kwargs):
             if not filename:
                 setattr(namespace, self.dest, _NullContext())
                 return
+
+            if not sys.stdin.isatty():
+                raise argparse.ArgumentError(self, "You need to run this in a tty")
+
+            try:
+                _check_path(filename)
+            except ValueError as exc:
+                raise argparse.ArgumentError(self, str(exc)) from exc
 
             import vcr
 
@@ -338,42 +353,3 @@ def to_bytes(string: str) -> int:
             )
         )  #
     )
-
-
-@contextmanager
-def JsonCachedData(
-    cache_file: Path,
-    cutoff_condition: Callable[[str, Any], bool],
-) -> Generator[Callable[[str, Any], Any], None, None]:
-    """Store JSON-serializable data on filesystem and provide it if available"""
-    cache_file.parents[0].mkdir(parents=True, exist_ok=True)
-    try:
-        with cache_file.open() as crfile:
-            cache = json.load(crfile)
-        LOG.debug("Cache: loaded %d elements", len(cache))
-    except (FileNotFoundError, json.JSONDecodeError):
-        LOG.warning("Cache: could not find file - start a new one")
-        cache = {}
-
-    dirty = False
-    # note: this must not be a generator - otherwise we modify a dict while iterating it
-    for key in [k for k, data in cache.items() if cutoff_condition(k, data)]:
-        dirty = True
-        LOG.debug("Cache: erase log cache for %r", key)
-        del cache[key]
-
-    def setdefault(key: str, value_fn: Callable[[], Any]) -> Any:
-        nonlocal dirty
-        if key in cache:
-            return cache[key]
-        dirty = True
-        LOG.debug("Cache: %r not found - fetch it", key)
-        return cache.setdefault(key, value_fn())
-
-    try:
-        yield setdefault
-    finally:
-        if dirty:
-            LOG.debug("Cache: write file: %r", str(cache_file.absolute()))
-            with cache_file.open(mode="w") as cwfile:
-                json.dump(cache, cwfile, indent=2)

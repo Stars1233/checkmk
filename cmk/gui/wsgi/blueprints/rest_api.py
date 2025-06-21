@@ -30,10 +30,9 @@ rest_api.before_app_request(set_global_vars)
 
 
 @functools.lru_cache
-def app_instance(debug: bool, testing: bool) -> CheckmkRESTAPI:
+def app_instance(debug: bool, testing: bool) -> WSGIApplication:
     app = CheckmkRESTAPI(debug=debug, testing=testing)
-    app.wsgi_app = OverrideRequestMethod(app.wsgi_app)  # type: ignore[method-assign]
-    return app
+    return OverrideRequestMethod(app.wsgi_app)
 
 
 @rest_api.before_request
@@ -58,7 +57,7 @@ def endpoint(site: str, version: str, path: str) -> WSGIApplication:
 @rest_api.route("/doc/", defaults={"file_name": "index.html"})
 @rest_api.route("/doc/<path:file_name>")
 def serve_redoc(site: str, file_name: str) -> Response:
-    return send_from_directory(f"{paths.web_dir}/htdocs/openapi", file_name)
+    return send_from_directory(paths.web_dir / "htdocs/openapi", file_name)
 
 
 @functools.lru_cache

@@ -64,11 +64,10 @@ const componentId = useId()
         :reset-input-on-add="false"
         :autocompleter="spec.autocompleter"
         :placeholder="spec.input_hint ?? ''"
-        :filter-on="[]"
         :label="spec.label || ''"
         :start-of-group="true"
         :show-icon="true"
-      /><CmkDropdownButton group="end" @click="value = ''">
+      /><CmkDropdownButton group="end" @click.prevent="value = ''">
         <X class="form-string__button-clear-x" />
       </CmkDropdownButton>
     </div>

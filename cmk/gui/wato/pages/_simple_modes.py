@@ -18,12 +18,14 @@ from collections.abc import Mapping
 from typing import Any, cast, Generic, TypeVar
 
 from cmk.ccc.site import SiteId
+from cmk.ccc.user import UserId
 
 from cmk.utils.urls import is_allowed_url
 
 import cmk.gui.watolib.changes as _changes
 from cmk.gui import forms
 from cmk.gui.breadcrumb import Breadcrumb
+from cmk.gui.config import active_config
 from cmk.gui.default_name import unique_default_name_suggestion
 from cmk.gui.exceptions import MKUserError
 from cmk.gui.form_specs.generators.setup_site_choice import create_setup_site_choice
@@ -38,6 +40,7 @@ from cmk.gui.form_specs.vue.visitors.catalog import Dict2CatalogConverter, Heade
 from cmk.gui.htmllib.html import html
 from cmk.gui.http import request
 from cmk.gui.i18n import _
+from cmk.gui.logged_in import user
 from cmk.gui.page_menu import (
     make_simple_form_page_menu,
     make_simple_link,
@@ -164,14 +167,17 @@ class _SimpleWatoModeBase(Generic[_T], WatoMode, abc.ABC):
         *,
         action: str,
         text: str,
+        user_id: UserId | None,
         affected_sites: list[SiteId] | None,
     ) -> None:
         """Add a Setup change entry for this object type modifications"""
         _changes.add_change(
-            f"{action}-{self._mode_type.type_name()}",
-            text,
+            action_name=f"{action}-{self._mode_type.type_name()}",
+            text=text,
+            user_id=user_id,
             domains=self._mode_type.affected_config_domains(),
             sites=affected_sites,
+            use_git=active_config.wato_use_git,
         )
 
 
@@ -262,20 +268,21 @@ class SimpleListMode(_SimpleWatoModeBase[_T]):
                 _("You are not allowed to delete this %s.") % self._mode_type.name_singular(),
             )
 
-        self._validate_deletion(ident, entries[ident])
+        self._validate_deletion(ident, entries[ident], debug=active_config.debug)
 
         entry = entries.pop(ident)
         self._add_change(
             action="delete",
             text=_("Removed the %s '%s'") % (self._mode_type.name_singular(), ident),
+            user_id=user.id,
             affected_sites=self._mode_type.affected_sites(entry),
         )
-        self._store.save(entries)
+        self._store.save(entries, pprint_value=active_config.wato_pprint_config)
 
         flash(_("The %s has been deleted.") % self._mode_type.name_singular())
         return redirect(mode_url(self._mode_type.list_mode_name()))
 
-    def _validate_deletion(self, ident: str, entry: _T) -> None:
+    def _validate_deletion(self, ident: str, entry: _T, *, debug: bool) -> None:
         """Override this to implement custom validations"""
 
     def _delete_confirm_title(self, nr: int) -> str:
@@ -684,7 +691,9 @@ class SimpleEditMode(_SimpleWatoModeBase[_T], abc.ABC):
         config = self._get_catalog_converter().convert_catalog_to_flat_config(config)
 
         if "ident" in config:
-            self._ident = config.pop("ident")
+            ident = config.pop("ident")
+            assert isinstance(ident, str | None)  # horrible typing of config...
+            self._ident = ident
         assert self._ident is not None
         entries = self._store.load_for_modification()
 
@@ -719,6 +728,7 @@ class SimpleEditMode(_SimpleWatoModeBase[_T], abc.ABC):
             self._add_change(
                 action="add",
                 text=_("Added the %s '%s'") % (self._mode_type.name_singular(), self._ident),
+                user_id=user.id,
                 affected_sites=self._mode_type.affected_sites(self._entry),
             )
         else:
@@ -736,6 +746,7 @@ class SimpleEditMode(_SimpleWatoModeBase[_T], abc.ABC):
             self._add_change(
                 action="edit",
                 text=_("Edited the %s '%s'") % (self._mode_type.name_singular(), self._ident),
+                user_id=user.id,
                 affected_sites=affected_sites,
             )
 
@@ -744,7 +755,7 @@ class SimpleEditMode(_SimpleWatoModeBase[_T], abc.ABC):
         return redirect(mode_url(self._mode_type.list_mode_name()))
 
     def _save(self, entries: dict[str, _T]) -> None:
-        self._store.save(entries)
+        self._store.save(entries, pprint_value=active_config.wato_pprint_config)
 
     def page(self, form_name: str = "edit") -> None:
         html.enable_help_toggle()

@@ -8,6 +8,8 @@ to all components of Check_MK."""
 import os
 from pathlib import Path
 
+LOCAL_SEGMENT = "local"
+
 
 def _omd_path(path: str) -> Path:
     return omd_root / path
@@ -18,7 +20,7 @@ def _omd_path_str(path: str) -> str:
 
 
 def _local_path(global_path: str | Path) -> Path:
-    return omd_root / "local" / Path(global_path).relative_to(omd_root)
+    return omd_root / LOCAL_SEGMENT / Path(global_path).relative_to(omd_root)
 
 
 # TODO: Add active_checks_dir and use it in code
@@ -36,59 +38,49 @@ root_cert_file = _omd_path("etc/ssl/ca.pem")
 agent_cas_dir = _omd_path("etc/ssl/agents")
 agent_cert_store = _omd_path("etc/ssl/agent_cert_store.pem")
 site_cert_file = _omd_path(f"etc/ssl/sites/{os.environ.get('OMD_SITE')}.pem")
-default_config_dir = _omd_path_str("etc/check_mk")
-main_config_file = _omd_path_str("etc/check_mk/main.mk")
-final_config_file = _omd_path_str("etc/check_mk/final.mk")
-local_config_file = _omd_path_str("etc/check_mk/local.mk")
-check_mk_config_dir = _omd_path_str("etc/check_mk/conf.d")
-modules_dir = _omd_path_str("share/check_mk/modules")
-var_dir = _omd_path_str("var/check_mk")
-log_dir = _omd_path_str("var/log")
-precompiled_checks_dir = _omd_path_str("var/check_mk/precompiled_checks")
-base_autochecks_dir = _omd_path_str("var/check_mk/autochecks")
-core_helper_config_dir = _omd_path("var/check_mk/core/helper_config")
-autochecks_dir = base_autochecks_dir
-precompiled_hostchecks_dir = _omd_path_str("var/check_mk/precompiled")
-snmpwalks_dir = _omd_path_str("var/check_mk/snmpwalks")
-counters_dir = _omd_path_str("tmp/check_mk/counters")
-tcp_cache_dir = _omd_path_str("tmp/check_mk/cache")
-data_source_cache_dir = _omd_path_str("tmp/check_mk/data_source_cache")
-snmp_scan_cache_dir = _omd_path_str("tmp/check_mk/snmp_scan_cache")
-include_cache_dir = _omd_path_str("tmp/check_mk/check_includes")
+default_config_dir = _omd_path("etc/check_mk")
+main_config_file = _omd_path("etc/check_mk/main.mk")
+final_config_file = _omd_path("etc/check_mk/final.mk")
+local_config_file = _omd_path("etc/check_mk/local.mk")
+check_mk_config_dir = _omd_path("etc/check_mk/conf.d")
+modules_dir = _omd_path("share/check_mk/modules")
+var_dir = _omd_path("var/check_mk")
+log_dir = _omd_path("var/log")
+precompiled_checks_dir = _omd_path("var/check_mk/precompiled_checks")
+autochecks_dir = _omd_path("var/check_mk/autochecks")
+precompiled_hostchecks_dir = _omd_path("var/check_mk/precompiled")
+snmpwalks_dir = _omd_path("var/check_mk/snmpwalks")
+counters_dir = _omd_path("tmp/check_mk/counters")
+tcp_cache_dir = _omd_path("tmp/check_mk/cache")
+data_source_cache_dir = _omd_path("tmp/check_mk/data_source_cache")
+snmp_scan_cache_dir = _omd_path("tmp/check_mk/snmp_scan_cache")
+include_cache_dir = _omd_path("tmp/check_mk/check_includes")
 tmp_dir = _omd_path("tmp/check_mk")
 tmp_run_dir = _omd_path("tmp/run")
-logwatch_dir = _omd_path_str("var/check_mk/logwatch")
-nagios_objects_file = _omd_path_str("etc/nagios/conf.d/check_mk_objects.cfg")
-nagios_command_pipe_path = _omd_path_str("tmp/run/nagios.cmd")
-check_result_path = _omd_path_str("tmp/nagios/checkresults")
-nagios_status_file = _omd_path_str("tmp/nagios/status.dat")
-nagios_conf_dir = _omd_path_str("etc/nagios/conf.d")
-nagios_config_file = _omd_path_str("tmp/nagios/nagios.cfg")
-nagios_startscript = _omd_path_str("etc/init.d/core")
-nagios_binary = _omd_path_str("bin/nagios")
-apache_config_dir = _omd_path_str("etc/apache")
-htpasswd_file = _omd_path_str("etc/htpasswd")
-livestatus_unix_socket = _omd_path_str("tmp/run/live")
-livebackendsdir = _omd_path_str("share/check_mk/livestatus")
-inventory_output_dir = _omd_path_str("var/check_mk/inventory")
-inventory_archive_dir = _omd_path_str("var/check_mk/inventory_archive")
-inventory_delta_cache_dir = _omd_path_str("var/check_mk/inventory_delta_cache")
-autoinventory_dir = _omd_path_str("var/check_mk/autoinventory")
-status_data_dir = _omd_path_str("tmp/check_mk/status_data")
+logwatch_dir = _omd_path("var/check_mk/logwatch")
+nagios_objects_file = _omd_path("etc/nagios/conf.d/check_mk_objects.cfg")
+nagios_command_pipe_path = _omd_path("tmp/run/nagios.cmd")
+check_result_path = _omd_path("tmp/nagios/checkresults")
+nagios_conf_dir = _omd_path("etc/nagios/conf.d")
+nagios_config_file = _omd_path("tmp/nagios/nagios.cfg")
+nagios_startscript = _omd_path("etc/init.d/core")
+nagios_binary = _omd_path("bin/nagios")
+htpasswd_file = _omd_path("etc/htpasswd")
+livestatus_unix_socket = _omd_path("tmp/run/live")
 base_discovered_host_labels_dir = _omd_path("var/check_mk/discovered_host_labels")
 discovered_host_labels_dir = base_discovered_host_labels_dir
 autodiscovery_dir = _omd_path("var/check_mk/autodiscovery")
-profile_dir = Path(var_dir, "web")
-crash_dir = Path(var_dir, "crashes")
-diagnostics_dir = Path(var_dir, "diagnostics")
-site_config_dir = Path(var_dir, "site_configs")
-visuals_cache_dir = Path(tmp_dir, "visuals_cache")
-predictions_dir = Path(var_dir, "prediction")
-ec_main_config_file = Path(default_config_dir, "mkeventd.mk")
-ec_config_dir = Path(default_config_dir, "mkeventd.d")
-diskspace_config_dir = Path(default_config_dir, "diskspace.d/wato/")
+profile_dir = var_dir / "web"
+crash_dir = var_dir / "crashes"
+diagnostics_dir = var_dir / "diagnostics"
+site_config_dir = var_dir / "site_configs"
+visuals_cache_dir = tmp_dir / "visuals_cache"
+predictions_dir = var_dir / "prediction"
+ec_main_config_file = default_config_dir / "mkeventd.mk"
+ec_config_dir = default_config_dir / "mkeventd.d"
+diskspace_config_dir = default_config_dir / "diskspace.d/wato/"
 
-configuration_lockfile = Path(default_config_dir, "multisite.mk")
+configuration_lockfile = default_config_dir / "multisite.mk"
 
 # persisted secret files
 # avoid using these paths directly; use wrappers in cmk.util.crypto.secrets instead
@@ -99,19 +91,21 @@ auth_secret_file = omd_root / "etc/auth.secret"
 password_store_secret_file = omd_root / "etc/password_store.secret"
 site_internal_secret_file = omd_root / "etc/site_internal.secret"
 
-share_dir = _omd_path_str("share/check_mk")
-checks_dir = _omd_path_str("share/check_mk/checks")
+share_dir = _omd_path("share/check_mk")
+checks_dir = _omd_path("share/check_mk/checks")
+cmk_addons_plugins_dir = _omd_path("lib/python3/cmk_addons/plugins")
+cmk_plugins_dir = _omd_path("lib/python3/cmk/plugins")
 notifications_dir = _omd_path("share/check_mk/notifications")
-inventory_dir = _omd_path_str("share/check_mk/inventory")
-legacy_check_manpages_dir = _omd_path_str("share/check_mk/checkman")
-agents_dir = _omd_path_str("share/check_mk/agents")
+inventory_dir = _omd_path("share/check_mk/inventory")
+legacy_check_manpages_dir = _omd_path("share/check_mk/checkman")
+agents_dir = _omd_path("share/check_mk/agents")
 special_agents_dir = _omd_path("share/check_mk/agents/special")
-web_dir = _omd_path_str("share/check_mk/web")
+web_dir = _omd_path("share/check_mk/web")
 pnp_templates_dir = _omd_path("share/check_mk/pnp-templates")
 doc_dir = _omd_path("share/doc/check_mk")
 locale_dir = _omd_path("share/check_mk/locale")
 bin_dir = _omd_path("bin")
-lib_dir = _omd_path_str("lib")
+lib_dir = _omd_path("lib")
 mib_dir = _omd_path("share/snmp/mibs")
 optional_packages_dir = _omd_path("share/check_mk/optional_packages")
 disabled_packages_dir = _omd_path("var/check_mk/disabled_packages")
@@ -119,15 +113,17 @@ installed_packages_dir = _omd_path("var/check_mk/packages")
 protocols_dir = _omd_path("share/protocols")
 alert_handlers_dir = _omd_path("share/check_mk/alert_handlers")
 
-_base_plugins_dir = Path(lib_dir, "check_mk", "base", "plugins")
+_base_plugins_dir = lib_dir / "python3/cmk/base/plugins"
 agent_based_plugins_dir = _base_plugins_dir / "agent_based"
 
-gui_plugins_dir = Path(lib_dir, "check_mk", "gui", "plugins")
-nagios_plugins_dir = Path(lib_dir, "nagios", "plugins")
+gui_plugins_dir = lib_dir / "python3/cmk/gui/plugins"
+nagios_plugins_dir = lib_dir / "nagios/plugins"
 
 local_root = _local_path(omd_root)
 local_share_dir = _local_path(share_dir)
 local_checks_dir = _local_path(checks_dir)
+local_cmk_addons_plugins_dir = _local_path(cmk_addons_plugins_dir)
+local_cmk_plugins_dir = _local_path(cmk_plugins_dir)
 local_agent_based_plugins_dir = _local_path(agent_based_plugins_dir)
 local_notifications_dir = _local_path(notifications_dir)
 local_inventory_dir = _local_path(inventory_dir)
@@ -146,18 +142,17 @@ local_alert_handlers_dir = _local_path(alert_handlers_dir)
 local_optional_packages_dir = _omd_path("var/check_mk/packages_local")
 local_enabled_packages_dir = local_share_dir / "enabled_packages"
 
-local_agent_based_plugins_dir = _local_path(agent_based_plugins_dir)
 local_gui_plugins_dir = _local_path(gui_plugins_dir)
 local_dashboards_dir = local_gui_plugins_dir / "dashboard"
 local_views_dir = local_gui_plugins_dir / "views"
 local_reports_dir = local_gui_plugins_dir / "reports"
 
-licensing_dir = Path(var_dir, "licensing")
+licensing_dir = var_dir / "licensing"
 
 # Agent registration paths
-received_outputs_dir = Path(omd_root, "var/agent-receiver/received-outputs")
-data_source_push_agent_dir = Path(data_source_cache_dir, "push-agent")
-_r4r_base_dir = Path(var_dir, "wato/requests-for-registration")
+received_outputs_dir = omd_root / "var/agent-receiver/received-outputs"
+data_source_push_agent_dir = data_source_cache_dir / "push-agent"
+_r4r_base_dir = var_dir / "wato/requests-for-registration"
 r4r_new_dir = _r4r_base_dir.joinpath("NEW")
 r4r_pending_dir = _r4r_base_dir.joinpath("PENDING")
 r4r_declined_dir = _r4r_base_dir.joinpath("DECLINED")
@@ -171,7 +166,7 @@ def make_experimental_config_file() -> Path:
     Example of experimental.mk:
     config_storage_format = "raw"
     """
-    return Path(default_config_dir) / "experimental.mk"
+    return default_config_dir / "experimental.mk"
 
 
 cse_config_dir = Path("/etc/cse")

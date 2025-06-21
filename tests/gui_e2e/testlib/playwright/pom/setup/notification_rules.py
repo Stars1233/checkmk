@@ -15,6 +15,7 @@ from tests.gui_e2e.testlib.playwright.pom.setup.notification_configuration impor
     NotificationConfiguration,
 )
 from tests.gui_e2e.testlib.playwright.pom.setup.quick_setup import QuickSetupPage
+from tests.gui_e2e.testlib.playwright.timeouts import ANIMATION_TIMEOUT
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +41,7 @@ class BaseNotificationPage(QuickSetupPage):
         pass
 
     @override
-    def _validate_page(self) -> None:
+    def validate_page(self) -> None:
         logger.info("Validate that current page is '%s' page", self.page_title)
         self.main_area.check_page_title(self.page_title)
         expect(self.overview_mode_button).to_be_visible()
@@ -97,15 +98,28 @@ class BaseNotificationPage(QuickSetupPage):
         return self._stage_two.get_by_label("Host filters")
 
     @property
-    def hosts_checkbox(self) -> Locator:
-        return self._host_filters_dropdown.locator("tr").nth(4).get_by_role("checkbox")
+    def _hosts_row(self) -> Locator:
+        return self._host_filters_dropdown.locator("tr").nth(4)
 
     @property
-    def hosts_textfield(self) -> Locator:
-        return self._host_filters_dropdown.locator("tr").nth(4).locator("input")
+    def hosts_checkbox(self) -> Locator:
+        return self._checkbox("Hosts", exact=True)
 
-    def select_host_from_textfield(self, name: str) -> Locator:
-        return self._host_filters_dropdown.locator("li", has_text=name)
+    def hosts_dropdown_list(self, index: int = 0) -> Locator:
+        """Return locator corresponding to dropdown list consisting of host names.
+
+        There can be multiple dropdown lists present.
+        By default, the first one or left most one is addressed.
+        """
+        return self._hosts_row.locator("div.cmk-dropdown").nth(index)
+
+    def select_host_from_dropdown_list(self, name: str, index: int = 0) -> Locator:
+        """Return locator corresponding to a name present within the dropdown list of host names.
+
+        There can be multiple dropdown lists present.
+        By default, the first one or the left-most dropdown list is searched.
+        """
+        return self.hosts_dropdown_list(index).get_by_role("option", name=name)
 
     @property
     def _service_filters_button(self) -> Locator:
@@ -113,11 +127,11 @@ class BaseNotificationPage(QuickSetupPage):
 
     @property
     def _exclude_services_checkbox(self) -> Locator:
-        return self.main_area.locator().get_by_role("checkbox", name="Exclude services")
+        return self._checkbox("Exclude services", exact=True)
 
     @property
     def services_checkbox(self) -> Locator:
-        return self.main_area.locator().get_by_role("checkbox", name="Services", exact=True)
+        return self._checkbox("Services", exact=True)
 
     def _match_services_text_field(self, index: int = 0) -> Locator:
         return self._get_row("Services").locator("input").nth(index)
@@ -134,8 +148,15 @@ class BaseNotificationPage(QuickSetupPage):
     def notification_method_option(self, option: str) -> Locator:
         return self._stage_three.get_by_role("option", name=option)
 
-    def create_parameter_button(self) -> Locator:
-        return self._stage_three.get_by_role("button", name="Create")
+    def create_html_parameter_using_slide_in(self) -> None:
+        """Open the slide-in window to initialize a new notifications parameter."""
+        create_button = self._stage_three.get_by_role("button", name="Create")
+        expect(
+            create_button, message="Expected 'button', which creates a new parameter is visible!"
+        ).to_be_visible()
+        # `force=True` - prevents UI from sliding out of view during test runs
+        create_button.click(force=True)
+        self.page.wait_for_timeout(ANIMATION_TIMEOUT)
 
     # stage 4
     @property
@@ -173,6 +194,13 @@ class BaseNotificationPage(QuickSetupPage):
     def apply_and_create_another_rule_button(self) -> Locator:
         return self.main_area.locator().get_by_text("Apply & create another rule")
 
+    def apply_and_create_another_rule(self) -> None:
+        self.apply_and_create_another_rule_button.click()
+        self.page.wait_for_url(
+            url=re.compile(rf"{quote_plus('wato.py?mode=notification_rule_quick_setup')}$"),
+            wait_until="load",
+        )
+
     def delete_all_service_events(self) -> None:
         for _ in self._service_events_rows.all():
             self._service_events_rows.nth(0).get_by_role("button").click()
@@ -185,6 +213,10 @@ class BaseNotificationPage(QuickSetupPage):
     @property
     def _disable_rule_button(self) -> Locator:
         return self.main_area.locator().get_by_role("checkbox", name="Disable rule")
+
+    def _checkbox(self, name: str, exact: bool = False) -> Locator:
+        ma = self.main_area.locator()
+        return ma.get_by_role("checkbox").and_(ma.get_by_label(name, exact=exact))
 
     def add_service_event(
         self,
@@ -204,7 +236,7 @@ class BaseNotificationPage(QuickSetupPage):
             self._service_event_row_dropdown_option(second_option, index).click()
 
     def expand_host_filters(self) -> None:
-        if self.hosts_checkbox.is_hidden():
+        if self._host_filters_dropdown.get_attribute("aria-expanded") == "false":
             self._host_filters_button.click()
 
     def expand_service_filters(self) -> None:
@@ -296,7 +328,7 @@ class EditNotificationRule(BaseNotificationPage):
         self.page.wait_for_url(
             url=re.compile(quote_plus("mode=notification_rule_quick_setup")), wait_until="load"
         )
-        self._validate_page()
+        self.validate_page()
 
 
 class AddNotificationRule(BaseNotificationPage):
@@ -314,7 +346,7 @@ class AddNotificationRule(BaseNotificationPage):
         self.page.wait_for_url(
             url=re.compile(quote_plus("mode=notification_rule_quick_setup")), wait_until="load"
         )
-        self._validate_page()
+        self.validate_page()
 
     @property
     def si_description(self) -> Locator:

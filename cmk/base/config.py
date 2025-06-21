@@ -21,7 +21,6 @@ import socket
 import sys
 import time
 from collections.abc import Callable, Container, Iterable, Iterator, Mapping, Sequence
-from enum import Enum
 from pathlib import Path
 from typing import (
     Any,
@@ -36,26 +35,28 @@ from typing import (
     TypeVar,
 )
 
+import cmk.ccc.cleanup
 import cmk.ccc.debug
 import cmk.ccc.version as cmk_version
-from cmk.ccc import store
+from cmk.ccc import tty
 from cmk.ccc.exceptions import MKGeneralException, MKIPAddressLookupError
+from cmk.ccc.hostaddress import HostAddress, HostName, Hosts
 from cmk.ccc.site import omd_site, SiteId
 
 import cmk.utils
 import cmk.utils.check_utils
-import cmk.utils.cleanup
-import cmk.utils.config_path
 import cmk.utils.paths
 import cmk.utils.tags
 import cmk.utils.translations
-from cmk.utils import config_warnings, ip_lookup, password_store, tty
+from cmk.utils import config_warnings, ip_lookup, password_store
 from cmk.utils.agent_registration import connection_mode_from_host_config, HostAgentConnectionMode
 from cmk.utils.caching import cache_manager
 from cmk.utils.check_utils import maincheckify, section_name_of
-from cmk.utils.config_path import ConfigPath
-from cmk.utils.host_storage import apply_hosts_file_to_object, get_host_storage_loaders
-from cmk.utils.hostaddress import HostAddress, HostName, Hosts
+from cmk.utils.host_storage import (
+    apply_hosts_file_to_object,
+    FolderAttributesForBase,
+    get_host_storage_loaders,
+)
 from cmk.utils.http_proxy_config import http_proxy_config_from_user_setting, HTTPProxyConfig
 from cmk.utils.ip_lookup import IPStackConfig
 from cmk.utils.labels import LabelManager, Labels, LabelSources
@@ -556,7 +557,7 @@ def handle_ip_lookup_failure(host_name: HostName, exc: Exception) -> None:
 def get_default_config() -> dict[str, Any]:
     """Provides a dictionary containing the Check_MK default configuration"""
     return {
-        key: copy.deepcopy(value) if isinstance(value, (dict, list)) else value
+        key: copy.deepcopy(value) if isinstance(value, dict | list) else value
         for key, value in default_config.__dict__.items()
         if key[0] != "_"
     }
@@ -595,6 +596,7 @@ class LoadedConfigFragment:
     (compare cmk/base/default_config/base ...)
     """
 
+    folder_attributes: Mapping[str, FolderAttributesForBase]
     discovery_rules: Mapping[RuleSetName, Sequence[RuleSpec]]
     checkgroup_parameters: Mapping[str, Sequence[RuleSpec[Mapping[str, object]]]]
     service_rule_groups: set[str]
@@ -605,6 +607,19 @@ class LoadedConfigFragment:
     use_new_descriptions_for: Container[str]
     nagios_illegal_chars: str
     cmc_illegal_chars: str
+    all_hosts: Sequence[str]
+    clusters: Mapping[HostAddress, Sequence[HostAddress]]
+    shadow_hosts: ShadowHosts
+    service_dependencies: Sequence[tuple]
+    agent_config: Mapping[str, Sequence[RuleSpec]]
+    agent_ports: Sequence[RuleSpec[int]]
+    agent_encryption: Sequence[RuleSpec[str | None]]
+    agent_exclude_sections: Sequence[RuleSpec[dict[str, str]]]
+    cmc_real_time_checks: RealTimeChecks | None
+    apply_bake_revision: bool
+    bake_agents_on_restart: bool
+    agent_bakery_logging: int | None
+    is_wato_slave_site: bool
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
@@ -654,7 +669,7 @@ def load(
 # This function still mostly manipulates a global state.
 # Passing the discovery rulesets as an argument is a first step to make it more functional.
 def load_packed_config(
-    config_path: ConfigPath, discovery_rulesets: Iterable[RuleSetName]
+    config_path: Path, discovery_rulesets: Iterable[RuleSetName]
 ) -> LoadingResult:
     """Load the configuration for the CMK helpers of CMC
 
@@ -691,6 +706,7 @@ def _perform_post_config_loading_actions(
     _drop_invalid_ssc_rules(global_dict)
 
     loaded_config = LoadedConfigFragment(
+        folder_attributes=folder_attributes,
         discovery_rules=discovery_settings,
         checkgroup_parameters=checkgroup_parameters,
         service_rule_groups=service_rule_groups,
@@ -699,6 +715,19 @@ def _perform_post_config_loading_actions(
         use_new_descriptions_for=use_new_descriptions_for,
         nagios_illegal_chars=nagios_illegal_chars,
         cmc_illegal_chars=cmc_illegal_chars,
+        all_hosts=all_hosts,
+        clusters=clusters,
+        shadow_hosts=shadow_hosts,
+        service_dependencies=service_dependencies,
+        agent_config=agent_config,
+        agent_ports=agent_ports,
+        agent_encryption=agent_encryption,
+        agent_exclude_sections=agent_exclude_sections,
+        cmc_real_time_checks=cmc_real_time_checks,
+        agent_bakery_logging=agent_bakery_logging,
+        apply_bake_revision=apply_bake_revision,
+        bake_agents_on_restart=bake_agents_on_restart,
+        is_wato_slave_site=is_wato_slave_site,
     )
 
     config_cache = _create_config_cache(loaded_config).initialize()
@@ -787,7 +816,6 @@ def _load_config(with_conf_d: bool) -> set[str]:
         _load_config_file(experimental_config, global_dict)
 
     host_storage_loaders = get_host_storage_loaders(config_storage_format)
-    config_dir_path = Path(cmk.utils.paths.check_mk_config_dir)
     for path in get_config_file_paths(with_conf_d):
         try:
             # Make the config path available as a global variable to be used
@@ -797,7 +825,7 @@ def _load_config(with_conf_d: bool) -> set[str]:
             current_path: str | None = None
             folder_path: str | None = None
             with contextlib.suppress(ValueError):
-                relative_path = path.relative_to(config_dir_path)
+                relative_path = path.relative_to(cmk.utils.paths.check_mk_config_dir)
                 current_path = f"/{relative_path}"
                 folder_path = str(relative_path.parent)
             global_dict["FOLDER_PATH"] = folder_path
@@ -878,13 +906,13 @@ def _collect_parameter_rulesets_from_globals(
 
 # Create list of all files to be included during configuration loading
 def get_config_file_paths(with_conf_d: bool) -> list[Path]:
-    list_of_files = [Path(cmk.utils.paths.main_config_file)]
+    list_of_files = [cmk.utils.paths.main_config_file]
     if with_conf_d:
-        all_files = Path(cmk.utils.paths.check_mk_config_dir).rglob("*")
+        all_files = cmk.utils.paths.check_mk_config_dir.rglob("*")
         list_of_files += sorted(
             [p for p in all_files if p.suffix in {".mk"}], key=cmk.utils.key_config_paths
         )
-    for path in [Path(cmk.utils.paths.final_config_file), Path(cmk.utils.paths.local_config_file)]:
+    for path in [cmk.utils.paths.final_config_file, cmk.utils.paths.local_config_file]:
         if path.exists():
             list_of_files.append(path)
     return list_of_files
@@ -906,7 +934,7 @@ def get_derived_config_variable_names() -> set[str]:
 
 
 def save_packed_config(
-    config_path: ConfigPath,
+    config_path: Path,
     config_cache: ConfigCache,
     discovery_rules: Mapping[RuleSetName, Sequence[RuleSpec]],
 ) -> None:
@@ -1042,12 +1070,12 @@ class PackedConfigStore:
         self.path: Final = path
 
     @classmethod
-    def from_serial(cls, config_path: ConfigPath) -> PackedConfigStore:
+    def from_serial(cls, config_path: Path) -> PackedConfigStore:
         return cls(cls.make_packed_config_store_path(config_path))
 
     @classmethod
-    def make_packed_config_store_path(cls, config_path: ConfigPath) -> Path:
-        return Path(config_path) / "precompiled_check_config.mk"
+    def make_packed_config_store_path(cls, config_path: Path) -> Path:
+        return config_path / "precompiled_check_config.mk"
 
     def write(self, helper_config: Mapping[str, Any]) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -1078,7 +1106,7 @@ def set_use_core_config(
     orig_autochecks_dir: Final = cmk.utils.paths.autochecks_dir
     orig_discovered_host_labels_dir: Final = cmk.utils.paths.discovered_host_labels_dir
     try:
-        cmk.utils.paths.autochecks_dir = str(autochecks_dir)
+        cmk.utils.paths.autochecks_dir = autochecks_dir
         cmk.utils.paths.discovered_host_labels_dir = discovered_host_labels_dir
         yield
     finally:
@@ -1106,14 +1134,6 @@ def strip_tags(tagged_hostlist: Iterable[str]) -> Sequence[HostName]:
     with contextlib.suppress(KeyError):
         return cache[cache_id]
     return cache.setdefault(cache_id, [HostName(h.split("|", 1)[0]) for h in tagged_hostlist])
-
-
-def _get_shadow_hosts() -> ShadowHosts:
-    try:
-        # Only available with CEE
-        return shadow_hosts  # type: ignore[name-defined,unused-ignore]
-    except NameError:
-        return {}
 
 
 # .
@@ -1161,37 +1181,38 @@ def _make_service_description_cb(
 # b) It only affects the Nagios core - CMC does not implement service dependencies
 # c) This function implements some specific regex replacing match+replace which makes it incompatible to
 #    regular service rulesets. Therefore service_extra_conf() can not easily be used :-/
-def service_depends_on(
-    config_cache: ConfigCache, hostname: HostName, servicedesc: ServiceName
-) -> list[ServiceName]:
-    """Return a list of services this service depends upon"""
-    deps = []
-    for entry in service_dependencies:
-        entry, rule_options = tuple_rulesets.get_rule_options(entry)
-        if rule_options.get("disabled"):
-            continue
+@dataclasses.dataclass(frozen=True)
+class ServiceDependsOn:
+    tag_list: Callable[[HostName], Sequence[TagID]]
+    service_dependencies: Sequence[tuple]  # :-(
 
-        if len(entry) == 3:
-            depname, hostlist, patternlist = entry
-            tags: list[TagID] = []
-        elif len(entry) == 4:
-            depname, tags, hostlist, patternlist = entry
-        else:
-            raise MKGeneralException(
-                "Invalid entry '%r' in service dependencies: must have 3 or 4 entries" % entry
-            )
-
-        if tuple_rulesets.hosttags_match_taglist(
-            config_cache.tag_list(hostname), tags
-        ) and tuple_rulesets.in_extraconf_hostlist(hostlist, hostname):
-            for pattern in patternlist:
-                if matchobject := regex(pattern).search(servicedesc):
-                    try:
-                        item = matchobject.groups()[-1]
-                        deps.append(depname % item)
-                    except Exception:
-                        deps.append(depname)
-    return deps
+    def __call__(self, hostname: HostName, servicedesc: ServiceName) -> list[ServiceName]:
+        """Return a list of services this service depends on"""
+        deps = []
+        for entry in self.service_dependencies:
+            entry, rule_options = tuple_rulesets.get_rule_options(entry)
+            if rule_options.get("disabled"):
+                continue
+            if len(entry) == 3:
+                depname, hostlist, patternlist = entry
+                tags: list[TagID] = []
+            elif len(entry) == 4:
+                depname, tags, hostlist, patternlist = entry
+            else:
+                raise MKGeneralException(
+                    "Invalid entry '%r' in service dependencies: must have 3 or 4 entries" % entry
+                )
+            if tuple_rulesets.hosttags_match_taglist(
+                self.tag_list(hostname), tags
+            ) and tuple_rulesets.in_extraconf_hostlist(hostlist, hostname):
+                for pattern in patternlist:
+                    if matchobject := regex(pattern).search(servicedesc):
+                        try:
+                            item = matchobject.groups()[-1]
+                            deps.append(depname % item)
+                        except (IndexError, TypeError):
+                            deps.append(depname)
+        return deps
 
 
 # .
@@ -1273,9 +1294,7 @@ service_rule_groups = {"temperature"}
 #   '----------------------------------------------------------------------'
 
 
-def load_all_plugins(
-    checks_dir: str,
-) -> AgentBasedPlugins:
+def load_all_pluginX(checks_dir: Path) -> AgentBasedPlugins:
     with tracer.span("load_legacy_check_plugins"):
         with tracer.span("discover_legacy_check_plugins"):
             filelist = find_plugin_files(checks_dir)
@@ -1298,7 +1317,7 @@ def load_and_convert_legacy_checks(
         filelist,
         FileLoader(
             precomile_path=cmk.utils.paths.precompiled_checks_dir,
-            makedirs=store.makedirs,
+            makedirs=lambda path: Path(path).mkdir(mode=0o770, parents=True, exist_ok=True),
         ),
         raise_errors=cmk.ccc.debug.enabled(),
     )
@@ -1487,17 +1506,17 @@ def get_ssc_host_config(
 #   +----------------------------------------------------------------------+
 
 
-def make_hosts_config() -> Hosts:
+def make_hosts_config(loaded_config: LoadedConfigFragment) -> Hosts:
     return Hosts(
-        hosts=strip_tags(all_hosts),
-        clusters=strip_tags(clusters),
-        shadow_hosts=list(_get_shadow_hosts()),
+        hosts=strip_tags(loaded_config.all_hosts),
+        clusters=strip_tags(loaded_config.clusters),
+        shadow_hosts=list(loaded_config.shadow_hosts),
     )
 
 
-def _make_clusters_nodes_maps() -> tuple[
-    Mapping[HostName, Sequence[HostName]], Mapping[HostName, Sequence[HostName]]
-]:
+def _make_clusters_nodes_maps(
+    clusters: Mapping[HostName, Sequence[HostName]],
+) -> tuple[Mapping[HostName, Sequence[HostName]], Mapping[HostName, Sequence[HostName]]]:
     clusters_of_cache: dict[HostName, list[HostName]] = {}
     nodes_cache: dict[HostName, Sequence[HostName]] = {}
     for cluster, hosts in clusters.items():
@@ -1605,7 +1624,7 @@ class ConfigCache:
         (
             self._clusters_of_cache,
             self._nodes_cache,
-        ) = _make_clusters_nodes_maps()
+        ) = _make_clusters_nodes_maps(self._loaded_config.clusters)
 
         # TODO: remove this from the config cache. It is a completely
         # self-contained object that should be passed around (if it really
@@ -1617,7 +1636,7 @@ class ConfigCache:
         ] = {}
         self._check_mk_check_interval: dict[HostName, float] = {}
 
-        self.hosts_config = make_hosts_config()
+        self.hosts_config = make_hosts_config(self._loaded_config)
 
         tag_to_group_map = ConfigCache.get_tag_to_group_map()
         self._collect_hosttags(tag_to_group_map)
@@ -1849,7 +1868,7 @@ class ConfigCache:
             checking_sections = frozenset(
                 agent_based_register.filter_relevant_raw_sections(
                     consumers=[
-                        plugins.check_plugins[n]
+                        p
                         for n in self.check_table(
                             hostname,
                             plugins.check_plugins,
@@ -1858,7 +1877,8 @@ class ConfigCache:
                             filter_mode=FilterMode.INCLUDE_CLUSTERED,
                             skip_ignored=True,
                         ).needed_check_names()
-                        if n in plugins.check_plugins
+                        if (p := agent_based_register.get_check_plugin(n, plugins.check_plugins))
+                        is not None
                     ],
                     sections=itertools.chain(
                         plugins.agent_sections.values(), plugins.snmp_sections.values()
@@ -1952,12 +1972,13 @@ class ConfigCache:
         plugins: Mapping[CheckPluginName, CheckPlugin],
         service_configurer: ServiceConfigurer,
         service_name_config: PassiveServiceNameConfig,
+        service_depends_on: Callable[[HostAddress, ServiceName], Sequence[ServiceName]],
     ) -> Sequence[ConfiguredService]:
         services = self._sorted_services(hostname, plugins, service_configurer, service_name_config)
         if is_cmc():
             return services
 
-        unresolved = [(s, set(service_depends_on(self, hostname, s.description))) for s in services]
+        unresolved = [(s, set(service_depends_on(hostname, s.description))) for s in services]
 
         resolved: list[ConfiguredService] = []
         while unresolved:
@@ -2552,7 +2573,9 @@ class ConfigCache:
             passwords,
             password_store_file,
             ExecutableFinder(
-                cmk.utils.paths.local_special_agents_dir, cmk.utils.paths.special_agents_dir
+                # NOTE: we can't ignore these, they're an API promise.
+                cmk.utils.paths.local_special_agents_dir,
+                cmk.utils.paths.special_agents_dir,
             ),
         )
         for agentname, params_seq in host_special_agents:
@@ -2722,7 +2745,7 @@ class ConfigCache:
                     tag_to_group_map, self._hosttags[hostname]
                 )
 
-        for shadow_host_name, shadow_host_spec in list(_get_shadow_hosts().items()):
+        for shadow_host_name, shadow_host_spec in shadow_hosts.items():
             self._hosttags[shadow_host_name] = tuple(
                 set(shadow_host_spec.get("custom_variables", {}).get("TAGS", TagID("")).split())
             )
@@ -3119,7 +3142,7 @@ class ConfigCache:
                 fetcher_type=FetcherType.PIGGYBACK,
                 host_name=host_name,
                 ident="piggyback",
-                section_cache_path=Path(cmk.utils.paths.var_dir),
+                section_cache_path=cmk.utils.paths.var_dir,
             ).exists()
         )
 
@@ -3419,21 +3442,6 @@ class ConfigCache:
         hostname: HostName,
         ip_address_of: IPLookup,
     ) -> ObjectAttributes:
-        def _set_addresses(
-            attrs: ObjectAttributes,
-            addresses: list[HostAddress] | None,
-            what: Literal["4", "6"],
-        ) -> None:
-            key_base = f"_ADDRESSES_{what}"
-            if not addresses:
-                # If other addresses are not available, set to empty string in order to avoid unresolved macros
-                attrs[key_base] = ""
-                return
-            attrs[key_base] = " ".join(addresses)
-            for nr, address in enumerate(addresses):
-                key = f"{key_base}_{nr + 1}"
-                attrs[key] = address
-
         attrs = self.extra_host_attributes(hostname)
 
         # Pre 1.6 legacy attribute. We have changed our whole code to use the
@@ -3455,41 +3463,38 @@ class ConfigCache:
 
         ip_stack_config = ConfigCache.ip_stack_config(hostname)
 
-        # Now lookup configured IP addresses
-        v4address: str | None = None
-        if IPStackConfig.IPv4 in ip_stack_config:
-            v4address = ip_address_of(hostname, socket.AddressFamily.AF_INET)
+        v4address = (
+            ip_address_of(hostname, socket.AddressFamily.AF_INET)
+            if IPStackConfig.IPv4 in ip_stack_config
+            else None
+        )
+        attrs["_ADDRESS_4"] = "" if v4address is None else v4address
 
-        if v4address is None:
-            v4address = ""
-        attrs["_ADDRESS_4"] = v4address
+        v6address = (
+            ip_address_of(hostname, socket.AddressFamily.AF_INET6)
+            if IPStackConfig.IPv6 in ip_stack_config
+            else None
+        )
+        attrs["_ADDRESS_6"] = "" if v6address is None else v6address
 
-        v6address: str | None = None
-        if IPStackConfig.IPv6 in ip_stack_config:
-            v6address = ip_address_of(hostname, socket.AddressFamily.AF_INET6)
-        if v6address is None:
-            v6address = ""
-        attrs["_ADDRESS_6"] = v6address
-
-        if self.default_address_family(hostname) is socket.AF_INET6:
-            attrs["address"] = attrs["_ADDRESS_6"]
-            attrs["_ADDRESS_FAMILY"] = "6"
-        else:
-            attrs["address"] = attrs["_ADDRESS_4"]
-            attrs["_ADDRESS_FAMILY"] = "4"
+        ipv6_is_default = self.default_address_family(hostname) is socket.AF_INET6
+        attrs["address"] = attrs["_ADDRESS_6"] if ipv6_is_default else attrs["_ADDRESS_4"]
+        attrs["_ADDRESS_FAMILY"] = "6" if ipv6_is_default else "4"
 
         add_ipv4addrs, add_ipv6addrs = self.additional_ipaddresses(hostname)
-        _set_addresses(attrs, add_ipv4addrs, "4")
-        _set_addresses(attrs, add_ipv6addrs, "6")
 
-        # Add the optional WATO folder path
-        path = host_paths.get(hostname)
-        if path:
+        attrs["_ADDRESSES_4"] = " ".join(add_ipv4addrs)
+        for n, address in enumerate(add_ipv4addrs, start=1):
+            attrs[f"_ADDRESSES_4_{n}"] = address
+
+        attrs["_ADDRESSES_6"] = " ".join(add_ipv6addrs)
+        for n, address in enumerate(add_ipv6addrs, start=1):
+            attrs[f"_ADDRESSES_6_{n}"] = address
+
+        if path := host_paths.get(hostname):
             attrs["_FILENAME"] = path
 
-        # Add custom user icons and actions
-        actions = self.icons_and_actions(hostname)
-        if actions:
+        if actions := self.icons_and_actions(hostname):
             attrs["_ACTIONS"] = ",".join(actions)
 
         if cmk_version.edition(cmk.utils.paths.omd_root) is cmk_version.Edition.CME:
@@ -3644,7 +3649,7 @@ class ConfigCache:
     @staticmethod
     def replace_macros(s: str, macros: ObjectMacros) -> str:
         for key, value in macros.items():
-            if isinstance(value, (numbers.Integral, float)):
+            if isinstance(value, numbers.Integral | float):
                 value = str(value)  # e.g. in _EC_SL (service level)
 
             # TODO: Clean this up
@@ -3941,83 +3946,6 @@ def _create_config_cache(loaded_config: LoadedConfigFragment) -> ConfigCache:
     return CEEConfigCache(loaded_config)
 
 
-# TODO(au): Find a way to retreive the matchtype_information directly from the
-# rulespecs. This is not possible atm because they live in cmk.gui
-class _Matchtype(Enum):
-    LIST = "list"
-    FIRST = "first"
-    DICT = "dict"
-    ALL = "all"
-
-
-_BAKERY_PLUGINS_WITH_SPECIAL_MATCHTYPES = {
-    "agent_paths": _Matchtype.DICT,
-    "cmk_update_agent": _Matchtype.DICT,
-    "custom_files": _Matchtype.LIST,
-    "fileinfo": _Matchtype.LIST,
-    "logging": _Matchtype.DICT,
-    "lnx_remote_alert_handlers": _Matchtype.ALL,
-    "mk_logwatch": _Matchtype.ALL,
-    "mk_filestats": _Matchtype.DICT,
-    "mk_oracle": _Matchtype.DICT,
-    "mrpe": _Matchtype.LIST,
-    "bakery_packages": _Matchtype.DICT,
-    "real_time_checks": _Matchtype.DICT,
-    "runas": _Matchtype.LIST,
-    "win_script_cache_age": _Matchtype.ALL,
-    "win_script_execution": _Matchtype.ALL,
-    "win_script_retry_count": _Matchtype.ALL,
-    "win_script_runas": _Matchtype.ALL,
-    "win_script_timeout": _Matchtype.ALL,
-    "unix_plugins_cache_age": _Matchtype.ALL,
-}
-
-
-def boil_down_agent_rules(
-    *, defaults: Mapping[str, Any], rulesets: Mapping[str, Any]
-) -> Mapping[str, Any]:
-    boiled_down = {**defaults}
-
-    # TODO: Better move whole computation to cmk.base.config for making
-    # ruleset matching transparent
-    for varname, entries in rulesets.items():
-        if not entries:
-            continue
-
-        if (
-            len(entries) > 0
-            and isinstance(first_entry := entries[0], dict)
-            and (cmk_match_type := first_entry.get("cmk-match-type", None)) is not None
-        ):
-            # new Ruleset API will use merge as default match_type
-            match_type = _Matchtype(cmk_match_type)
-        else:
-            match_type = _BAKERY_PLUGINS_WITH_SPECIAL_MATCHTYPES.get(varname, _Matchtype.FIRST)
-
-        if match_type is _Matchtype.FIRST:
-            boiled_down[varname] = entries[0]
-        elif match_type is _Matchtype.LIST:
-            boiled_down[varname] = [it for entry in entries for it in entry]
-        elif match_type is _Matchtype.DICT:
-            # Watch out! In this case we have to merge all rules on top of the defaults!
-            # Compare #14868
-            boiled_down[varname] = {
-                **defaults.get(varname, {}),
-                **{
-                    k: v
-                    for entry in entries[::-1]
-                    for k, v in entry.items()
-                    if k != "cmk-match-type"
-                },
-            }
-        elif match_type is _Matchtype.ALL:
-            boiled_down[varname] = entries
-        else:
-            assert_never(match_type)
-
-    return boiled_down
-
-
 class ParserFactory:
     # TODO: better and clearer separation between ConfigCache and this class.
     def __init__(self, config_cache: ConfigCache, ruleset_matcher_: RulesetMatcher) -> None:
@@ -4158,7 +4086,7 @@ class FetcherFactory:
                 host_name,
                 fetcher_type=FetcherType.SNMP,
                 ident="snmp",
-                section_cache_path=Path(cmk.utils.paths.var_dir),
+                section_cache_path=cmk.utils.paths.var_dir,
             ),
             snmp_config=snmp_config,
             stored_walk_path=fetcher_config.stored_walk_path,
@@ -4401,49 +4329,6 @@ class CEEConfigCache(ConfigCache):
 
         return self.__lnx_remote_alert_handlers.setdefault(host_name, _impl())
 
-    def rtc_secret(self, host_name: HostName) -> str | None:
-        def _impl() -> str | None:
-            default: Sequence[RuleSpec[object]] = []
-            if not (
-                settings := self.ruleset_matcher.get_host_values(
-                    host_name,
-                    agent_config.get("real_time_checks", default),
-                    self.label_manager.labels_of_host,
-                )
-            ):
-                return None
-            match settings[0]["encryption"]:
-                case ("disabled", None):
-                    return None
-                case ("enabled", password_spec):
-                    return password_store.extract(password_spec)
-                case unknown_value:
-                    raise ValueError(unknown_value)
-
-        with contextlib.suppress(KeyError):
-            return self.__rtc_secret[host_name]
-
-        return self.__rtc_secret.setdefault(host_name, _impl())
-
-    @staticmethod
-    def cmc_real_time_checks() -> object:
-        return cmc_real_time_checks  # type: ignore[name-defined,unused-ignore]
-
-    def agent_config(self, host_name: HostName, default: Mapping[str, Any]) -> Mapping[str, Any]:
-        def _impl() -> Mapping[str, Any]:
-            return {
-                **boil_down_agent_rules(
-                    defaults=default,
-                    rulesets=self.matched_agent_config_entries(host_name),
-                ),
-                "is_ipv6_primary": (self.default_address_family(host_name) is socket.AF_INET6),
-            }
-
-        with contextlib.suppress(KeyError):
-            return self.__agent_config[host_name]
-
-        return self.__agent_config.setdefault(host_name, _impl())
-
     def rrd_config_of_service(
         self, host_name: HostName, service_name: ServiceName
     ) -> RRDObjectConfig | None:
@@ -4560,77 +4445,6 @@ class CEEConfigCache(ConfigCache):
             self.label_manager.labels_of_host,
         )
         return out[0] if out else None
-
-    def matched_agent_config_entries(self, hostname: HostName) -> dict[str, Any]:
-        return {
-            varname: self.ruleset_matcher.get_host_values(
-                hostname, ruleset, self.label_manager.labels_of_host
-            )
-            for varname, ruleset in CEEConfigCache._agent_config_rulesets()
-        }
-
-    @staticmethod
-    def generic_agent_config_entries(
-        *, defaults: Mapping[str, object]
-    ) -> Iterable[tuple[str, Mapping[str, object]]]:
-        yield from (
-            (
-                match_path,
-                boil_down_agent_rules(
-                    defaults=defaults,
-                    rulesets={
-                        varname: CEEConfigCache._get_values_for_generic_agent(ruleset, match_path)
-                        for varname, ruleset in CEEConfigCache._agent_config_rulesets()
-                    },
-                ),
-            )
-            for match_path, attributes in folder_attributes.items()
-            if attributes.get("bake_agent_package", False)
-        )
-
-    @staticmethod
-    def _get_values_for_generic_agent(
-        ruleset: Iterable[RuleSpec[tuple[str, Any]]], path_for_rule_matching: str
-    ) -> Sequence[tuple[str, Any]]:
-        """Compute rulesets for "generic" hosts
-
-        This fictious host has no name and no tags.
-        It matches all rules that do not require specific hosts or tags.
-        It matches rules that e.g. except specific hosts or tags (is not, has not set).
-        """
-        entries: list[tuple[str, Any]] = []
-        for rule in ruleset:
-            if ruleset_matcher.is_disabled(rule):
-                continue
-
-            rule_path = (cond := rule["condition"]).get("host_folder")
-            if rule_path is not None and not path_for_rule_matching.startswith(rule_path):
-                continue
-
-            if (tags := cond.get("host_tags", {})) and not ruleset_matcher.matches_host_tags(
-                set(), tags
-            ):
-                continue
-
-            if (
-                label_groups := cond.get("host_label_groups", [])
-            ) and not ruleset_matcher.matches_labels({}, label_groups):
-                continue
-
-            if not ruleset_matcher.matches_host_name(cond.get("host_name"), HostName("")):
-                continue
-
-            entries.append(rule["value"])
-
-        return entries
-
-    @staticmethod
-    def _agent_config_rulesets() -> Iterable[tuple[str, Any]]:
-        return list(agent_config.items()) + [
-            ("agent_port", agent_ports),
-            ("agent_encryption", agent_encryption),
-            ("agent_exclude_sections", agent_exclude_sections),
-        ]
 
 
 class CMEConfigCache(CEEConfigCache):

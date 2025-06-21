@@ -6,7 +6,7 @@ import json
 import time
 from typing import Any
 
-from cmk.utils.user import UserId
+from cmk.ccc.user import UserId
 
 from cmk.gui import bi as bi
 from cmk.gui.bi import bi_config_aggregation_function_registry
@@ -16,7 +16,7 @@ from cmk.gui.htmllib.header import make_header
 from cmk.gui.htmllib.html import html
 from cmk.gui.http import request
 from cmk.gui.i18n import _, _l
-from cmk.gui.main_menu import mega_menu_registry
+from cmk.gui.main_menu import main_menu_registry
 from cmk.gui.nodevis.filters import FilterTopologyMaxNodes, FilterTopologyMeshDepth
 from cmk.gui.nodevis.utils import BILayoutManagement, get_toggle_layout_designer_page_menu_entry
 from cmk.gui.page_menu import make_display_options_dropdown, PageMenu, PageMenuTopic
@@ -203,7 +203,10 @@ class NodeVisualizationBIDataMapper:
             rule_name_idx = self._get_sibling_index("rule_name", parent_id + rule_name)
             own_id = f"#{rule_name}#{rule_name_idx}"
             aggr_path_id.append(
-                [rule_id["rule"], self._get_sibling_index("rule_id", parent_id + rule_id["rule"])]
+                [
+                    rule_id["rule"],
+                    self._get_sibling_index("rule_id", parent_id + rule_id["rule"]),
+                ]
             )
             aggr_path_name.append([rule_name, rule_name_idx])
         else:
@@ -288,7 +291,7 @@ def _bi_map() -> None:
     aggr_name = request.var("aggr_name")
     layout_id = request.var("layout_id")
     title = _("BI visualization")
-    breadcrumb = make_simple_page_breadcrumb(mega_menu_registry.menu_monitoring(), title)
+    breadcrumb = make_simple_page_breadcrumb(main_menu_registry.menu_monitoring(), title)
     page_menu = PageMenu(breadcrumb=breadcrumb)
     display_dropdown = page_menu.get_dropdown_by_name("display", make_display_options_dropdown())
     display_dropdown.topics.insert(
@@ -349,7 +352,7 @@ def _register_builtin_views():
                 "sort_index": 99,
                 "is_show_more": False,
                 "packaged": False,
-                "megamenu_search_terms": [],
+                "main_menu_search_terms": [],
             },
             "bi_map_hover_service": {
                 "browser_reload": 0,
@@ -394,7 +397,7 @@ def _register_builtin_views():
                 "sort_index": 99,
                 "is_show_more": False,
                 "packaged": False,
-                "megamenu_search_terms": [],
+                "main_menu_search_terms": [],
             },
         }
     )

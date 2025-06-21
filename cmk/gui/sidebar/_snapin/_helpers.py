@@ -17,8 +17,9 @@ from cmk.gui.htmllib.generator import HTMLWriter
 from cmk.gui.htmllib.html import html
 from cmk.gui.i18n import _
 from cmk.gui.logged_in import user
+from cmk.gui.main_menu import get_main_menu_items_prefixed_by_segment
 from cmk.gui.sites import filter_available_site_choices
-from cmk.gui.type_defs import Choices, Icon, TopicMenuItem, TopicMenuTopic, Visual
+from cmk.gui.type_defs import Choices, Icon, MainMenuItem, MainMenuTopic, Visual
 from cmk.gui.utils.html import HTML
 from cmk.gui.visuals import visual_title
 
@@ -115,10 +116,12 @@ def snapin_site_choice(ident: str, choices: list[tuple[SiteId, str]]) -> list[Si
     return only_sites
 
 
-def make_topic_menu(visuals: Sequence[tuple[str, tuple[str, Visual]]]) -> list[TopicMenuTopic]:
+def make_main_menu(
+    visuals: Sequence[tuple[str, tuple[str, Visual]]],
+) -> list[MainMenuTopic]:
     topics = {p.name(): p for p in pagetypes.PagetypeTopics.load().permitted_instances_sorted()}
 
-    by_topic: dict[pagetypes.PagetypeTopics, TopicMenuTopic] = {}
+    by_topic: dict[pagetypes.PagetypeTopics, MainMenuTopic] = {}
 
     for visual_type_name, (name, visual) in visuals:
         if visual["hidden"] or visual.get("mobile"):
@@ -139,19 +142,19 @@ def make_topic_menu(visuals: Sequence[tuple[str, tuple[str, Visual]]]) -> list[T
 
         url = _visual_url(visual_type_name, name)
 
-        topic_menu_topic = by_topic.setdefault(
+        main_menu_topic = by_topic.setdefault(
             topic,
-            TopicMenuTopic(
+            MainMenuTopic(
                 name=topic.name(),
                 title=topic.title(),
                 max_entries=topic.max_entries(),
-                items=[],
+                entries=[],
                 icon=topic.icon_name(),
                 hide=topic.hide(),
             ),
         )
-        topic_menu_topic.items.append(
-            TopicMenuItem(
+        main_menu_topic.entries.append(
+            MainMenuItem(
                 name=name,
                 title=visual_title(
                     visual_type_name, visual, visual["context"], skip_title_context=True
@@ -160,13 +163,13 @@ def make_topic_menu(visuals: Sequence[tuple[str, tuple[str, Visual]]]) -> list[T
                 sort_index=visual["sort_index"],
                 is_show_more=visual["is_show_more"],
                 icon=visual["icon"],
-                megamenu_search_terms=visual["megamenu_search_terms"],
+                main_menu_search_terms=visual["main_menu_search_terms"],
             )
         )
 
-    # Sort the items of all topics
-    for topic_menu in by_topic.values():
-        topic_menu.items.sort(key=lambda i: (i.sort_index, i.title))
+    # Sort the entries of all topics
+    for main_menu in by_topic.values():
+        main_menu.entries.sort(key=lambda i: (i.sort_index, i.title))
 
     # Return the sorted topics
     return [
@@ -198,15 +201,13 @@ def _visual_url(visual_type_name: str, name: str) -> str:
     raise NotImplementedError("Unknown visual type: %s" % visual_type_name)
 
 
-def show_topic_menu(
-    treename: str, menu: list[TopicMenuTopic], show_item_icons: bool = False
-) -> None:
+def show_main_menu(treename: str, menu: list[MainMenuTopic], show_item_icons: bool = False) -> None:
     for topic in menu:
         _show_topic(treename, topic, show_item_icons)
 
 
-def _show_topic(treename: str, topic: TopicMenuTopic, show_item_icons: bool) -> None:
-    if not topic.items:
+def _show_topic(treename: str, topic: MainMenuTopic, show_item_icons: bool) -> None:
+    if not topic.entries:
         return
 
     with foldable_container(
@@ -216,12 +217,14 @@ def _show_topic(treename: str, topic: TopicMenuTopic, show_item_icons: bool) -> 
         title=topic.title,
         indent=True,
     ):
-        for item in topic.items:
+        for item in get_main_menu_items_prefixed_by_segment(topic):
             if show_item_icons:
                 html.open_li(class_=["sidebar"] + (["show_more_mode"] if item.is_show_more else []))
                 iconlink(item.title, item.url, item.icon or "icon_missing")
                 html.close_li()
             else:
                 bulletlink(
-                    item.title, item.url, onclick="return cmk.sidebar.wato_views_clicked(this)"
+                    item.title,
+                    item.url,
+                    onclick="return cmk.sidebar.wato_views_clicked(this)",
                 )

@@ -24,9 +24,7 @@ $package_name = Split-Path -Path (Get-Location) -Leaf
 
 $exe_name = "$package_name.exe"
 $work_dir = "$pwd"
-#set target=x86_64-pc-windows-mscvc # 64 bit not used now
 $cargo_target = "i686-pc-windows-msvc"
-$exe_dir = "target/$cargo_target/release"
 
 $packBuild = $false
 $packClippy = $false
@@ -176,24 +174,25 @@ function Update-Dirs() {
     $arte_dir = "$root_dir/artefacts"
     If (!(Test-Path -PathType container $arte_dir)) {
         Remove-Item $arte_dir -ErrorAction SilentlyContinue     # we may have find strange files from bad scripts
-        Write-Host "Creating arte dir: '$arte_dir'" -ForegroundColor White
+        Write-Host "Creating output dir: '$arte_dir'" -ForegroundColor White
         New-Item -ItemType Directory -Path $arte_dir -ErrorAction Stop > nul
     }
     $global:arte_dir = "$arte_dir"
-    Write-Host "Using arte dir: '$global:arte_dir'" -ForegroundColor White
+    Write-Host "Using output dir: '$global:arte_dir'" -ForegroundColor White
 }
 
 $result = 1
 try {
     $mainStartTime = Get-Date
 
-    & cargo --version > nul
+    & rustup --version > nul
     if ($lastexitcode -ne 0) {
-        Write-Error "Cargo not found, please install it and/or add to PATH" -ErrorAction Stop
+        Write-Error "rustup not found, please install it and/or add to PATH" -ErrorAction Stop
     }
     &rustup update
+    &rustup install
     &rustup target add $cargo_target
-    & rustc -V
+    & rustc --target $cargo_target -V
     & cargo -V
 
     # Disable assert()s in C/C++ parts (e.g. wepoll-ffi), they map to _assert()/_wassert(),
@@ -210,7 +209,7 @@ try {
     }
     if ($packBuild) {
         $cwd = Get-Location
-        $target_dir = Join-Path -Path "$cwd" -ChildPath "target/$cargo_target"
+        $target_dir = Join-Path (cargo metadata --no-deps | ConvertFrom-json).target_directory "$cargo_target"
         Write-Host "Killing processes in $target_dir" -ForegroundColor White
         Get-Process | Where-Object { $_.path -and ($_.path -like "$target_dir\*") } | Stop-Process -Force
         &cargo build --release --target $cargo_target
@@ -246,6 +245,7 @@ try {
         }
     }
     if ($packBuild -and $packTest -and $packClippy) {
+        $exe_dir = Join-Path (cargo metadata --no-deps | ConvertFrom-json).target_directory "$cargo_target" "release"
         Write-Host "Uploading artifacts: [ $exe_dir/$exe_name -> $arte_dir/$exe_name ] ..." -Foreground White
         Copy-Item $exe_dir/$exe_name $arte_dir/$exe_name -Force -ErrorAction Stop
     }

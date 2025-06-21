@@ -42,7 +42,7 @@ class PasswordVisitor(FormSpecVisitor[Password, ParsedPassword, VuePassword]):
         if isinstance(raw_value, DefaultValue):
             return InvalidValue(reason=_("No password provided"), fallback_value=fallback_value)
 
-        if not isinstance(raw_value, (tuple, list)):
+        if not isinstance(raw_value, tuple | list):
             return InvalidValue(reason=_("No password provided"), fallback_value=fallback_value)
 
         match self.options.data_origin:
@@ -88,7 +88,7 @@ class PasswordVisitor(FormSpecVisitor[Password, ParsedPassword, VuePassword]):
         return "cmk_postprocessed", password_type, (password_id, password)
 
     def _to_vue(
-        self, raw_value: object, parsed_value: ParsedPassword | InvalidValue[VuePassword]
+        self, parsed_value: ParsedPassword | InvalidValue[VuePassword]
     ) -> tuple[VueComponents.Password, VuePassword]:
         title, help_text = get_title_and_help(self.form_spec)
         value: VuePassword = (
@@ -126,9 +126,7 @@ class PasswordVisitor(FormSpecVisitor[Password, ParsedPassword, VuePassword]):
             value,
         )
 
-    def _validate(
-        self, raw_value: object, parsed_value: ParsedPassword
-    ) -> list[VueComponents.ValidationMessage]:
+    def _validate(self, parsed_value: ParsedPassword) -> list[VueComponents.ValidationMessage]:
         if parsed_value[1] == "explicit_password":
             return [
                 VueComponents.ValidationMessage(location=[], message=x, replacement_value="")

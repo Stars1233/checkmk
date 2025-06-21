@@ -39,10 +39,11 @@ inpath() {
 
 init_sudo() {
     if inpath sudo && [ "$(whoami)" != "root" ]; then
-        sudo_as_root() { sudo --non-interactive "$@"; }
+        ROOT_OR_SUDO="sudo --non-interactive"
     else
-        sudo_as_root() { "$@"; }
+        ROOT_OR_SUDO=""
     fi
+    export ROOT_OR_SUDO
 }
 
 get_file_atime() {
@@ -893,11 +894,11 @@ fi
 
 _run_cached_internal() {
     # Run a command asynchronous by use of a cache file.
-    # Usage: _run_cached_internal NAME REFRESH_INTERVAL MAXAGE OUTPUT_TIMEOUT OUTPUT_TIMEOUT CREATION_TIMEOUT [COMMAND ...]
+    # Usage: _run_cached_internal NAME REFRESH_INTERVAL MAXAGE OUTPUT_TIMEOUT CREATION_TIMEOUT [COMMAND ...]
     # Note that while multiple COMMAND arguments are considered, they are evaluated in a string.
     # This means that extra escaping is required.
     # For example:
-    # To run a cat command every two minutes, considering the created data valid for one three minutes,
+    # To run a cat command every two minutes, considering the created data valid for three minutes,
     # send the created data for four minutes and allowing the command to run for 12 minutes, you'll have to call
     #
     #   _run_cached_interal "my_file_content" 120 180 240 720 "cat \"My File\""
@@ -920,12 +921,13 @@ _run_cached_internal() {
     # threshold in seconds for how long the process is allowed to be running before it is killed (see below for details)
 
     shift 5
-    # $* is now the command to run
 
     if ${DISABLE_CACHING:-false}; then
-        # We need the re-splitting to be compatible with the caching case, so:
-        # shellcheck disable=SC2068
-        $@
+        # We need to be compatible with the caching case. This section mirrors the implementation
+        # below.
+        cat <<HERE | "${CURRENT_SHELL}"
+            $*
+HERE
         return
     fi
 
@@ -964,7 +966,7 @@ _run_cached_internal() {
         if [ $((NOW - MTIME)) -gt "${REFRESH_INTERVAL}" ] && [ ! -e "$(_cfile_in_use)" ]; then
 
             # Start it.
-            # We're running two parrallel blocks, implementing a timeout. Roughly:
+            # We're running two parallel blocks, implementing a timeout. Roughly:
             # First block: Run command then kill ourselves (including the other block!)
             # Second block: Sleep for a while. If I survive: Handle the fact that block one did not kill me.
             cat <<HERE | _nohup "${CURRENT_SHELL}" >/dev/null 2>&1 &

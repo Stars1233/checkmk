@@ -12,7 +12,9 @@ from cmk.agent_based.v2 import (
     CheckResult,
     DiscoveryResult,
     get_value_store,
+    Result,
     RuleSetType,
+    State,
 )
 from cmk.plugins.lib.diskstat import (
     check_diskstat_dict_legacy,
@@ -20,7 +22,7 @@ from cmk.plugins.lib.diskstat import (
     discovery_diskstat_generic,
     DISKSTAT_DEFAULT_PARAMS,
 )
-from cmk.plugins.lib.esx_vsphere import average_parsed_data, CounterValues, SectionCounter
+from cmk.plugins.vsphere.lib.esx_vsphere import average_parsed_data, CounterValues, SectionCounter
 
 # Example output:
 # <<<esx_vsphere_counters:sep(124)>>>
@@ -135,12 +137,23 @@ def _check_esx_vsphere_datastore_io(
             datastores.setdefault(item_name, {})[parser.key] = parser.evaluate(values[0][0])
 
     if item == "SUMMARY":
-        disk = combine_disks(datastores.values())
+        # Exclude disks with only negative values. This means that no data could be collected by
+        # the ESX host or vCenter.
+        # See: https://github.com/vmware/pyvmomi/issues/191#issuecomment-72217028
+        disk = combine_disks(
+            disk for disk in datastores.values() if all(x >= 0 for x in disk.values())
+        )
     else:
         try:
             disk = datastores[item]
         except KeyError:
             return
+
+    if all(x < 0 for x in disk.values()):
+        # A "-1" in the raw data indicates that the ESX host or vCenter could not determine a value.
+        # See: https://github.com/vmware/pyvmomi/issues/191#issuecomment-72217028
+        yield Result(state=State.UNKNOWN, summary="No valid data from queried host")
+        return
 
     yield from check_diskstat_dict_legacy(
         params=params,

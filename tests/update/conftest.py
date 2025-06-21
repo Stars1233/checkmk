@@ -14,8 +14,8 @@ from tests.testlib.agent_dumps import inject_dumps
 from tests.testlib.site import Site
 from tests.testlib.version import (
     CMKEdition,
-    CMKEditionType,
     edition_from_env,
+    TypeCMKEdition,
 )
 
 from tests.update.helpers import (
@@ -32,15 +32,7 @@ from tests.update.helpers import (
 logger = logging.getLogger(__name__)
 
 
-def pytest_configure(config):
-    config.addinivalue_line("markers", "cre: marks tests using a raw-edition site")
-    config.addinivalue_line("markers", "cee: marks tests using an enterprise-edition site")
-    config.addinivalue_line("markers", "cce: marks tests using a cloud-edition site")
-    config.addinivalue_line("markers", "cse: marks tests using a saas-edition site")
-    config.addinivalue_line("markers", "cme: marks tests using a managed-edition site")
-
-
-def pytest_addoption(parser):
+def pytest_addoption(parser: pytest.Parser) -> None:
     parser.addoption(
         "--disable-interactive-mode",
         action="store_true",
@@ -98,12 +90,12 @@ def _setup_host(site: Site, hostname: str, ip_address: str) -> Generator[None]:
 @pytest.fixture(name="test_setup", params=TestParams.TEST_PARAMS, scope="module")
 def _setup(
     request: pytest.FixtureRequest,
-) -> Generator[tuple[Site, CMKEditionType, bool, str]]:
+) -> Generator[tuple[Site, TypeCMKEdition, bool, str]]:
     """Install the test site with the base version."""
     base_package, interactive_mode = request.param
     target_edition_raw = request.config.getoption(name="--target-edition")
     target_edition = (
-        CMKEdition(CMKEdition.edition_from_text(target_edition_raw))
+        CMKEdition.edition_from_text(target_edition_raw)
         if target_edition_raw
         else edition_from_env()
     )

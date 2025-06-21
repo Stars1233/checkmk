@@ -25,27 +25,26 @@ from __future__ import annotations
 import abc
 import copy
 import json
-import os
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import suppress
 from dataclasses import dataclass, replace
-from typing import Generic, Literal, Self, TypeVar
+from typing import Generic, Literal, override, Self, TypeVar
 
 from pydantic import BaseModel as PydanticBaseModel
 
 from cmk.ccc import store
 from cmk.ccc.exceptions import MKGeneralException
+from cmk.ccc.user import UserId
 from cmk.ccc.version import Edition, edition
 
 import cmk.utils.paths
-from cmk.utils.user import UserId
 
 import cmk.gui.pages
 from cmk.gui import sites, userdb
 from cmk.gui.breadcrumb import Breadcrumb, BreadcrumbItem, make_main_menu_breadcrumb
 from cmk.gui.config import default_authorized_builtin_role_ids
 from cmk.gui.default_name import unique_default_name_suggestion
-from cmk.gui.default_permissions import PermissionSectionGeneral
+from cmk.gui.default_permissions import PERMISSION_SECTION_GENERAL
 from cmk.gui.exceptions import MKAuthException, MKUserError
 from cmk.gui.hooks import request_memoize
 from cmk.gui.htmllib.generator import HTMLWriter
@@ -54,7 +53,7 @@ from cmk.gui.htmllib.html import html
 from cmk.gui.http import request, response
 from cmk.gui.i18n import _, _l, _u
 from cmk.gui.logged_in import LoggedInUser, save_user_file, user
-from cmk.gui.main_menu import mega_menu_registry, MegaMenuRegistry
+from cmk.gui.main_menu import main_menu_registry, MainMenuRegistry
 from cmk.gui.page_menu import (
     doc_reference_to_page_menu,
     make_confirmed_form_submit_link,
@@ -82,10 +81,11 @@ from cmk.gui.type_defs import (
     AnnotatedUserId,
     HTTPVariables,
     Icon,
-    MegaMenu,
+    MainMenu,
+    MainMenuItem,
+    MainMenuTopic,
+    MainMenuTopicEntries,
     PermissionName,
-    TopicMenuItem,
-    TopicMenuTopic,
     Visual,
 )
 from cmk.gui.user_sites import get_configured_site_choices
@@ -192,9 +192,9 @@ class PagetypeTopicConfig(OverridableConfig):
     hide: bool = False  # TODO: Seems it is not configurable through the UI. Is it OK?
 
 
-def register(mega_menu_registry_: MegaMenuRegistry) -> None:
-    mega_menu_registry_.register(
-        MegaMenu(
+def register(main_menu_registry_: MainMenuRegistry) -> None:
+    main_menu_registry_.register(
+        MainMenu(
             name="customize",
             title=_l("Customize"),
             icon="main_customize",
@@ -475,6 +475,7 @@ class Overridable(Base[_T_OverridableConfig]):
             (instance.name() for instance in instances.instances()),
         )
 
+    @override
     @classmethod
     def parameters(cls, mode: PageMode) -> list[tuple[str, list[tuple[float, str, ValueSpec]]]]:
         parameters = super().parameters(mode)
@@ -508,6 +509,7 @@ class Overridable(Base[_T_OverridableConfig]):
             ),
         ]
 
+    @override
     @classmethod
     def page_handlers(cls) -> dict[str, cmk.gui.pages.PageHandlerFunc]:
         handlers = super().page_handlers()
@@ -556,6 +558,7 @@ class Overridable(Base[_T_OverridableConfig]):
 
         return False
 
+    @override
     def is_hidden(self) -> bool:
         return self.config.hidden
 
@@ -710,7 +713,7 @@ class Overridable(Base[_T_OverridableConfig]):
 
         permission_registry.register(
             Permission(
-                section=PermissionSectionGeneral,
+                section=PERMISSION_SECTION_GENERAL,
                 name="edit_" + cls.type_name(),
                 title=_l("Customize and use %s") % title_lower,
                 description=_l("Allows to create own %s, customize built-in %s and use them.")
@@ -721,7 +724,7 @@ class Overridable(Base[_T_OverridableConfig]):
 
         permission_registry.register(
             Permission(
-                section=PermissionSectionGeneral,
+                section=PERMISSION_SECTION_GENERAL,
                 name="publish_" + cls.type_name(),
                 title=_l("Publish %s") % title_lower,
                 description=_l("Make %s visible and usable for all users.") % title_lower,
@@ -731,7 +734,7 @@ class Overridable(Base[_T_OverridableConfig]):
 
         permission_registry.register(
             Permission(
-                section=PermissionSectionGeneral,
+                section=PERMISSION_SECTION_GENERAL,
                 name="publish_to_groups_" + cls.type_name(),
                 title=_l("Publish %s to allowed contact groups") % title_lower,
                 description=_l(
@@ -744,7 +747,7 @@ class Overridable(Base[_T_OverridableConfig]):
 
         permission_registry.register(
             Permission(
-                section=PermissionSectionGeneral,
+                section=PERMISSION_SECTION_GENERAL,
                 name="publish_to_foreign_groups_" + cls.type_name(),
                 title=_l("Publish %s to foreign contact groups") % title_lower,
                 description=_l(
@@ -757,7 +760,7 @@ class Overridable(Base[_T_OverridableConfig]):
 
         permission_registry.register(
             Permission(
-                section=PermissionSectionGeneral,
+                section=PERMISSION_SECTION_GENERAL,
                 name="publish_to_sites_" + cls.type_name(),
                 title=_l("Publish %s to users of selected sites") % title_lower,
                 description=_l(
@@ -772,7 +775,7 @@ class Overridable(Base[_T_OverridableConfig]):
         # TODO: Bug: This permission does not seem to be used
         permission_registry.register(
             Permission(
-                section=PermissionSectionGeneral,
+                section=PERMISSION_SECTION_GENERAL,
                 name="see_user_" + cls.type_name(),
                 title=_l("See user %s") % title_lower,
                 description=_l("Is needed for seeing %s that other users have created.")
@@ -783,7 +786,7 @@ class Overridable(Base[_T_OverridableConfig]):
 
         permission_registry.register(
             Permission(
-                section=PermissionSectionGeneral,
+                section=PERMISSION_SECTION_GENERAL,
                 name="force_" + cls.type_name(),
                 title=_l("Modify built-in %s") % title_lower,
                 description=_l("Make own published %s override built-in %s for all users.")
@@ -794,7 +797,7 @@ class Overridable(Base[_T_OverridableConfig]):
 
         permission_registry.register(
             Permission(
-                section=PermissionSectionGeneral,
+                section=PERMISSION_SECTION_GENERAL,
                 name="edit_foreign_" + cls.type_name(),
                 title=_l("Edit foreign %s") % title_lower,
                 description=_("Allows to view and edit %s created by other users.") % title_lower,
@@ -804,7 +807,7 @@ class Overridable(Base[_T_OverridableConfig]):
 
         permission_registry.register(
             Permission(
-                section=PermissionSectionGeneral,
+                section=PERMISSION_SECTION_GENERAL,
                 name="delete_foreign_" + cls.type_name(),
                 title=_l("Delete foreign %s") % title_lower,
                 description=_l("Allows to delete %s created by other users.") % title_lower,
@@ -953,6 +956,7 @@ class ListPage(Page, Generic[_T]):
     def __init__(self, pagetype: type[_T]) -> None:
         self._type = pagetype
 
+    @override
     def page(self) -> None:
         instances = self._type.load()
         self._type.need_overriding_permission("edit")
@@ -1171,6 +1175,7 @@ class EditPage(Page, Generic[_T_OverridableConfig, _T]):
     def __init__(self, pagetype: type[_T]) -> None:
         self._type = pagetype
 
+    @override
     def page(self) -> None:
         """Page for editing an existing page, or creating a new one"""
         back_url = request.get_url_input("back", self._type.list_url())
@@ -1203,7 +1208,8 @@ class EditPage(Page, Generic[_T_OverridableConfig, _T]):
                 page = instances.instance((owner_id, page_name))
             except KeyError:
                 raise MKUserError(
-                    None, _("The requested %s does not exist") % self._type.phrase("title")
+                    None,
+                    _("The requested %s does not exist") % self._type.phrase("title"),
                 )
 
             page_dict = page.serialize()
@@ -1331,7 +1337,7 @@ class EditPage(Page, Generic[_T_OverridableConfig, _T]):
 def make_breadcrumb(
     title: str, page_name: str, list_url: str, parent_title: str | None = None
 ) -> Breadcrumb:
-    breadcrumb = make_main_menu_breadcrumb(mega_menu_registry.menu_customize())
+    breadcrumb = make_main_menu_breadcrumb(main_menu_registry.menu_customize())
 
     breadcrumb.append(BreadcrumbItem(title=parent_title or title, url=list_url))
 
@@ -1657,6 +1663,7 @@ class OverridableContainer(Overridable[_T_OverridableContainerConfig]):
                 ),
             )
 
+    @override
     @classmethod
     def page_handlers(cls) -> dict[str, cmk.gui.pages.PageHandlerFunc]:
         handlers = super().page_handlers()
@@ -1733,6 +1740,7 @@ class OverridableContainer(Overridable[_T_OverridableContainerConfig]):
         del self.config.elements[nr]
         self.config.elements[whither:whither] = [el]
 
+    @override
     def is_empty(self) -> bool:
         return not self.elements()
 
@@ -1769,6 +1777,7 @@ class PageRenderer(OverridableContainer[_T_PageRendererConfig]):
 
     # Parameters special for page renderers. These can be added to the sidebar,
     # so we need a topic and a checkbox for the visibility
+    @override
     @classmethod
     def parameters(cls, mode: PageMode) -> list[tuple[str, list[tuple[float, str, ValueSpec]]]]:
         parameters = super().parameters(mode)
@@ -1833,6 +1842,7 @@ class PageRenderer(OverridableContainer[_T_PageRendererConfig]):
 
         return parameters
 
+    @override
     @classmethod
     def page_handlers(cls) -> dict[str, cmk.gui.pages.PageHandlerFunc]:
         handlers = super().page_handlers()
@@ -1878,6 +1888,7 @@ class PageRenderer(OverridableContainer[_T_PageRendererConfig]):
         return self.config.is_show_more
 
     # Helper functions for page handlers and render function
+    @override
     def page_header(self) -> str:
         return self.phrase("title") + " - " + self.title()
 
@@ -1894,6 +1905,7 @@ class PageRenderer(OverridableContainer[_T_PageRendererConfig]):
             http_vars.append(("owner", self.owner()))
         return makeuri_contextless(request, http_vars, filename="%s.py" % self.type_name())
 
+    @override
     def render_title(self, instances: OverridableInstances[Self]) -> str | HTML:
         if self._can_be_linked(instances):
             return HTMLWriter.render_a(self.title(), href=self.page_url())
@@ -1917,7 +1929,7 @@ class PageRenderer(OverridableContainer[_T_PageRendererConfig]):
             "public": False if self.config.public is None else self.config.public,
             "packaged": False,
             "link_from": {},
-            "megamenu_search_terms": [],
+            "main_menu_search_terms": [],
         }
 
 
@@ -1982,6 +1994,7 @@ def page_menu_add_to_topics(added_type: str) -> list[PageMenuTopic]:
 
 
 class PagetypeTopics(Overridable[PagetypeTopicConfig]):
+    @override
     @classmethod
     def deserialize(cls, page_dict: Mapping[str, object]) -> Self:
         deserialized = PagetypeTopicModel.model_validate(page_dict)
@@ -2000,6 +2013,7 @@ class PagetypeTopics(Overridable[PagetypeTopicConfig]):
             )
         )
 
+    @override
     def serialize(self) -> dict[str, object]:
         return PagetypeTopicModel(
             name=self.config.name,
@@ -2014,14 +2028,17 @@ class PagetypeTopics(Overridable[PagetypeTopicConfig]):
             hide=self.config.hide,
         ).model_dump()
 
+    @override
     @classmethod
     def type_name(cls) -> str:
         return "pagetype_topic"
 
+    @override
     @classmethod
     def type_icon(cls) -> Icon:
         return "pagetype_topic"
 
+    @override
     @classmethod
     def phrase(cls, phrase: PagetypePhrase) -> str:
         return {
@@ -2033,6 +2050,7 @@ class PagetypeTopics(Overridable[PagetypeTopicConfig]):
             "new": _("Add topic"),
         }.get(phrase, Base.phrase(phrase))
 
+    @override
     @classmethod
     def parameters(cls, mode: PageMode) -> list[tuple[str, list[tuple[float, str, ValueSpec]]]]:
         parameters = super().parameters(mode)
@@ -2083,12 +2101,14 @@ class PagetypeTopics(Overridable[PagetypeTopicConfig]):
 
         return parameters
 
+    @override
     def render_extra_columns(self, table: Table) -> None:
         """Show some specific useful columns in the list view"""
         table.cell(_("Icon"), html.render_icon(self.config.icon_name))
         table.cell(_("Nr. of items"), str(self.max_entries()))
         table.cell(_("Sort index"), str(self.config.sort_index))
 
+    @override
     @classmethod
     def builtin_pages(cls) -> Mapping[str, PagetypeTopicConfig]:
         topics: dict[str, PagetypeTopicConfig] = {
@@ -2263,10 +2283,11 @@ declare(PagetypeTopics)
 
 
 def _no_bi_aggregate_active() -> bool:
-    enabled_info_file = "%s/num_enabled_aggregations" % os.path.join(
-        cmk.utils.paths.var_dir, "wato"
+    return bool(
+        not store.load_object_from_file(
+            cmk.utils.paths.var_dir / "wato/num_enabled_aggregations", default=None
+        )
     )
-    return bool(not store.load_object_from_file(enabled_info_file, default=None))
 
 
 #   .--Main menu-----------------------------------------------------------.
@@ -2282,15 +2303,15 @@ def _no_bi_aggregate_active() -> bool:
 # .
 
 
-def _customize_menu_topics() -> list[TopicMenuTopic]:
-    general_items = []
-    monitoring_items = []
-    graph_items = []
-    business_reporting_items = []
+def _customize_menu_topics() -> list[MainMenuTopic]:
+    general_entries: MainMenuTopicEntries = []
+    monitoring_entries: MainMenuTopicEntries = []
+    graph_entries: MainMenuTopicEntries = []
+    business_reporting_entries: MainMenuTopicEntries = []
 
     if user.may("general.edit_views"):
-        monitoring_items.append(
-            TopicMenuItem(
+        monitoring_entries.append(
+            MainMenuItem(
                 name="views",
                 title=_("Views"),
                 url="edit_views.py",
@@ -2301,8 +2322,8 @@ def _customize_menu_topics() -> list[TopicMenuTopic]:
         )
 
     if user.may("general.edit_dashboards"):
-        monitoring_items.append(
-            TopicMenuItem(
+        monitoring_entries.append(
+            MainMenuItem(
                 name="dashboards",
                 title=_("Dashboards"),
                 url="edit_dashboards.py",
@@ -2313,8 +2334,8 @@ def _customize_menu_topics() -> list[TopicMenuTopic]:
         )
 
     if user.may("general.edit_reports"):
-        business_reporting_items.append(
-            TopicMenuItem(
+        business_reporting_entries.append(
+            MainMenuItem(
                 name="reports",
                 title=_("Reports"),
                 url="edit_reports.py",
@@ -2328,7 +2349,7 @@ def _customize_menu_topics() -> list[TopicMenuTopic]:
         if not user.may(f"general.edit_{page_type_.type_name()}"):
             continue
 
-        item = TopicMenuItem(
+        item = MainMenuItem(
             name=page_type_.type_name(),
             title=page_type_.phrase("title_plural"),
             url="%ss.py" % page_type_.type_name(),
@@ -2337,43 +2358,47 @@ def _customize_menu_topics() -> list[TopicMenuTopic]:
             icon=page_type_.type_icon(),
         )
 
-        if page_type_.type_name() in ("pagetype_topic", "bookmark_list", "custom_snapin"):
-            general_items.append(item)
+        if page_type_.type_name() in (
+            "pagetype_topic",
+            "bookmark_list",
+            "custom_snapin",
+        ):
+            general_entries.append(item)
         elif page_type_.type_name() == "sla_configuration":
-            business_reporting_items.append(item)
+            business_reporting_entries.append(item)
         elif "graph" in page_type_.type_name():
-            graph_items.append(item)
+            graph_entries.append(item)
         else:
-            monitoring_items.append(item)
+            monitoring_entries.append(item)
 
     topics = [
-        TopicMenuTopic(
+        MainMenuTopic(
             name="general",
             title=_("General"),
             icon="topic_general",
-            items=general_items,
+            entries=general_entries,
         ),
-        TopicMenuTopic(
+        MainMenuTopic(
             name="visualization",
             title=_("Visualization"),
             icon="topic_visualization",
-            items=monitoring_items,
+            entries=monitoring_entries,
         ),
-        TopicMenuTopic(
+        MainMenuTopic(
             name="graphs",
             title=_("Graphs"),
             icon="topic_graphs",
-            items=graph_items,
+            entries=graph_entries,
         ),
     ]
 
     if _has_reporting():
         topics.append(
-            TopicMenuTopic(
+            MainMenuTopic(
                 name="business_reporting",
                 title=_("Business reporting"),
                 icon="topic_reporting",
-                items=business_reporting_items,
+                entries=business_reporting_entries,
             )
         )
 

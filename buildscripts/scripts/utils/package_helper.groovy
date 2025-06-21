@@ -41,7 +41,7 @@ def provide_agent_binaries(version, edition, disable_cache, bisect_comment) {
             condition: true, // edition != "raw",  // FIXME!
             dependency_paths: [
                 "agents",
-                "non-free/cmk-update-agent"
+                "non-free/packages/cmk-update-agent"
             ],
             install_cmd: """\
                 # check-mk-agent-*.{deb,rpm}
@@ -50,7 +50,7 @@ def provide_agent_binaries(version, edition, disable_cache, bisect_comment) {
                 install -m 755 -D cmk-agent-ctl* mk-sql -t ${checkout_dir}/agents/linux/
                 if [ "${edition}" != "raw" ]; then
                     echo "edition is ${edition} => copy Linux agent updaters"
-                    install -m 755 -D cmk-update-agent* -t ${checkout_dir}/non-free/cmk-update-agent/
+                    install -m 755 -D cmk-update-agent* -t ${checkout_dir}/non-free/packages/cmk-update-agent/
                 fi
                 """.stripIndent(),
         ],
@@ -66,8 +66,8 @@ def provide_agent_binaries(version, edition, disable_cache, bisect_comment) {
                 "agents/modules",
                 "agents/windows",
                 "agents/wnx",
-                "packages/host/cmk-agent-ctl",
-                "packages/host/mk-sql",
+                "packages/cmk-agent-ctl",
+                "packages/mk-sql",
                 "third_party/asio",
                 "third_party/fmt",
                 "third_party/googletest",
@@ -123,10 +123,6 @@ def provide_agent_binaries(version, edition, disable_cache, bisect_comment) {
     upstream_job_details.collect { job_name, details ->
         if ( ! details.get("condition", true) ) {
             return;
-        }
-        println("Build ${job_name}");
-        details.collect { key, value ->
-            println("  ${key}: ${value}");
         }
         upstream_build(
             relative_job_name: details.relative_job_name,
