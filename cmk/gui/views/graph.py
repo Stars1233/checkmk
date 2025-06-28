@@ -9,7 +9,7 @@ from collections.abc import Mapping, Sequence
 from typing import Literal
 from uuid import uuid4
 
-from cmk.utils.user import UserId
+from cmk.ccc.user import UserId
 
 from cmk.gui.config import active_config
 from cmk.gui.graphing._from_api import graphs_from_api, metrics_from_api, RegisteredMetric
@@ -52,7 +52,6 @@ from cmk.gui.valuespec import (
     MigrateNotUpdated,
     Timerange,
     Transform,
-    ValueSpec,
 )
 from cmk.gui.view_utils import CellSpec, CSVExportError, JSONExportError, PythonExportError
 
@@ -63,8 +62,8 @@ def register(
     painter_option_registry: PainterOptionRegistry,
     multisite_builtin_views: dict[ViewName, ViewSpec],
 ) -> None:
-    painter_option_registry.register(PainterOptionGraphRenderOptions)
-    painter_option_registry.register(PainterOptionPNPTimerange)
+    painter_option_registry.register(PainterOptionGraphRenderOptions())
+    painter_option_registry.register(PainterOptionPNPTimerange())
 
     multisite_builtin_views.update(_GRAPH_VIEWS)
 
@@ -115,7 +114,7 @@ _GRAPH_VIEWS = {
             "sort_index": 99,
             "is_show_more": False,
             "packaged": False,
-            "megamenu_search_terms": [],
+            "main_menu_search_terms": [],
         }
     ),
     "host_graphs": ViewSpec(
@@ -157,7 +156,7 @@ _GRAPH_VIEWS = {
             "sort_index": 99,
             "is_show_more": False,
             "packaged": False,
-            "megamenu_search_terms": [],
+            "main_menu_search_terms": [],
         }
     ),
 }
@@ -330,26 +329,26 @@ class PainterServiceGraphs(Painter):
     def parameters(self):
         return cmk_time_graph_params()
 
-    def render(self, row: Row, cell: Cell) -> CellSpec:
+    def render(self, row: Row, cell: Cell, user: LoggedInUser) -> CellSpec:
         return paint_time_graph_cmk(
             row,
             cell,
             metrics_from_api,
             graphs_from_api,
-            user=self.user,
+            user=user,
             request=self.request,
             response=response,
             painter_options=self._painter_options,
             show_time_range_previews=True,
         )
 
-    def export_for_python(self, row: Row, cell: Cell) -> object:
+    def export_for_python(self, row: Row, cell: Cell, user: LoggedInUser) -> object:
         raise PythonExportError()
 
-    def export_for_csv(self, row: Row, cell: Cell) -> str | HTML:
+    def export_for_csv(self, row: Row, cell: Cell, user: LoggedInUser) -> str | HTML:
         raise CSVExportError()
 
-    def export_for_json(self, row: Row, cell: Cell) -> object:
+    def export_for_json(self, row: Row, cell: Cell, user: LoggedInUser) -> object:
         raise JSONExportError()
 
 
@@ -377,13 +376,13 @@ class PainterHostGraphs(Painter):
     def parameters(self):
         return cmk_time_graph_params()
 
-    def render(self, row: Row, cell: Cell) -> CellSpec:
+    def render(self, row: Row, cell: Cell, user: LoggedInUser) -> CellSpec:
         return paint_time_graph_cmk(
             row,
             cell,
             metrics_from_api,
             graphs_from_api,
-            user=self.user,
+            user=user,
             request=self.request,
             response=response,
             painter_options=self._painter_options,
@@ -393,37 +392,30 @@ class PainterHostGraphs(Painter):
             require_historic_metrics="service_description" not in row,
         )
 
-    def export_for_python(self, row: Row, cell: Cell) -> object:
+    def export_for_python(self, row: Row, cell: Cell, user: LoggedInUser) -> object:
         raise PythonExportError()
 
-    def export_for_csv(self, row: Row, cell: Cell) -> str | HTML:
+    def export_for_csv(self, row: Row, cell: Cell, user: LoggedInUser) -> str | HTML:
         raise CSVExportError()
 
-    def export_for_json(self, row: Row, cell: Cell) -> object:
+    def export_for_json(self, row: Row, cell: Cell, user: LoggedInUser) -> object:
         raise JSONExportError()
 
 
 class PainterOptionGraphRenderOptions(PainterOption):
-    @property
-    def ident(self) -> str:
-        return "graph_render_options"
-
-    @property
-    def valuespec(self) -> ValueSpec:
-        return vs_graph_render_options()
+    def __init__(self) -> None:
+        super().__init__(ident="graph_render_options", valuespec=vs_graph_render_options())
 
 
 class PainterOptionPNPTimerange(PainterOption):
-    @property
-    def ident(self) -> str:
-        return "pnp_timerange"
-
-    @property
-    def valuespec(self) -> Timerange:
-        return Timerange(
-            title=_("Graph time range"),
-            default_value=None,
-            include_time=True,
+    def __init__(self) -> None:
+        super().__init__(
+            ident="pnp_timerange",
+            valuespec=Timerange(
+                title=_("Graph time range"),
+                default_value=None,
+                include_time=True,
+            ),
         )
 
 
@@ -457,25 +449,25 @@ class PainterSvcPnpgraph(Painter):
     def parameters(self) -> Transform:
         return cmk_time_graph_params()
 
-    def render(self, row: Row, cell: Cell) -> CellSpec:
+    def render(self, row: Row, cell: Cell, user: LoggedInUser) -> CellSpec:
         return paint_time_graph_cmk(
             row,
             cell,
             metrics_from_api,
             graphs_from_api,
-            user=self.user,
+            user=user,
             request=self.request,
             response=response,
             painter_options=self._painter_options,
         )
 
-    def export_for_python(self, row: Row, cell: Cell) -> object:
+    def export_for_python(self, row: Row, cell: Cell, user: LoggedInUser) -> object:
         raise PythonExportError()
 
-    def export_for_csv(self, row: Row, cell: Cell) -> str | HTML:
+    def export_for_csv(self, row: Row, cell: Cell, user: LoggedInUser) -> str | HTML:
         raise CSVExportError()
 
-    def export_for_json(self, row: Row, cell: Cell) -> object:
+    def export_for_json(self, row: Row, cell: Cell, user: LoggedInUser) -> object:
         raise JSONExportError()
 
 
@@ -506,25 +498,25 @@ class PainterHostPnpgraph(Painter):
     def parameters(self) -> Transform:
         return cmk_time_graph_params()
 
-    def render(self, row: Row, cell: Cell) -> CellSpec:
+    def render(self, row: Row, cell: Cell, user: LoggedInUser) -> CellSpec:
         return paint_time_graph_cmk(
             row,
             cell,
             metrics_from_api,
             graphs_from_api,
-            user=self.user,
+            user=user,
             request=self.request,
             response=response,
             painter_options=self._painter_options,
         )
 
-    def export_for_python(self, row: Row, cell: Cell) -> object:
+    def export_for_python(self, row: Row, cell: Cell, user: LoggedInUser) -> object:
         raise PythonExportError()
 
-    def export_for_csv(self, row: Row, cell: Cell) -> str | HTML:
+    def export_for_csv(self, row: Row, cell: Cell, user: LoggedInUser) -> str | HTML:
         raise CSVExportError()
 
-    def export_for_json(self, row: Row, cell: Cell) -> object:
+    def export_for_json(self, row: Row, cell: Cell, user: LoggedInUser) -> object:
         raise JSONExportError()
 
 

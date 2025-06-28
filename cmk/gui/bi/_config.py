@@ -43,7 +43,7 @@ from cmk.gui.page_menu import (
     PageMenuSearch,
     PageMenuTopic,
 )
-from cmk.gui.pages import AjaxPage, PageRegistry, PageResult
+from cmk.gui.pages import AjaxPage, PageEndpoint, PageRegistry, PageResult
 from cmk.gui.permissions import Permission, PermissionRegistry
 from cmk.gui.site_config import wato_slave_sites
 from cmk.gui.table import init_rowselect, table_element
@@ -84,7 +84,7 @@ from cmk.gui.valuespec import (
     ValueSpecText,
     ValueSpecValidateFunc,
 )
-from cmk.gui.wato import ContactGroupSelection, PermissionSectionWATO, TileMenuRenderer
+from cmk.gui.wato import ContactGroupSelection, PERMISSION_SECTION_WATO, TileMenuRenderer
 from cmk.gui.watolib.audit_log import LogMessage
 from cmk.gui.watolib.config_domains import ConfigDomainGUI
 from cmk.gui.watolib.groups_io import load_contact_group_information
@@ -125,8 +125,8 @@ def register(
     mode_registry: ModeRegistry,
     permission_registry: PermissionRegistry,
 ) -> None:
-    page_registry.register_page("ajax_bi_rule_preview")(AjaxBIRulePreview)
-    page_registry.register_page("ajax_bi_aggregation_preview")(AjaxBIAggregationPreview)
+    page_registry.register(PageEndpoint("ajax_bi_rule_preview", AjaxBIRulePreview))
+    page_registry.register(PageEndpoint("ajax_bi_aggregation_preview", AjaxBIAggregationPreview))
 
     main_module_topic_registry.register(MainModuleTopicBI)
     main_module_registry.register(MainModuleBI)
@@ -141,7 +141,7 @@ def register(
 
     permission_registry.register(
         Permission(
-            section=PermissionSectionWATO,
+            section=PERMISSION_SECTION_WATO,
             name="bi_rules",
             title=_l("Business Intelligence rules and aggregations"),
             description=_l(
@@ -154,7 +154,7 @@ def register(
 
     permission_registry.register(
         Permission(
-            section=PermissionSectionWATO,
+            section=PERMISSION_SECTION_WATO,
             name="bi_admin",
             title=_l("Business Intelligence administration"),
             description=_l(
@@ -256,7 +256,14 @@ class ABCBIMode(WatoMode):
 
     def _add_change(self, action_name: str, text: LogMessage) -> None:
         site_ids = list(wato_slave_sites().keys()) + [omd_site()]
-        _changes.add_change(action_name, text, domains=[ConfigDomainGUI()], sites=site_ids)
+        _changes.add_change(
+            action_name=action_name,
+            text=text,
+            user_id=user.id,
+            domains=[ConfigDomainGUI()],
+            sites=site_ids,
+            use_git=active_config.wato_use_git,
+        )
 
     def url_to_pack(self, addvars: HTTPVariables, bi_pack: BIAggregationPack) -> str:
         return makeuri_contextless(request, addvars + [("pack", bi_pack.id)])

@@ -1,4 +1,3 @@
-load("@aspect_rules_lint//format:defs.bzl", "format_multirun")
 load("@aspect_rules_py//py:defs.bzl", "py_library", "py_pytest_main", "py_test")
 load("@cmk_requirements//:requirements.bzl", "requirement")
 load("@rules_python//python:packaging.bzl", "py_wheel")
@@ -24,12 +23,15 @@ py_library(
         "cmk/crypto/secrets.py",
         "cmk/crypto/symmetric.py",
         "cmk/crypto/totp.py",
+        "cmk/crypto/x509.py",
     ],
     imports = ["."],
     visibility = ["//cmk:__pkg__"],
     deps = [
+        "//packages/cmk-ccc:site",
         requirement("bcrypt"),
         requirement("cryptography"),
+        requirement("pyasn1"),
         requirement("python-dateutil"),
     ],
 )
@@ -63,17 +65,12 @@ py_test(
     ],
 )
 
-format_multirun(
-    name = "format",
-    python = "@aspect_rules_lint//format:ruff",
-)
-
 py_wheel(
     name = "wheel",
     distribution = "cmk-crypto",
     strip_path_prefixes = ["packages/cmk-crypto"],
     # TODO: Duplicated from pyproject.toml
-    version = "1.0.0",
+    version = "1.1.0",
     deps = [":cmk-crypto"],
 )
 

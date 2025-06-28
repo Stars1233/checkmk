@@ -45,7 +45,7 @@ def migrate_diskstat_inventory(value: object) -> Mapping[str, object]:
         return value
 
     return {
-        **{f: f in value for f in ("summary", "lvm", "vxvm", "diskless")},
+        **{f: f in value and value[f] for f in ("summary", "lvm", "vxvm", "diskless")},
         **({} if physical is None else {"physical": "name"}),
     }
 
@@ -144,7 +144,7 @@ def rename_amd_remove_conversion_arg(value: object) -> dict[str, object]:
 
     value.pop("_NEEDS_CONVERSION", None)
 
-    return {_KEY_MAP.get(k, k): v for k, v in value.items()}
+    return {_KEY_MAP.get(k, k): v for k, v in value.items() if isinstance(k, str)}
 
 
 def migrate_to_float(value: object) -> float:

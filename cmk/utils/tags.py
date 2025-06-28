@@ -791,3 +791,36 @@ def compute_datasources(tag_groups: Mapping[TagGroupID, TagID]) -> ComputedDataS
         is_all_agents_host=tag_groups.get(TagGroupID("agent")) == TagID("all-agents"),
         is_all_special_agents_host=tag_groups.get(TagGroupID("agent")) == TagID("special-agents"),
     )
+
+
+def fallback_tags(site: str) -> Mapping[TagGroupID, TagID]:
+    # Handle not existing hosts (No need to performance optimize this)
+    # TODO: This immitates the logic of cmk.gui.watolib.Host.tag_groups which
+    # is currently responsible for calculating the host tags of a host.
+    # Would be better to untie the GUI code there and move it over to cmk.utils.tags.
+    return {
+        TagGroupID("piggyback"): TagID("auto-piggyback"),
+        TagGroupID("networking"): TagID("lan"),
+        TagGroupID("agent"): TagID("cmk-agent"),
+        TagGroupID("criticality"): TagID("prod"),
+        TagGroupID("snmp_ds"): TagID("no-snmp"),
+        TagGroupID("site"): TagID(site),
+        TagGroupID("address_family"): TagID("ip-v4-only"),
+    }
+
+
+def get_tag_to_group_map(tag_config: TagConfig) -> Mapping[TagID, TagGroupID]:
+    """The old rules only have a list of tags and don't know anything about the
+    tag groups they are coming from. Create a map based on the current tag config
+    """
+    tag_id_to_tag_group_id_map: dict[TagID, TagGroupID] = {}
+
+    for aux_tag in tag_config.aux_tag_list.get_tags():
+        tag_id_to_tag_group_id_map[aux_tag.id] = TagGroupID(aux_tag.id)
+
+    for tag_group in tag_config.tag_groups:
+        for grouped_tag in tag_group.tags:
+            # Do not care for the choices with a None value here. They are not relevant for this map
+            if grouped_tag.id is not None:
+                tag_id_to_tag_group_id_map[grouped_tag.id] = tag_group.id
+    return tag_id_to_tag_group_id_map

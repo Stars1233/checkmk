@@ -6,7 +6,6 @@
 
 import {AlertOverview} from "./cmk_alert_overview";
 import {BarplotFigure} from "./cmk_barplot";
-import {DCTableFigure} from "./cmk_dc_table";
 import {figure_registry} from "./cmk_figures";
 import {GaugeFigure} from "./cmk_gauge";
 import {InventoryFigure} from "./cmk_inventory";
@@ -20,6 +19,8 @@ import {CmkGraphShifter} from "./timeseries/cmk_graph_shifter";
 import {CmkGraphTimeseriesFigure} from "./timeseries/cmk_graph_timeseries_figure";
 import {TimeseriesFigure} from "./timeseries/cmk_timeseries";
 import {SingleMetricFigure} from "./timeseries/single_metric_figure";
+import {PieChartFigure} from "@/modules/figures/cmk_pie_chart";
+import {HorizontalBarFigure} from "@/modules/figures/cmk_horizontal_bar";
 
 export function register() {
     figure_registry.register(TableFigure);
@@ -28,8 +29,9 @@ export function register() {
     figure_registry.register(EventStats);
     figure_registry.register(AlertOverview);
     figure_registry.register(BarplotFigure);
-    figure_registry.register(DCTableFigure);
+    figure_registry.register(HorizontalBarFigure);
     figure_registry.register(GaugeFigure);
+    figure_registry.register(PieChartFigure);
     figure_registry.register(InventoryFigure);
     figure_registry.register(SiteOverview);
     figure_registry.register(StateFigure);

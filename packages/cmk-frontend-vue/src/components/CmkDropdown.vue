@@ -17,7 +17,7 @@ export interface DropdownOption {
   name: string
   title: string
 }
-import { type Suggestion, ErrorResponse } from './suggestions'
+import { ErrorResponse } from './suggestions'
 
 const {
   inputHint = '',
@@ -46,7 +46,7 @@ const {
 const vClickOutside = useClickOutside()
 
 const selectedOption = defineModel<string | null>('selectedOption', { required: true })
-const dropdownButtonLabel = ref<string>(inputHint)
+const buttonLabel = ref<string>(inputHint)
 
 immediateWatch(
   () => ({ newOptions: options, newSelectedOption: selectedOption }),
@@ -78,7 +78,7 @@ immediateWatch(
         return newSelectedOption.value
       }
     }
-    dropdownButtonLabel.value = await getDropdownButtonLabel()
+    buttonLabel.value = await getDropdownButtonLabel()
   },
   { deep: 2 }
 )
@@ -123,10 +123,17 @@ function hideSuggestions(): void {
   comboboxButtonRef.value?.focus()
 }
 
-function selectOption(option: Suggestion): void {
-  selectedOption.value = option.name
+function handleUpdate(selected: string | null): void {
+  selectedOption.value = selected
   hideSuggestions()
 }
+
+const maxLabelLength = 60
+const truncatedButtonLabel = computed(() =>
+  buttonLabel.value.length > maxLabelLength
+    ? `${buttonLabel.value.slice(0, maxLabelLength / 2 - 5)}...${buttonLabel.value.slice(-maxLabelLength / 2 + 5)}`
+    : buttonLabel.value
+)
 </script>
 
 <template>
@@ -143,20 +150,21 @@ function selectOption(option: Suggestion): void {
       ref="comboboxButtonRef"
       :aria-label="label"
       :aria-expanded="suggestionsShown"
+      :title="buttonLabel.length > maxLabelLength ? buttonLabel : ''"
       :disabled="disabled"
       :multiple-choices-available="multipleChoicesAvailable"
       :value-is-selected="selectedOption !== null"
       :open="suggestionsShown"
       :group="startOfGroup ? 'start' : 'no'"
       :width="width"
-      @click.prevent="showSuggestions"
+      @click="showSuggestions"
     >
       <span class="cmk-dropdown--text"
-        >{{ dropdownButtonLabel
+        >{{ truncatedButtonLabel
         }}<template v-if="requiredText !== '' && selectedOption === null">
           {{ ' ' }}<FormRequired :show="true" :space="'before'" :i18n-required="requiredText"
         /></template>
-        <template v-if="!dropdownButtonLabel">&nbsp;</template>
+        <template v-if="!buttonLabel">&nbsp;</template>
       </span>
       <ArrowDown
         class="cmk-dropdown--arrow"
@@ -167,10 +175,10 @@ function selectOption(option: Suggestion): void {
       ref="suggestionsRef"
       role="option"
       :suggestions="options"
+      :selected-option="selectedOption"
       :no-results-hint="noResultsHint"
-      @select="selectOption"
-      @keydown.escape.prevent="hideSuggestions"
-      @keydown.tab.prevent="hideSuggestions"
+      @request-close-suggestions="hideSuggestions"
+      @update:selected-option="handleUpdate"
     />
   </div>
 </template>

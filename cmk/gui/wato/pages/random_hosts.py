@@ -8,10 +8,11 @@ for test and development."""
 import random
 from collections.abc import Collection
 
-from cmk.utils.hostaddress import HostName
+from cmk.ccc.hostaddress import HostAddress, HostName
 
 from cmk.gui import forms
 from cmk.gui.breadcrumb import Breadcrumb
+from cmk.gui.config import active_config
 from cmk.gui.htmllib.html import html
 from cmk.gui.http import request
 from cmk.gui.i18n import _
@@ -20,7 +21,8 @@ from cmk.gui.type_defs import ActionResult, PermissionName
 from cmk.gui.utils.flashed_messages import flash
 from cmk.gui.utils.transaction_manager import transactions
 from cmk.gui.wato.pages.folders import ModeFolder
-from cmk.gui.watolib.hosts_and_folders import folder_from_request
+from cmk.gui.watolib.host_attributes import HostAttributes
+from cmk.gui.watolib.hosts_and_folders import Folder, folder_from_request
 from cmk.gui.watolib.mode import mode_url, ModeRegistry, redirect, WatoMode
 
 
@@ -57,7 +59,9 @@ class ModeRandomHosts(WatoMode):
         count = request.get_integer_input_mandatory("count")
         folders = request.get_integer_input_mandatory("folders")
         levels = request.get_integer_input_mandatory("levels")
-        created = self._create_random_hosts(folder, count, folders, levels)
+        created = self._create_random_hosts(
+            folder, count, folders, levels, pprint_value=active_config.wato_pprint_config
+        )
         flash(_("Added %d random hosts.") % created)
         return redirect(mode_url("folder", folder=folder.path()))
 
@@ -78,13 +82,17 @@ class ModeRandomHosts(WatoMode):
             forms.end()
             html.hidden_fields()
 
-    def _create_random_hosts(self, folder, count, folders, levels):
+    def _create_random_hosts(
+        self, folder: Folder, count: int, folders: int, levels: int, *, pprint_value: bool
+    ) -> int:
         if levels == 0:
-            hosts_to_create: list[tuple[HostName, dict, None]] = []
+            hosts_to_create: list[tuple[HostName, HostAttributes, None]] = []
             while len(hosts_to_create) < count:
                 host_name = "random_%010d" % int(random.random() * 10000000000)
-                hosts_to_create.append((HostName(host_name), {"ipaddress": "127.0.0.1"}, None))
-            folder.create_hosts(hosts_to_create)
+                hosts_to_create.append(
+                    (HostName(host_name), {"ipaddress": HostAddress("127.0.0.1")}, None)
+                )
+            folder.create_hosts(hosts_to_create, pprint_value=pprint_value)
             return count
 
         total_created = 0
@@ -98,6 +106,10 @@ class ModeRandomHosts(WatoMode):
                     break
                 i += 1
 
-            subfolder = folder.create_subfolder(folder_name, "Subfolder %02d" % i, {})
-            total_created += self._create_random_hosts(subfolder, count, folders, levels - 1)
+            subfolder = folder.create_subfolder(
+                folder_name, "Subfolder %02d" % i, {}, pprint_value=pprint_value
+            )
+            total_created += self._create_random_hosts(
+                subfolder, count, folders, levels - 1, pprint_value=pprint_value
+            )
         return total_created

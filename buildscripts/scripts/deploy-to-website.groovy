@@ -5,6 +5,8 @@
 def main() {
     check_job_parameters([
         ["VERSION", true],
+        ["UPDATE_LATEST_BOM_SYMLINKS", true],
+        ["UPDATE_BRANCH_LATEST_BOM_SYMLINKS", true],
         ["CIPARAM_REMOVE_RC_CANDIDATES", true],
     ]);
 
@@ -35,6 +37,17 @@ def main() {
         name: "Deploy to website",
     ) {
         artifacts_helper.deploy_to_website(cmk_version_rc_aware);
+    }
+
+    smart_stage(
+        name: "Update bill-of-materials symlinks",
+        condition: params.UPDATE_BRANCH_LATEST_BOM_SYMLINKS || params.UPDATE_LATEST_BOM_SYMLINKS,
+    ) {
+        artifacts_helper.update_bom_symlinks(
+            cmk_version_rc_aware,
+            branch_latest=params.UPDATE_BRANCH_LATEST_BOM_SYMLINKS,
+            latest=params.UPDATE_LATEST_BOM_SYMLINKS
+        );
     }
 
     smart_stage(

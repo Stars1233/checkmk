@@ -2,10 +2,9 @@
 # Copyright (C) 2020 Checkmk GmbH - License: GNU General Public License v2
 # This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
 # conditions defined in the file COPYING, which is part of this source code package.
-import os
 import typing
 import urllib
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from typing import Any
 
 import pytest
@@ -24,6 +23,7 @@ from cmk.utils import paths
 from cmk.utils.global_ident_type import PROGRAM_ID_QUICK_SETUP
 from cmk.utils.rulesets.definition import RuleGroup
 
+from cmk.gui.logged_in import user
 from cmk.gui.watolib.configuration_bundle_store import BundleId, ConfigBundleStore
 from cmk.gui.watolib.configuration_bundles import create_config_bundle, CreateBundleEntities
 
@@ -231,8 +231,8 @@ def test_openapi_create_rule(
     assert ext["properties"] == values["properties"]
     assert ext["conditions"].items() >= values["conditions"].items()
     # Check that the format on disk is as expected.
-    rules_mk = os.path.join(paths.omd_root, "etc", "check_mk", "conf.d", "wato", "rules.mk")
-    environ = load_mk_file(rules_mk, default={})
+    rules_mk = paths.omd_root / "etc/check_mk/conf.d/wato/rules.mk"
+    environ = load_mk_file(rules_mk, default={}, lock=False)
     stored_condition = environ[values["ruleset"]][0]["condition"]  # type: ignore[index]
     expected_condition = {
         "host_tags": {"criticality": "prod", "networking": {"$ne": "wan"}},
@@ -250,6 +250,25 @@ def test_create_rule_with_string_value(clients: ClientRegistry) -> None:
         conditions={},
     )
     assert resp.json["extensions"]["value_raw"] == "'d,u,r,f,s'"
+
+
+def test_create_rule_stores_migrated_value(clients: ClientRegistry) -> None:
+    ruleset = "diskstat_inventory"
+    clients.Rule.create(
+        ruleset=ruleset,
+        folder="/",
+        properties={"description": "Test", "disabled": False},
+        value_raw="{'summary': True }",
+        conditions={},
+    )
+    rules_path = paths.omd_root / "etc/check_mk/conf.d/wato/rules.mk"
+    rules: Mapping[str, Any] = load_mk_file(rules_path, default={}, lock=False)
+    assert rules[ruleset][0]["value"] == {
+        "summary": True,
+        "lvm": False,
+        "vxvm": False,
+        "diskless": False,
+    }
 
 
 def test_openapi_list_rules(
@@ -515,18 +534,22 @@ def fixture_locked_rule_id() -> Iterable[str]:
             "program_id": program_id,
         },
         entities=CreateBundleEntities(),
+        user_id=user.id,
+        pprint_value=False,
+        use_git=False,
+        debug=False,
     )
 
-    rules_mk = os.path.join(paths.omd_root, "etc", "check_mk", "conf.d", "wato", "rules.mk")
+    rules_mk = paths.omd_root / "etc/check_mk/conf.d/wato/rules.mk"
     content: str | None = None
-    if os.path.exists(rules_mk):
+    if rules_mk.exists():
         with open(rules_mk) as f:
             content = f.read()
     id_ = "f893cdfc-00c8-4d93-943b-05c4edc52068"
     save_to_mk_file(
         rules_mk,
-        "host_label_rules",
-        [
+        key="host_label_rules",
+        value=[
             {
                 "id": id_,
                 "value": {"custom": "label"},
@@ -546,10 +569,10 @@ def fixture_locked_rule_id() -> Iterable[str]:
     store = ConfigBundleStore()
     all_bundles = store.load_for_modification()
     all_bundles.pop(bundle_id)
-    store.save(all_bundles)
+    store.save(all_bundles, pprint_value=False)
 
     if content is None:
-        os.remove(rules_mk)
+        rules_mk.unlink()
     else:
         save_mk_file(rules_mk, content)
 

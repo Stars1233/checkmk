@@ -9,10 +9,8 @@
 # minimal-alpine-checkmk-ci-master:latest bash
 #
 
-FROM artifacts.lan.tribe29.com:4000/python@sha256:1e5c1003284738564008fec60124f2a1a81bfda5b872bf334467ed8689783b18
-# 119MB
-# alpine:3.21 around 190MB
-# python:3.11.6-slim around 1100MB
+FROM artifacts.lan.tribe29.com:4000/python@sha256:723368287c1c3bc77152bf56bd7fe72c44ab55efebc60b1bc148cc19ecd49b71
+# above image is python:3.12-alpine3.21
 
 # bash is required to be used in Jenkins with image.inside(), requires +3MB
 # git is required to use checkmk-dev-tools, requires +13MB
@@ -27,7 +25,7 @@ RUN apk update && \
 # install checkmk-dev-tools to run ci-artifacts
 # install pyyaml to parse editions.yml and stages.yml
 RUN pip3 install --break-system-packages \
- "checkmk-dev-tools>=0.6.0" \
+ "checkmk-dev-tools>=0.8.0" \
  pyyaml
 
 # verify installation

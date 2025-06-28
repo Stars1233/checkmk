@@ -30,7 +30,6 @@ def main() {
         "INTERNAL_DEPLOY_PORT",
         "ARTIFACT_STORAGE",
         "DOCKER_REGISTRY",
-        "NEXUS_BUILD_CACHE_URL",
     ]);
 
     def versioning = load("${checkout_dir}/buildscripts/scripts/utils/versioning.groovy");
@@ -149,6 +148,7 @@ def main() {
                     build_params: [
                         CUSTOM_GIT_REF: effective_git_ref,
                         VERSION: params.VERSION,
+                        EDITION: params.EDITION,
                         DISABLE_CACHE: params.DISABLE_CACHE,
                     ],
                     build_params_no_check: [
@@ -238,8 +238,10 @@ def main() {
     ) {
         dir("${deliverables_dir}") {
             /// BOM shall have a unique name, see CMK-16483
+            // TODO: We should really let bazel generate the correct file name - we're already passing edition and version to bazel build
             sh("""
-                cp omd/bill-of-materials.json check-mk-${params.EDITION}-${cmk_version_rc_aware}-bill-of-materials.json
+                cp omd/bill-of-materials.json check-mk-${params.EDITION}-${cmk_version}-bill-of-materials.json
+                cp omd/bill-of-materials.csv check-mk-${params.EDITION}-${cmk_version}-bill-of-materials.csv
             """);
         }
 
@@ -247,12 +249,20 @@ def main() {
         /// on our own..
         def files_to_upload = {
             dir("${deliverables_dir}") {
-                cmd_output("ls *.{deb,rpm,cma,tar.gz,json} || true").split().toList();
+                cmd_output("ls *.{deb,rpm,cma,tar.gz,json,csv} || true").split().toList();
             }
         }();
         print("Found files to upload: ${files_to_upload}");
 
-        files_to_upload.each { filename ->
+        def filtered_files_to_upload = [];
+        files_to_upload.each { item ->
+            if (!item.startsWith(bazel_log_prefix)) {
+                filtered_files_to_upload += item;
+            }
+        }
+        print("Filtered files to upload: ${filtered_files_to_upload}")
+
+        filtered_files_to_upload.each { filename ->
             artifacts_helper.upload_via_rsync(
                 "${WORKSPACE}/deliverables",
                 "${cmk_version_rc_aware}",
@@ -320,7 +330,7 @@ def main() {
         dir("${deliverables_dir}") {
             show_duration("archiveArtifacts") {
                 archiveArtifacts(
-                    artifacts: "${bazel_log_prefix}*, **/*.json",
+                    artifacts: "${bazel_log_prefix}*",
                     fingerprint: true,
                 );
             }

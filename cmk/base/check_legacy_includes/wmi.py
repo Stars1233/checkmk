@@ -7,14 +7,13 @@ from collections.abc import Callable, Iterable, Mapping
 from math import ceil
 
 from cmk.agent_based.legacy.v0_unstable import check_levels, LegacyCheckResult
-from cmk.agent_based.v2 import get_rate, get_value_store, IgnoreResultsError, render, StringTable
+from cmk.agent_based.v2 import get_rate, get_value_store, render
 from cmk.plugins.windows.agent_based.libwmi import (
     get_wmi_time,
     required_tables_missing,
     WMISection,
     WMITable,
 )
-from cmk.plugins.windows.agent_based.libwmi import parse_wmi_table as parse_wmi_table_migrated
 
 # This set of functions are used for checks that handle "generic" windows
 # performance counters as reported via wmi
@@ -37,33 +36,6 @@ from cmk.plugins.windows.agent_based.libwmi import parse_wmi_table as parse_wmi_
 #   '----------------------------------------------------------------------'
 
 
-class WMITableLegacy(WMITable):
-    """
-    Needed since WMITable.get raises IgnoreResultsError
-    """
-
-    def get(
-        self,
-        row: str | int,
-        column: str | int,
-        silently_skip_timed_out: bool = False,
-    ) -> str | None:
-        if not silently_skip_timed_out and self.timed_out:
-            raise IgnoreResultsError("WMI query timed out")
-        return self._get_row_col_value(row, column)
-
-
-def parse_wmi_table(
-    info: StringTable,
-    key: str = "Name",
-) -> WMISection:
-    return parse_wmi_table_migrated(
-        info,
-        key=key,
-        table_type=WMITableLegacy,
-    )
-
-
 # .
 #   .--Filters-------------------------------------------------------------.
 #   |                     _____ _ _ _                                      |
@@ -81,7 +53,7 @@ def wmi_filter_global_only(
 ) -> bool:
     for table in tables.values():
         try:
-            value = table.get(row, "Name", silently_skip_timed_out=True)
+            value = table.get(row, "Name")
         except KeyError:
             return False
         if value != "_Global_":

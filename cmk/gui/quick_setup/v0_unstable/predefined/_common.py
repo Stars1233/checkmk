@@ -7,7 +7,7 @@ import re
 from collections.abc import Iterator, Mapping, Sequence
 from typing import Any, cast
 
-from cmk.utils.hostaddress import HostName
+from cmk.ccc.hostaddress import HostName
 
 from cmk.automations.results import DiagSpecialAgentHostConfig, DiagSpecialAgentInput
 
@@ -86,6 +86,7 @@ def _find_id_in_form_data(form_data: Any, target_key: str) -> None | str:
     if isinstance(form_data, dict):
         for key, value in form_data.items():
             if key == target_key:
+                assert isinstance(value, str)
                 return value
             result = _find_id_in_form_data(value, target_key)
             if result is not None:
@@ -174,7 +175,7 @@ def stage_components(stage: QuickSetupStage) -> Sequence[Widget]:
 
 def _flatten_formspec_wrappers(components: Sequence[Widget]) -> Iterator[FormSpecWrapper]:
     for component in components:
-        if isinstance(component, (ListOfWidgets, Collapsible, ConditionalNotificationStageWidget)):
+        if isinstance(component, ListOfWidgets | Collapsible | ConditionalNotificationStageWidget):
             yield from iter(_flatten_formspec_wrappers(component.items))
 
         if isinstance(component, FormSpecWrapper):

@@ -17,6 +17,7 @@ from cmk.utils.regex import GROUP_NAME_PATTERN
 from cmk.utils.timeperiod import timeperiod_spec_alias
 
 from cmk.gui import hooks
+from cmk.gui.config import active_config
 from cmk.gui.customer import customer_api
 from cmk.gui.exceptions import MKUserError
 from cmk.gui.groups import AllGroupSpecs, GroupName, GroupSpec, GroupSpecs, GroupType
@@ -40,8 +41,8 @@ from cmk.gui.watolib.groups_io import (
 )
 from cmk.gui.watolib.host_attributes import (
     ABCHostAttribute,
+    HOST_ATTRIBUTE_TOPIC_BASIC_SETTINGS,
     HostAttributeTopic,
-    HostAttributeTopicBasicSettings,
     HostContactGroupSpec,
 )
 from cmk.gui.watolib.hosts_and_folders import folder_preserving_link
@@ -59,7 +60,9 @@ class ContactGroupUsageFinderRegistry(Registry[ContactGroupUsageFinder]):
 contact_group_usage_finder_registry = ContactGroupUsageFinderRegistry()
 
 
-def add_group(name: GroupName, group_type: GroupType, extra_info: GroupSpec) -> None:
+def add_group(
+    name: GroupName, group_type: GroupType, extra_info: GroupSpec, pprint_value: bool
+) -> None:
     check_modify_group_permissions(group_type)
     all_groups = load_group_information()
     groups = all_groups.get(group_type, {})
@@ -77,13 +80,15 @@ def add_group(name: GroupName, group_type: GroupType, extra_info: GroupSpec) -> 
     if name in groups:
         raise MKUserError("name", _("Sorry, there is already a group with that name"))
 
-    _set_group(all_groups, group_type, name, extra_info)
+    _set_group(all_groups, group_type, name, extra_info, pprint_value)
     _add_group_change(
         extra_info, "edit-%sgroups" % group_type, _l("Create new %s group %s") % (group_type, name)
     )
 
 
-def edit_group(name: GroupName, group_type: GroupType, extra_info: GroupSpec) -> None:
+def edit_group(
+    name: GroupName, group_type: GroupType, extra_info: GroupSpec, pprint_value: bool
+) -> None:
     check_modify_group_permissions(group_type)
     all_groups = load_group_information()
     groups = all_groups.get(group_type, {})
@@ -93,7 +98,7 @@ def edit_group(name: GroupName, group_type: GroupType, extra_info: GroupSpec) ->
 
     old_group_backup = copy.deepcopy(groups[name])
 
-    _set_group(all_groups, group_type, name, extra_info)
+    _set_group(all_groups, group_type, name, extra_info, pprint_value)
     customer = customer_api()
     if cmk_version.edition(paths.omd_root) is cmk_version.Edition.CME:
         old_customer = customer.get_customer_id(old_group_backup)
@@ -139,7 +144,7 @@ class UnknownGroupException(Exception): ...
 class GroupInUseException(Exception): ...
 
 
-def delete_group(name: GroupName, group_type: GroupType) -> None:
+def delete_group(name: GroupName, group_type: GroupType, pprint_value: bool) -> None:
     check_modify_group_permissions(group_type)
     # Check if group exists
     all_groups = load_group_information()
@@ -161,14 +166,20 @@ def delete_group(name: GroupName, group_type: GroupType) -> None:
 
     # Delete group
     group = groups.pop(name)
-    save_group_information(all_groups)
+    save_group_information(all_groups, pprint_value)
     _add_group_change(
         group, "edit-%sgroups" % group_type, _l("Deleted %s group %s") % (group_type, name)
     )
 
 
 def _add_group_change(group: GroupSpec, action_name: str, text: LazyString) -> None:
-    add_change(action_name, text, sites=customer_api().customer_group_sites(group))
+    add_change(
+        action_name=action_name,
+        text=text,
+        user_id=user.id,
+        sites=customer_api().customer_group_sites(group),
+        use_git=active_config.wato_use_git,
+    )
 
 
 def check_modify_group_permissions(group_type: GroupType) -> None:
@@ -191,6 +202,7 @@ def _set_group(
     group_type: GroupType,
     name: GroupName,
     extra_info: GroupSpec,
+    pprint_value: bool,
 ) -> None:
     # Check if this alias is used elsewhere
     alias = extra_info.get("alias")
@@ -205,7 +217,7 @@ def _set_group(
     all_groups.setdefault(group_type, {})
     all_groups[group_type].setdefault(name, {})
     all_groups[group_type][name] = extra_info
-    save_group_information(all_groups)
+    save_group_information(all_groups, pprint_value)
 
     if group_type == "contact":
         hooks.call("contactgroups-saved", all_groups)
@@ -304,8 +316,8 @@ class HostAttributeContactGroups(ABCHostAttribute):
     def title(self) -> str:
         return _("Permissions")
 
-    def topic(self) -> type[HostAttributeTopic]:
-        return HostAttributeTopicBasicSettings
+    def topic(self) -> HostAttributeTopic:
+        return HOST_ATTRIBUTE_TOPIC_BASIC_SETTINGS
 
     @classmethod
     def sort_index(cls) -> int:

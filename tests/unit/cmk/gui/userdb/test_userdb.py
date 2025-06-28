@@ -8,7 +8,6 @@ from __future__ import annotations
 
 from collections.abc import Callable, Generator
 from datetime import datetime, timedelta
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
@@ -17,9 +16,9 @@ from pytest import MonkeyPatch
 from tests.testlib.common.repo import is_managed_repo
 
 import cmk.ccc.version
+from cmk.ccc.user import UserId
 
 import cmk.utils.paths
-from cmk.utils.user import UserId
 
 import cmk.gui.userdb._user_attribute._registry
 import cmk.gui.userdb.session  # pylint: disable-unused-import
@@ -27,13 +26,7 @@ from cmk.gui import http, userdb
 from cmk.gui.config import active_config
 from cmk.gui.exceptions import MKUserError
 from cmk.gui.session import session
-from cmk.gui.type_defs import (
-    SessionId,
-    SessionInfo,
-    TotpCredential,
-    TwoFactorCredentials,
-    WebAuthnCredential,
-)
+from cmk.gui.type_defs import SessionInfo, TotpCredential, TwoFactorCredentials, WebAuthnCredential
 from cmk.gui.userdb import ldap_connector as ldap
 from cmk.gui.userdb._connections import Fixed, LDAPConnectionConfigFixed, LDAPUserConnectionConfig
 from cmk.gui.userdb.htpasswd import hash_password
@@ -73,23 +66,6 @@ def _load_users_uncached(*, lock: bool) -> userdb.Users:
 
 
 TimedOutSession = Callable[[], tuple[UserId, SessionInfo]]
-
-
-def _make_valid_session(user_id: UserId, now: datetime) -> SessionId:
-    session_id = "sess2"
-    timestamp = int(now.timestamp()) - 5
-    userdb.session.save_session_infos(
-        user_id,
-        {
-            session_id: SessionInfo(
-                session_id,
-                started_at=timestamp,
-                last_activity=timestamp,
-                flashes=[],
-            )
-        },
-    )
-    return session_id
 
 
 def _load_failed_logins(user_id: UserId) -> int | None:
@@ -572,7 +548,7 @@ def test_user_attribute_sync_plugins(monkeypatch: MonkeyPatch, set_config: SetCo
         )
 
         plugins = dict(ldap.all_attribute_plugins())
-        ldap_plugin = plugins["vip"]()
+        ldap_plugin = plugins["vip"]
         assert ldap_plugin.title == "VIP"
         assert ldap_plugin.help == "VIP attribute"
         assert ldap_plugin.needed_attributes(connection, {"attr": "vip_attr"}) == ["vip_attr"]
@@ -594,9 +570,7 @@ def test_check_credentials_local_user_create_htpasswd_user_ad_hoc() -> None:
     assert not userdb.user_exists_according_to_profile(user_id)
     assert user_id not in _load_users_uncached(lock=False)
 
-    Htpasswd(Path(cmk.utils.paths.htpasswd_file)).save_all(
-        {user_id: hash_password(Password("cmk"))}
-    )
+    Htpasswd(cmk.utils.paths.htpasswd_file).save_all({user_id: hash_password(Password("cmk"))})
     # Once a user exists in the htpasswd, the GUI treats the user as existing user and will
     # automatically initialize the missing data structures
     assert userdb.user_exists(user_id)
@@ -684,13 +658,13 @@ def test_load_custom_attr_not_existing_with_default(user_id: UserId) -> None:
 
 
 def test_load_custom_attr_from_file(user_id: UserId) -> None:
-    with Path(userdb.custom_attr_path(user_id, "a")).open("w") as f:
+    with userdb.custom_attr_path(user_id, "a").open("w") as f:
         f.write("xyz\n")
     assert userdb.load_custom_attr(user_id=user_id, key="a", parser=str) == "xyz"
 
 
 def test_load_custom_attr_convert(user_id: UserId) -> None:
-    with Path(userdb.custom_attr_path(user_id, "a")).open("w") as f:
+    with userdb.custom_attr_path(user_id, "a").open("w") as f:
         f.write("xyz\n")
     assert (
         userdb.load_custom_attr(

@@ -13,7 +13,8 @@ from pytest import MonkeyPatch
 from pytest_mock import MockerFixture
 from redis import Redis
 
-from cmk.utils.hostaddress import HostName
+from cmk.ccc.hostaddress import HostName
+
 from cmk.utils.livestatus_helpers.testing import MockLiveStatusConnection
 
 from cmk.automations.results import GetConfigurationResult
@@ -317,7 +318,7 @@ class TestIndexBuilderAndSearcher:
 @pytest.fixture(name="created_host_url")
 def fixture_created_host_url() -> str:
     folder = folder_tree().root_folder()
-    folder.create_hosts([(HostName("host"), {}, [])])
+    folder.create_hosts([(HostName("host"), {}, [])], pprint_value=False)
     return "wato.py?folder=&host=host&mode=edit_host"
 
 

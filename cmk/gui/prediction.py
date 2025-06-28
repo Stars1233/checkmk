@@ -20,9 +20,9 @@ from livestatus import (
 
 import cmk.ccc.debug
 from cmk.ccc.exceptions import MKGeneralException
+from cmk.ccc.hostaddress import HostName
 from cmk.ccc.site import SiteId
 
-from cmk.utils.hostaddress import HostName
 from cmk.utils.metrics import MetricName
 from cmk.utils.prediction import estimate_levels, PredictionData, PredictionQuerier
 from cmk.utils.servicename import ServiceName
@@ -32,7 +32,7 @@ from cmk.gui.htmllib.header import make_header
 from cmk.gui.htmllib.html import html
 from cmk.gui.http import request as request_
 from cmk.gui.i18n import _
-from cmk.gui.pages import PageRegistry
+from cmk.gui.pages import PageEndpoint, PageRegistry
 from cmk.gui.sites import live
 from cmk.gui.view_breadcrumbs import make_service_breadcrumb
 
@@ -71,7 +71,7 @@ class PredictionCurves:
 
 
 def register(page_registry: PageRegistry) -> None:
-    page_registry.register_page_handler("prediction_graph", page_graph)
+    page_registry.register(PageEndpoint("prediction_graph", page_graph))
 
 
 @dataclass

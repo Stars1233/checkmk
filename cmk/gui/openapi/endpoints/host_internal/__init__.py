@@ -11,6 +11,7 @@ from collections.abc import Mapping
 from typing import Any, Literal
 from uuid import UUID
 
+from cmk.ccc.hostaddress import HostName
 from cmk.ccc.site import omd_site
 
 from cmk.utils.agent_registration import (
@@ -18,9 +19,8 @@ from cmk.utils.agent_registration import (
     get_uuid_link_manager,
     HostAgentConnectionMode,
 )
-from cmk.utils.hostaddress import HostName
 
-from cmk.gui.agent_registration import PermissionSectionAgentRegistration
+from cmk.gui.agent_registration import PERMISSION_SECTION_AGENT_REGISTRATION
 from cmk.gui.exceptions import MKAuthException
 from cmk.gui.http import Response
 from cmk.gui.i18n import _l
@@ -40,7 +40,7 @@ from cmk.gui.watolib.hosts_and_folders import Host
 
 permission_registry.register(
     Permission(
-        section=PermissionSectionAgentRegistration,
+        section=PERMISSION_SECTION_AGENT_REGISTRATION,
         name="register_any_existing_host",
         title=_l("Register any existing host"),
         description=_l("This permission allows the registration of any existing host."),
@@ -51,7 +51,7 @@ permission_registry.register(
 
 permission_registry.register(
     Permission(
-        section=PermissionSectionAgentRegistration,
+        section=PERMISSION_SECTION_AGENT_REGISTRATION,
         name="register_managed_existing_host",
         title=_l("Register managed existing host"),
         description=_l(
@@ -259,7 +259,7 @@ def show_host(params: Mapping[str, Any]) -> Response:
     )
 
 
-def register(endpoint_registry: EndpointRegistry) -> None:
-    endpoint_registry.register(register_host)
-    endpoint_registry.register(link_with_uuid)
-    endpoint_registry.register(show_host)
+def register(endpoint_registry: EndpointRegistry, *, ignore_duplicates: bool) -> None:
+    endpoint_registry.register(register_host, ignore_duplicates=ignore_duplicates)
+    endpoint_registry.register(link_with_uuid, ignore_duplicates=ignore_duplicates)
+    endpoint_registry.register(show_host, ignore_duplicates=ignore_duplicates)

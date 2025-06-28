@@ -2,6 +2,8 @@
 # Copyright (C) 2019 Checkmk GmbH - License: GNU General Public License v2
 # This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
 # conditions defined in the file COPYING, which is part of this source code package.
+# mypy: disable-error-code="explicit-override, no-any-return, no-untyped-call, no-untyped-def"
+
 """Manage the currently logged in user"""
 
 from __future__ import annotations
@@ -10,16 +12,17 @@ import logging
 import os
 import time
 from collections.abc import Container, Sequence
+from pathlib import Path
 from typing import Any, Final, Literal, NewType, TypedDict
 
 from livestatus import SiteConfigurations
 
 from cmk.ccc import store
 from cmk.ccc.site import SiteId
+from cmk.ccc.user import UserId
 from cmk.ccc.version import __version__, Edition, edition, Version
 
 import cmk.utils.paths
-from cmk.utils.user import UserId
 
 from cmk.gui import hooks, permissions, site_config
 from cmk.gui.config import active_config
@@ -390,13 +393,13 @@ class LoggedInUser:
         if self.confdir is None:
             return
 
-        path = self.confdir + "/rowselection"
+        path = self.confdir / "rowselection"
         try:
             for f in os.listdir(path):
                 if f[1] != "." and f.endswith(".mk"):
-                    p = path + "/" + f
-                    if time.time() - os.stat(p).st_mtime > active_config.selection_livetime:
-                        os.unlink(p)
+                    p = path / f
+                    if time.time() - p.stat().st_mtime > active_config.selection_livetime:
+                        p.unlink()
         except OSError:
             pass  # no directory -> no cleanup
 
@@ -477,7 +480,7 @@ class LoggedInUser:
         if self.confdir is None:
             return deflt
 
-        path = self.confdir + "/" + name + ".mk"
+        path = self.confdir / (name + ".mk")
 
         # The user files we load with this function are mostly some kind of persisted states.  In
         # case a file is corrupted for some reason we rather start over with the default instead of
@@ -503,7 +506,7 @@ class LoggedInUser:
             return 0
 
         try:
-            return os.stat(self.confdir + "/" + name + ".mk").st_mtime
+            return (self.confdir / (name + ".mk")).stat().st_mtime
         except FileNotFoundError:
             return 0
 
@@ -560,18 +563,18 @@ class LoggedInNobody(LoggedInUser):
         raise TypeError("The profiles of LoggedInNobody cannot be saved")
 
 
-def _confdir_for_user_id(user_id: UserId | None) -> str | None:
+def _confdir_for_user_id(user_id: UserId | None) -> Path | None:
     if user_id is None:
         return None
 
     confdir = cmk.utils.paths.profile_dir / user_id
-    store.mkdir(confdir)
-    return str(confdir)
+    confdir.mkdir(mode=0o770, exist_ok=True)
+    return confdir
 
 
 def save_user_file(name: str, data: Any, user_id: UserId) -> None:
-    path = cmk.utils.paths.profile_dir.joinpath(user_id, name + ".mk")
-    store.mkdir(path.parent)
+    path = cmk.utils.paths.profile_dir / user_id / (name + ".mk")
+    path.parent.mkdir(mode=0o770, exist_ok=True)
     store.save_object_to_file(path, data)
 
 

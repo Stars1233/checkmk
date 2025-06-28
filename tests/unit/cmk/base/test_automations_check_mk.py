@@ -12,9 +12,10 @@ from tests.testlib.unit.base_configuration_scenario import Scenario
 from tests.unit.cmk.base.emptyconfig import EMPTYCONFIG
 
 import cmk.ccc.debug
+from cmk.ccc.hostaddress import HostAddress
 
 import cmk.utils.resulttype as result
-from cmk.utils.hostaddress import HostAddress
+from cmk.utils import ip_lookup
 
 from cmk.automations import results as automation_results
 from cmk.automations.results import DiagHostResult
@@ -266,7 +267,7 @@ def test_automation_active_check_invalid_args(
 ) -> None:
     _patch_plugin_loading(monkeypatch, loaded_active_checks)
     monkeypatch.setattr(
-        config, config.lookup_ip_address.__name__, lambda *a, **kw: HostAddress("127.0.0.1")
+        ip_lookup, ip_lookup.lookup_ip_address.__name__, lambda *a, **kw: HostAddress("127.0.0.1")
     )
     monkeypatch.setattr(ConfigCache, "get_host_attributes", lambda *a, **kw: host_attrs)
     monkeypatch.setattr(config, "get_resource_macros", lambda *a, **kw: {})

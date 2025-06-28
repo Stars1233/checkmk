@@ -9,39 +9,38 @@ import ast
 import json
 import logging
 import re
-import typing
 import uuid
-from collections.abc import Callable, Collection, Mapping, MutableMapping
-from datetime import datetime, timezone
-from typing import Any, Literal
+from collections.abc import Callable, Collection, Iterable, Mapping, MutableMapping
+from datetime import datetime, UTC
+from typing import Any, Literal, override
 
 import marshmallow
 from cryptography.x509 import CertificateSigningRequest, load_pem_x509_csr
 from cryptography.x509.oid import NameOID
 from marshmallow import fields as _fields
 from marshmallow import ValidationError
+from marshmallow.types import StrSequenceOrSet
 from marshmallow_oneofschema import OneOfSchema
 
 from cmk.ccc import version
 from cmk.ccc.exceptions import MKException
+from cmk.ccc.hostaddress import HostAddress, HostName
+from cmk.ccc.user import UserId
 
 from cmk.utils import paths
-from cmk.utils.hostaddress import HostAddress, HostName
 from cmk.utils.livestatus_helpers.expressions import NothingExpression, QueryExpression
 from cmk.utils.livestatus_helpers.queries import Query
 from cmk.utils.livestatus_helpers.tables import Hostgroups, Hosts, Servicegroups
 from cmk.utils.livestatus_helpers.types import Column, Table
 from cmk.utils.regex import regex, REGEX_ID
 from cmk.utils.tags import TagConfig, TagGroup, TagGroupID
-from cmk.utils.user import UserId
 
 from cmk.gui import sites
-from cmk.gui.agent_registration import CONNECTION_MODE_FIELD
 from cmk.gui.config import active_config, builtin_role_ids
 from cmk.gui.customer import customer_api, SCOPE_GLOBAL
 from cmk.gui.exceptions import MKUserError
 from cmk.gui.fields.base import BaseSchema, MultiNested, ValueTypedDictSchema
-from cmk.gui.fields.utils import tree_to_expr
+from cmk.gui.fields.utils import edition_field_description, tree_to_expr
 from cmk.gui.groups import GroupName, GroupType
 from cmk.gui.logged_in import user
 from cmk.gui.permissions import permission_registry
@@ -55,7 +54,7 @@ from cmk.gui.watolib.passwords import contact_group_choices, password_exists
 from cmk.gui.watolib.sites import site_management_registry
 from cmk.gui.watolib.tags import load_tag_config_read_only
 
-from cmk.fields import base, Boolean, DateTime, String, validators
+from cmk.fields import base, Boolean, DateTime, validators
 
 _logger = logging.getLogger(__name__)
 _CONNECTION_ID_PATTERN = "^[-a-z0-9A-Z_]+$"
@@ -103,10 +102,14 @@ class PythonString(base.String):
 
     """
 
+    @override
     def _serialize(self, value: str, attr: object, obj: object, **kwargs: Any) -> str:
         return repr(value)
 
-    def _deserialize(self, value, attr, data, **kwargs):
+    @override
+    def _deserialize(
+        self, value: object, attr: str | None, data: Mapping[str, object] | None, **kwargs: object
+    ) -> object:
         if not isinstance(value, str):
             raise ValidationError("Unsupported type. Field must be string.")
         try:
@@ -135,20 +138,22 @@ class FolderField(base.String):
 
     def __init__(
         self,
-        pattern=FOLDER_PATTERN,
-        **kwargs,
-    ):
-        if "description" not in kwargs:
-            kwargs["description"] = "The path name of the folder."
+        *,
+        pattern: str = FOLDER_PATTERN,
+        description: str | None = None,
+        **kwargs: object,
+    ) -> None:
+        if description is None:
+            description = "The path name of the folder."
 
-        kwargs["description"] += (
+        description += (
             "\n\nPath delimiters can be either `~`, `/` or `\\`. Please use the one most "
             "appropriate for your quoting/escaping needs. A good default choice is `~`."
         )
-        super().__init__(pattern=pattern, **kwargs)
+        super().__init__(pattern=pattern, description=description, **kwargs)
 
     @classmethod
-    def _normalize_folder(cls, folder_id):
+    def _normalize_folder(cls, folder_id: str) -> str:
         r"""Normalizes a folder representation
 
         Args:
@@ -211,16 +216,21 @@ class FolderField(base.String):
 
         return folder
 
-    def _deserialize(self, value, attr, data, **kwargs):
-        value = super()._deserialize(value, attr, data)
+    @override
+    def _deserialize(
+        self, value: object, attr: str | None, data: Mapping[str, object] | None, **kwargs: object
+    ) -> object:
+        x = super()._deserialize(value, attr, data)
+        assert isinstance(x, str), f"Expected a string value, got {value!r}"
         try:
-            return self.load_folder(value)
+            return self.load_folder(x)
         except MKException:
-            if value:
-                raise self.make_error("not_found", folder_id=value)
+            if x:
+                raise self.make_error("not_found", folder_id=x)
         return None
 
-    def _serialize(self, value: str, attr: object, obj: object, **kwargs: Any) -> str:
+    @override
+    def _serialize(self, value: str | Folder, attr: str | None, obj: object, **kwargs: Any) -> str:
         if isinstance(value, str):
             if not value.startswith("/"):
                 value = f"/{value}"
@@ -288,12 +298,26 @@ class CmkOneOfSchema(OneOfSchema):
 
     def __init__(
         self,
-        *args,
-        **kwargs,
-    ):
-        context = kwargs.pop("context", {})
-        super().__init__(*args, **kwargs)
-        self.context = context
+        *,
+        only: StrSequenceOrSet | None = None,
+        exclude: StrSequenceOrSet = (),
+        many: bool | None = None,
+        context: dict | None = None,
+        load_only: StrSequenceOrSet = (),
+        dump_only: StrSequenceOrSet = (),
+        partial: bool | StrSequenceOrSet | None = None,
+        unknown: str | None = None,
+    ) -> None:
+        super().__init__(
+            only=only,
+            exclude=exclude,
+            many=many,
+            load_only=load_only,
+            dump_only=dump_only,
+            partial=partial,
+            unknown=unknown,
+        )
+        self.context = context or {}
 
 
 class ExprSchema(CmkOneOfSchema):
@@ -346,7 +370,16 @@ class ExprSchema(CmkOneOfSchema):
         "!<=": BinaryExprSchema,
     }
 
-    def load(self, data, *, many=None, partial=None, unknown=None, **kwargs):
+    @override
+    def load(
+        self,
+        data: Mapping[str, object] | Iterable[Mapping[str, object]],
+        *,
+        many: bool | None = None,
+        partial: bool | StrSequenceOrSet | None = None,
+        unknown: str | None = None,
+        **kwargs: object,
+    ) -> object:  # this could be anything, but probably either a QueryExpression, a dict, or a list
         # When being passed in via the query string, we may get the raw JSON string instead of
         # the deserialized dictionary. We need to unpack it ourselves.
         if isinstance(data, str):
@@ -371,23 +404,21 @@ class ExprSchema(CmkOneOfSchema):
             return NothingExpression()
 
         try:
-            tree_to_expr(data, self.context["table"])
+            if isinstance(data, Mapping):
+                tree_to_expr(data, self.context["table"])
+            else:
+                for item in data:
+                    tree_to_expr(item, self.context["table"])
         except ValueError as e:
             raise ValidationError(str(e)) from e
-        return super().load(data, many=many, partial=partial, unknown=unknown, **kwargs)
+        return super().load(  # type: ignore[no-untyped-call]
+            data, many=many, partial=partial, unknown=unknown, **kwargs
+        )
 
 
 class _ExprNested(base.Nested):
-    def __init__(
-        self,
-        *args,
-        **kwargs,
-    ):
-        context = kwargs.pop("context", {})
-        super().__init__(*args, **kwargs)
-        self.context = context
-
-    def _load(self, value, partial=None):
+    @override
+    def _load(self, value: object, partial: bool | StrSequenceOrSet | None = None) -> object:
         _data = super()._load(value, partial=partial)
         return tree_to_expr(_data, table=self.metadata["table"])
 
@@ -521,16 +552,20 @@ class _ListOfColumns(base.List):
                     f"of table {table.__tablename__!r}"
                 )
 
-    def _deserialize(self, value, attr, data, **kwargs):
-        value = super()._deserialize(value, attr, data)
+    @override
+    def _deserialize(
+        self, value: object, attr: str | None, data: Mapping[str, object] | None, **kwargs: object
+    ) -> list[Column]:
+        columns: list[str] = super()._deserialize(value, attr, data)
+        assert isinstance(columns, list), f"Expected a list of column names, got {value!r}"
         for column in reversed(self.mandatory):
             if isinstance(column, Column):
                 column_name = column.name
             else:
                 column_name = column
-            if column_name not in value:
-                value.insert(0, column_name)
-        return [getattr(self.table, col) for col in value]
+            if column_name not in columns:
+                columns.insert(0, column_name)
+        return [getattr(self.table, col) for col in columns]
 
 
 class _LiveStatusColumn(base.String):
@@ -552,7 +587,11 @@ class _LiveStatusColumn(base.String):
         "unknown_column": "Unknown column: {table_name}.{column_name}",
     }
 
-    def _deserialize(self, value, attr, data, **kwargs):
+    @override
+    def _deserialize(
+        self, value: object, attr: str | None, data: Mapping[str, object] | None, **kwargs: object
+    ) -> object:
+        value = super()._deserialize(value, attr, data)
         table = self.metadata["table"]
         if value not in table.__columns__():
             raise self.make_error(
@@ -620,11 +659,12 @@ class HostField(base.String):
 
         return
 
+    @override
     def _deserialize(
         self,
         value: Any,
         attr: str | None,
-        data: typing.Mapping[str, Any] | None,
+        data: Mapping[str, Any] | None,
         **kwargs: Any,
     ) -> HostAddress:
         value = super()._deserialize(value, attr, data, **kwargs)
@@ -633,7 +673,8 @@ class HostField(base.String):
         except ValueError as e:
             raise ValidationError(str(e)) from e
 
-    def _validate(self, value):
+    @override
+    def _validate(self, value: HostAddress) -> None:
         super()._validate(value)
         host = Host.host(value)
         self._confirm_user_has_permission(host)
@@ -673,18 +714,18 @@ class HostField(base.String):
                 raise self.make_error("should_not_be_monitored", host_name=value)
 
 
-def group_is_monitored(group_type, group_name):
-    # Danke mypy
-    rv: bool
+def group_is_monitored(group_type: Literal["host", "service", "contact"], group_name: str) -> bool:
     if group_type == "service":
-        rv = bool(
+        return bool(
             Query([Servicegroups.name], Servicegroups.name == group_name).first_value(sites.live())
         )
-    elif group_type == "host":
-        rv = bool(Query([Hostgroups.name], Hostgroups.name == group_name).first_value(sites.live()))
-    else:
-        raise ValueError("Unknown group type.")
-    return rv
+
+    if group_type == "host":
+        return bool(
+            Query([Hostgroups.name], Hostgroups.name == group_name).first_value(sites.live())
+        )
+
+    raise ValueError("Unknown group type.")
 
 
 def host_is_monitored(host_name: str) -> bool:
@@ -693,7 +734,7 @@ def host_is_monitored(host_name: str) -> bool:
 
 def validate_custom_host_attributes(
     host_attributes: dict[str, str],
-    errors: typing.Literal["warn", "raise"],
+    errors: Literal["warn", "raise"],
 ) -> dict[str, str]:
     """Validate only custom host attributes
 
@@ -833,7 +874,7 @@ class CustomHostAttributesAndTagGroups(ValueTypedDictSchema):
         raise ValidationError(message)
 
 
-def ensure_string(value):
+def ensure_string(value: object) -> None:
     if not isinstance(value, str):
         raise ValidationError(f"Not a string, but a {type(value).__name__}")
 
@@ -876,6 +917,7 @@ class HostnameOrIP(base.String):
         self.should_be_monitored = should_be_monitored
         self.should_be_cluster = should_be_cluster
 
+    @override
     def _validate(self, value: str) -> None:
         if self.strip:
             value = value.strip()
@@ -987,7 +1029,8 @@ class SiteField(base.String):
         self.presence = presence
         self.allow_all_value = allow_all_value
 
-    def _validate(self, value):
+    @override
+    def _validate(self, value: str) -> None:
         if self.allow_all_value and value == "all":
             return
 
@@ -1006,7 +1049,8 @@ class SiteField(base.String):
             if value in configured_sites().keys():
                 raise self.make_error("should_not_exist", site=value)
 
-    def _serialize(self, value, attr, obj, **kwargs):
+    @override
+    def _serialize(self, value: str, attr: str | None, obj: object, **kwargs: object) -> str | None:
         if self.presence == "might_not_exist_on_view" and value not in configured_sites().keys():
             return "Unknown Site: " + value
         return super()._serialize(value, attr, obj, **kwargs)
@@ -1019,6 +1063,8 @@ class _CustomerField(base.String):
         "invalid_global": "Invalid customer: global",
         "should_exist": "Customer missing: {customer!r}",
         "should_not_exist": "Customer {customer!r} already exists.",
+        "edition_not_supported": "Customer field not supported in this edition.",
+        "required": "This field is required for the Managed edition.",
     }
 
     def __init__(
@@ -1034,15 +1080,26 @@ class _CustomerField(base.String):
     ):
         self._should_exist = should_exist
         self._allow_global = allow_global
+        self._required = required
+        description = edition_field_description(
+            description, supported_editions={version.Edition.CME}, field_required=required
+        )
         super().__init__(
             example=example,
             description=description,
-            required=required,
+            required=False,  # since all editions are supported this must be False
             validate=validate,
             **kwargs,
         )
 
-    def _validate(self, value):
+    @override
+    def _validate(self, value: str | None) -> None:
+        if version.edition(paths.omd_root) is not version.Edition.CME:
+            raise self.make_error("edition_not_supported")
+
+        if self._required and not self._allow_global and not value:
+            raise self.make_error("required")
+
         super()._validate(value)
         if value == "global":
             value = SCOPE_GLOBAL
@@ -1056,15 +1113,16 @@ class _CustomerField(base.String):
         if not self._should_exist and included:
             raise self.make_error("should_not_exist", customer=value)
 
-    def _deserialize(self, value, attr, data, **kwargs):
+    @override
+    def _deserialize(
+        self, value: object, attr: str | None, data: Mapping[str, object] | None, **kwargs: object
+    ) -> object:
         value = super()._deserialize(value, attr, data, **kwargs)
         return None if value == "global" else value
 
 
 def customer_field(**kw: Any) -> _CustomerField | None:
-    if version.edition(paths.omd_root) is version.Edition.CME:
-        return _CustomerField(**kw)
-    return None
+    return _CustomerField(**kw)
 
 
 def customer_field_response(**kw: Any) -> _CustomerField | None:
@@ -1073,26 +1131,40 @@ def customer_field_response(**kw: Any) -> _CustomerField | None:
     return customer_field(**kw)
 
 
-def bake_agent_field() -> Boolean | None:
+class _BakeAgentField(Boolean):
+    """A field representing the bake agent option."""
+
+    default_error_messages = {
+        "edition_not_supported": "Bake agent field not supported in this edition.",
+    }
+
+    def __init__(
+        self,
+        description: str = "Bake agent packages for this folder even if it is empty.",
+        **kwargs: Any,
+    ) -> None:
+        description = edition_field_description(
+            description=description,
+            excluded_editions={version.Edition.CRE},
+        )
+        super().__init__(description=description, **kwargs)
+
+    @override
+    def _validate(self, value: bool) -> None:
+        if version.edition(paths.omd_root) is version.Edition.CRE:
+            raise self.make_error("edition_not_supported")
+
+        super()._validate(value)
+
+
+def bake_agent_field() -> _BakeAgentField:
     """Enterprise specific implementation of host attribute field
 
     Notes:
         * takes inspiration of the customer field implementation (which is not the best) but
         deemed acceptable as the intention is to move away from the marshmallow implementation
     """
-    if version.edition(paths.omd_root) is not version.Edition.CRE:
-        return Boolean(
-            description="Bake agent packages for this folder even if it is empty.",
-        )
-    return None
-
-
-def agent_connection_field() -> String | None:
-    """CME and CCE editions only implementation of cmk_agent_connection field"""
-    if version.edition(paths.omd_root) in [version.Edition.CME, version.Edition.CCE]:
-        return CONNECTION_MODE_FIELD
-
-    return None
+    return _BakeAgentField()
 
 
 def verify_group_exists(group_type: GroupType, name: GroupName) -> bool:
@@ -1122,7 +1194,7 @@ class GroupField(base.String):
         should_exist: bool = True,
         should_be_monitored: bool | None = None,
         **kwargs: Any,
-    ):
+    ) -> None:
         self._group_type = group_type
         self._should_exist = should_exist
         self._should_be_monitored = should_be_monitored
@@ -1136,7 +1208,8 @@ class GroupField(base.String):
             **kwargs,
         )
 
-    def _validate(self, value):
+    @override
+    def _validate(self, value: str) -> None:
         super()._validate(value)
 
         group_exists = verify_group_exists(self._group_type, value)
@@ -1172,7 +1245,7 @@ class PasswordIdent(base.String):
         validate: Callable[[object], bool] | Collection[Callable[[object], bool]] | None = None,
         should_exist: bool = True,
         **kwargs: Any,
-    ):
+    ) -> None:
         self._should_exist = should_exist
         super().__init__(
             example=example,
@@ -1181,6 +1254,7 @@ class PasswordIdent(base.String):
             **kwargs,
         )
 
+    @override
     def _validate(self, value: str) -> None:
         super()._validate(value)
 
@@ -1205,11 +1279,11 @@ class PasswordEditableBy(base.String):
 
     def __init__(
         self,
-        example,
-        required=True,
-        validate=None,
-        **kwargs,
-    ):
+        example: str,
+        required: bool = True,
+        validate: Callable[[str], str] | list[Callable[[str], str]] | None = None,
+        **kwargs: object,
+    ) -> None:
         super().__init__(
             example=example,
             required=required,
@@ -1217,7 +1291,8 @@ class PasswordEditableBy(base.String):
             **kwargs,
         )
 
-    def _validate(self, value):
+    @override
+    def _validate(self, value: str) -> None:
         """Verify if the specified editor is valid for the logged-in user
 
         Non-admin users cannot specify admin as the editor
@@ -1242,11 +1317,11 @@ class PasswordShare(base.String):
 
     def __init__(
         self,
-        example,
-        required=True,
-        validate=None,
-        **kwargs,
-    ):
+        example: str,
+        required: bool = True,
+        validate: Callable[[str], str] | list[Callable[[str], str]] | None = None,
+        **kwargs: object,
+    ) -> None:
         super().__init__(
             example=example,
             required=required,
@@ -1254,7 +1329,8 @@ class PasswordShare(base.String):
             **kwargs,
         )
 
-    def _validate(self, value):
+    @override
+    def _validate(self, value: str) -> None:
         super()._validate(value)
         shareable_groups = [group[0] for group in contact_group_choices()]
         if value not in ["all", *shareable_groups]:
@@ -1262,7 +1338,7 @@ class PasswordShare(base.String):
 
 
 def from_timestamp(value: float) -> datetime:
-    return datetime.fromtimestamp(value, tz=timezone.utc)
+    return datetime.fromtimestamp(value, tz=UTC)
 
 
 def to_timestamp(value: datetime) -> float:
@@ -1308,13 +1384,19 @@ class Timestamp(DateTime):
 
     default_error_messages = {"invalid": "Not a valid timestamp: {input!r}"}
 
-    def _serialize(self, value, attr, obj, **kwargs):
+    @override
+    def _serialize(
+        self, value: float | None, attr: str | None, obj: object, **kwargs: object
+    ) -> str | float | None:
         if value is None:
             return None
         dt_obj = from_timestamp(float(value))
         return super()._serialize(dt_obj, attr, obj, **kwargs)
 
-    def _deserialize(self, value, attr, data, **kwargs):
+    @override
+    def _deserialize(  # type: ignore[override]
+        self, value: object, attr: str | None, data: Mapping[str, object] | None, **kwargs: object
+    ) -> float:
         val = super()._deserialize(value, attr, data, **kwargs)
         return datetime.timestamp(val)
 
@@ -1327,6 +1409,7 @@ class X509ReqPEMFieldUUID(base.String):
         "cn_no_uuid": "CN {cn} is no valid version-4 UUID",
     }
 
+    @override
     def _validate(self, value: CertificateSigningRequest) -> None:
         if not value.is_signature_valid:
             raise self.make_error("invalid")
@@ -1344,20 +1427,19 @@ class X509ReqPEMFieldUUID(base.String):
         except ValueError:
             raise self.make_error("cn_no_uuid", cn=cn)
 
+    @override
     def _deserialize(
-        self, value: object, attr: object, data: object, **kwargs: Any
+        self, value: object, attr: str | None, data: Mapping[str, object] | None, **kwargs: Any
     ) -> CertificateSigningRequest:
+        x = super()._deserialize(
+            value,
+            attr,
+            data,
+            **kwargs,
+        )
+        assert isinstance(x, str), f"Expected a string value, got {x!r}"
         try:
-            return load_pem_x509_csr(
-                super()
-                ._deserialize(
-                    value,
-                    attr,
-                    data,
-                    **kwargs,
-                )
-                .encode()
-            )
+            return load_pem_x509_csr(x.encode())
         except ValueError:
             raise self.make_error("malformed")
 
@@ -1381,6 +1463,7 @@ class UserRoleID(base.String):
         self.presence = presence
         self.userrole_type = userrole_type
 
+    @override
     def _validate(self, value: str) -> None:
         super()._validate(value)
 
@@ -1420,6 +1503,7 @@ class PermissionField(base.String):
             **kwargs,
         )
 
+    @override
     def _validate(self, value: str) -> None:
         super()._validate(value)
         if value not in permission_registry:
@@ -1449,7 +1533,8 @@ class Username(base.String):
             **kwargs,
         )
 
-    def _validate(self, value):
+    @override
+    def _validate(self, value: str) -> None:
         super()._validate(value)
         user.need_permission("wato.users")
 
@@ -1490,7 +1575,8 @@ class ConnectionIdentifier(base.String):
             **kwargs,
         )
 
-    def _validate(self, value):
+    @override
+    def _validate(self, value: str) -> None:
         super()._validate(value)
         user.need_permission("wato.sites")
 
@@ -1539,8 +1625,11 @@ class FolderIDField(FolderField):
         super().__init__(**kwargs)
         self.presence = presence
 
-    def _deserialize(self, value: str, attr: object, data: object, **kwargs: Any) -> str | None:
-        folder: Folder | None = None
+    @override
+    def _deserialize(
+        self, value: object, attr: str | None, data: Mapping[str, object] | None, **kwargs: Any
+    ) -> object:
+        folder: object | None = None
         try:
             folder = super()._deserialize(value, attr, data)
         except ValidationError:
@@ -1553,9 +1642,11 @@ class FolderIDField(FolderField):
         if folder is None:
             return None
 
+        assert isinstance(folder, Folder), f"Expected a Folder object, got {folder!r}"
         return folder.path()
 
-    def _serialize(self, value: str, attr: object, obj: object, **kwargs: Any) -> str:
+    @override
+    def _serialize(self, value: str | Folder, attr: str | None, obj: object, **kwargs: Any) -> str:
         folder_path = super()._serialize(value, attr, obj, **kwargs)
         return folder_path.replace("/", "~")
 

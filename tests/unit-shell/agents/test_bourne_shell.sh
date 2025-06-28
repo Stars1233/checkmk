@@ -5,8 +5,7 @@
 
 #NOTE: linux, openbsd, openvms and solaris not supported
 AGENT_OS_TO_TEST=("aix" "freebsd" "hpux" "macosx" "netbsd" "openwrt")
-#NOTE: aix, freebsd, linux, openbsd, openvms, openwrt and solaris not supported
-AGENT_OS_TO_SOURCE=("hpux" "macosx" "netbsd")
+AGENT_OS_TO_SOURCE=("aix" "freebsd" "hpux" "macosx" "netbsd" "openwrt")
 
 AGENTS_TO_TEST=()
 for agent_ext in "${AGENT_OS_TO_TEST[@]}"; do
@@ -19,7 +18,7 @@ done
 
 test_bourne_shell() {
     for agent_path in "${AGENTS_TO_TEST[@]}"; do
-        sh "${agent_path}"
+        sh "${agent_path}" >/dev/null
 
         assertEquals "${agent_path}" "0" "$?"
     done

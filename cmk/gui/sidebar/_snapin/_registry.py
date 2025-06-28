@@ -12,13 +12,13 @@ from cmk.ccc.plugin_registry import Registry
 
 from cmk.gui import pagetypes
 from cmk.gui.i18n import _
-from cmk.gui.pages import page_registry
+from cmk.gui.pages import page_registry, PageEndpoint
 from cmk.gui.permissions import Permission, permission_registry
 from cmk.gui.type_defs import Icon, PermissionName
 from cmk.gui.valuespec import CascadingDropdown, CascadingDropdownChoice, Dictionary, ValueSpec
 
 from ._base import CustomizableSidebarSnapin, SidebarSnapin
-from ._permission_section import PermissionSectionSidebarSnapins
+from ._permission_section import PERMISSION_SECTION_SIDEBAR_SNAPINS
 
 # TODO: Actually this is cmk.gui.sidebar.CustomSnapins, but we run into a hell
 # of cycles and untyped dependencies. So for now this is just a reminder.
@@ -35,7 +35,7 @@ class SnapinRegistry(Registry[type[SidebarSnapin]]):
     def registration_hook(self, instance: type[SidebarSnapin]) -> None:
         permission_registry.register(
             Permission(
-                section=PermissionSectionSidebarSnapins,
+                section=PERMISSION_SECTION_SIDEBAR_SNAPINS,
                 name=self.plugin_name(instance),
                 title=instance.title(),
                 description=instance.description(),
@@ -44,7 +44,7 @@ class SnapinRegistry(Registry[type[SidebarSnapin]]):
         )
 
         for path, page_func in instance().page_handlers().items():
-            page_registry.register_page_handler(path, page_func)
+            page_registry.register(PageEndpoint(path, page_func))
 
     def get_customizable_snapin_types(self) -> list[tuple[str, type[CustomizableSidebarSnapin]]]:
         return [

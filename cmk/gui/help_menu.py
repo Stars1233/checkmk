@@ -14,27 +14,35 @@ from cmk.gui.htmllib.generator import HTMLWriter
 from cmk.gui.http import request
 from cmk.gui.i18n import _, _l
 from cmk.gui.logged_in import user
-from cmk.gui.main_menu import MegaMenuRegistry
-from cmk.gui.type_defs import MegaMenu, TopicMenuItem, TopicMenuTopic
+from cmk.gui.main_menu import MainMenuRegistry
+from cmk.gui.type_defs import (
+    MainMenu,
+    MainMenuItem,
+    MainMenuTopic,
+    MainMenuTopicEntries,
+    MainMenuTopicSegment,
+)
 from cmk.gui.utils.html import HTML
 from cmk.gui.utils.urls import doc_reference_url, DocReference, makeuri_contextless
 
 
 def register(
-    mega_menu_registry: MegaMenuRegistry,
+    main_menu_registry: MainMenuRegistry,
     info_line: Callable[[], str],
-    learning_items: Callable[[], list[TopicMenuItem]],
-    developer_items: Callable[[], list[TopicMenuItem]],
-    about_checkmk_items: Callable[[], list[TopicMenuItem]],
+    learning_entries: Callable[[], MainMenuTopicEntries],
+    developer_entries: Callable[[], MainMenuTopicEntries],
+    about_checkmk_entries: Callable[[], MainMenuTopicEntries],
 ) -> None:
-    mega_menu_registry.register(
-        MegaMenu(
-            name="help_links",
+    main_menu_name = "help"
+    main_menu_registry.register(
+        MainMenu(
+            name=main_menu_name,
             title=_l("Help"),
             icon="main_help",
             sort_index=18,
-            topics=_help_menu_topics(learning_items, developer_items, about_checkmk_items),
+            topics=_help_menu_topics(learning_entries, developer_entries, about_checkmk_entries),
             info_line=info_line,
+            onopen=f'cmk.popup_menu.main_menu_reset_default_expansion("{main_menu_name}");',
         )
     )
 
@@ -43,9 +51,16 @@ def default_info_line() -> str:
     return f"{edition(paths.omd_root).title} {__version__}{_license_status()}"
 
 
-def default_learning_items() -> list[TopicMenuItem]:
+def default_learning_entries() -> MainMenuTopicEntries:
     return [
-        TopicMenuItem(
+        MainMenuItem(
+            name="getting_started",
+            title=_("Getting started"),
+            url="welcome.py",
+            sort_index=10,
+            icon="learning_beginner",
+        ),
+        MainMenuItem(
             name="beginners_guide",
             title=_("Beginner's guide"),
             url=doc_reference_url(DocReference.INTRO_SETUP),
@@ -53,7 +68,7 @@ def default_learning_items() -> list[TopicMenuItem]:
             sort_index=20,
             icon="learning_beginner",
         ),
-        TopicMenuItem(
+        MainMenuItem(
             name="user_manual",
             title=_("User manual"),
             url=doc_reference_url(),
@@ -61,7 +76,7 @@ def default_learning_items() -> list[TopicMenuItem]:
             sort_index=30,
             icon="learning_guide",
         ),
-        TopicMenuItem(
+        MainMenuItem(
             name="video_tutorials",
             title=_("Video tutorials"),
             url="https://www.youtube.com/playlist?list=PL8DfRO2DvOK1slgjfTu0hMOnepf1F7ssh",
@@ -69,7 +84,7 @@ def default_learning_items() -> list[TopicMenuItem]:
             sort_index=40,
             icon="learning_video_tutorials",
         ),
-        TopicMenuItem(
+        MainMenuItem(
             name="community_forum",
             title=_("Community forum"),
             url="https://forum.checkmk.com/",
@@ -77,12 +92,20 @@ def default_learning_items() -> list[TopicMenuItem]:
             sort_index=50,
             icon="learning_forum",
         ),
+        MainMenuItem(
+            name="ask_checkmk_ai",
+            title=_("Ask Checkmk AI"),
+            url="https://chat.checkmk.com",
+            target="_blank",
+            sort_index=60,
+            icon="sparkle",
+        ),
     ]
 
 
-def default_developer_items() -> list[TopicMenuItem]:
+def default_developer_entries() -> MainMenuTopicEntries:
     return [
-        TopicMenuItem(
+        MainMenuItem(
             name="plugin_api_introduction",
             title=_("Check plug-in API introduction"),
             url=doc_reference_url(DocReference.DEVEL_CHECK_PLUGINS),
@@ -93,7 +116,7 @@ def default_developer_items() -> list[TopicMenuItem]:
                 "emblem": "api",
             },
         ),
-        TopicMenuItem(
+        MainMenuItem(
             name="plugin_api_reference",
             title=_("Plug-in API references"),
             url="plugin-api/",
@@ -104,34 +127,54 @@ def default_developer_items() -> list[TopicMenuItem]:
                 "emblem": "api",
             },
         ),
-        TopicMenuItem(
-            name="rest_api_introduction",
-            title=_("REST API introduction"),
-            url=doc_reference_url(DocReference.REST_API),
-            target="_blank",
+        MainMenuTopicSegment(
+            mode="multilevel",
+            name="rest_api",
+            title=_("REST API"),
             sort_index=30,
-            icon={
-                "icon": "global_settings",
-                "emblem": "api",
-            },
-        ),
-        TopicMenuItem(
-            name="rest_api_documentation",
-            title=_("REST API documentation"),
-            url="openapi/",
-            target="_blank",
-            sort_index=40,
-            icon={
-                "icon": "global_settings",
-                "emblem": "api",
-            },
-        ),
-        TopicMenuItem(
-            name="rest_api_interactive_gui",
-            title=_("REST API interactive GUI"),
-            url="api/1.0/ui/",
-            target="_blank",
-            sort_index=50,
+            entries=[
+                MainMenuItem(
+                    name="rest_api_introduction",
+                    title=_("Introduction"),
+                    url=doc_reference_url(DocReference.REST_API),
+                    target="_blank",
+                    sort_index=10,
+                    icon={
+                        "icon": "global_settings",
+                        "emblem": "api",
+                    },
+                ),
+                MainMenuTopicSegment(
+                    mode="indented",
+                    name="rest_api_version_1",
+                    title=_("Version 1"),
+                    sort_index=20,
+                    entries=[
+                        MainMenuItem(
+                            name="rest_api_documentation",
+                            title=_("Documentation"),
+                            url="openapi/",
+                            target="_blank",
+                            sort_index=10,
+                            icon={
+                                "icon": "global_settings",
+                                "emblem": "api",
+                            },
+                        ),
+                        MainMenuItem(
+                            name="rest_api_interactive_gui",
+                            title=_("Interactive GUI"),
+                            url="api/1.0/ui/",
+                            target="_blank",
+                            sort_index=20,
+                            icon={
+                                "icon": "global_settings",
+                                "emblem": "api",
+                            },
+                        ),
+                    ],
+                ),
+            ],
             icon={
                 "icon": "global_settings",
                 "emblem": "api",
@@ -140,9 +183,9 @@ def default_developer_items() -> list[TopicMenuItem]:
     ]
 
 
-def default_about_checkmk_items() -> list[TopicMenuItem]:
+def default_about_checkmk_entries() -> MainMenuTopicEntries:
     return [
-        TopicMenuItem(
+        MainMenuItem(
             name="change_log",
             title=_("Change log (Werks)"),
             url="change_log.py",
@@ -153,30 +196,30 @@ def default_about_checkmk_items() -> list[TopicMenuItem]:
 
 
 def _help_menu_topics(
-    learning_items: Callable[[], list[TopicMenuItem]],
-    developer_items: Callable[[], list[TopicMenuItem]],
-    about_checkmk_items: Callable[[], list[TopicMenuItem]],
-) -> Callable[[], list[TopicMenuTopic]]:
-    def _fun():
+    learning_entries: Callable[[], MainMenuTopicEntries],
+    developer_entries: Callable[[], MainMenuTopicEntries],
+    about_checkmk_entries: Callable[[], MainMenuTopicEntries],
+) -> Callable[[], list[MainMenuTopic]]:
+    def _fun() -> list[MainMenuTopic]:
         return [
-            TopicMenuTopic(
+            MainMenuTopic(
                 name="learning_checkmk",
                 title=_("Learning Checkmk"),
                 icon="learning_checkmk",
-                items=learning_items(),
+                entries=learning_entries(),
             ),
-            TopicMenuTopic(
+            MainMenuTopic(
                 name="developer_resources",
                 title=_("Developer resources"),
                 icon="developer_resources",
-                items=developer_items(),
+                entries=developer_entries(),
             ),
-            TopicMenuTopic(
+            MainMenuTopic(
                 name="ideas_portal",
                 title=_("Ideas Portal"),
                 icon="lightbulb",
-                items=[
-                    TopicMenuItem(
+                entries=[
+                    MainMenuItem(
                         name="suggest_product_improvement",
                         title=_("Suggest a product improvement"),
                         url="https://ideas.checkmk.com",
@@ -186,11 +229,11 @@ def _help_menu_topics(
                     ),
                 ],
             ),
-            TopicMenuTopic(
+            MainMenuTopic(
                 name="about_checkmk",
                 title=_("About Checkmk"),
                 icon="about_checkmk",
-                items=about_checkmk_items(),
+                entries=about_checkmk_entries(),
             ),
         ]
 

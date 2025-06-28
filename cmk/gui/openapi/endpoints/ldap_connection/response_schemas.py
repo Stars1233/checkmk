@@ -260,12 +260,18 @@ class LDAPUsers(BaseSchema):
     search_filter = fields.Nested(
         LDAPUserSearchFilter,
         description="Enable and define an optional LDAP filter.",
-        example={"state": "enabled", "filter": "(&(objectclass=user)(objectcategory=person))"},
+        example={
+            "state": "enabled",
+            "filter": "(&(objectclass=user)(objectcategory=person))",
+        },
     )
     filter_group = fields.Nested(
         LDAPUserGroupFilter,
         description="Enable and define the DN of a group object which is used to filter the users.",
-        example={"state": "enabled", "filter": "CN=cmk-users,OU=groups,DC=example,DC=com"},
+        example={
+            "state": "enabled",
+            "filter": "CN=cmk-users,OU=groups,DC=example,DC=com",
+        },
     )
     user_id_attribute = fields.Nested(
         LDAPUserIDAttribute,
@@ -451,7 +457,10 @@ class LDAPDisableNotificationsValue(BaseSchema):
     custom_time_range = fields.Nested(
         LDAPFromToFields,
         description="Here you can specify a time range where no notifications are generated.",
-        example={"from_time": "2024-02-29T17:32:28+00:00", "to_time": "2024-02-29T12:53:34+00:00"},
+        example={
+            "from_time": "2024-02-29T17:32:28+00:00",
+            "to_time": "2024-02-29T12:53:34+00:00",
+        },
     )
 
 
@@ -470,21 +479,32 @@ class LDAPGroupsToSyncDisableNotifications(LDAPGroupsToSyncBase):
     value = fields.Nested(
         LDAPDisableNotificationsValue,
         description="The value of the attribute to set",
-        example="dashboard.py",
+        example="",
+    )
+
+
+class LDAPGroupsToSyncStartURL(LDAPGroupsToSyncBase):
+    value = fields.String(
+        description="The URL that the user should be redirected to after login. There is a "
+        "'default_start_url', a 'welcome_page', and any other will be treated as a custom URL",
+        example="default_start_url",
     )
 
 
 class LDAPGroupsToSyncAllOthers(LDAPGroupsToSyncBase):
     value = fields.String(
         description="The value of the attribute to set",
-        example="dashboard.py",
+        example="",
     )
 
 
 class LDAPGroupsToSyncSelector(OneOfSchema):
     type_field_remove = False
     type_field = "attribute_to_set"
-    type_schemas = {"disable_notifications": LDAPGroupsToSyncDisableNotifications}
+    type_schemas = {
+        "disable_notifications": LDAPGroupsToSyncDisableNotifications,
+        "start_url": LDAPGroupsToSyncStartURL,
+    }
 
     def get_obj_type(self, obj):
         attribute_to_set = obj.get("attribute_to_set")
@@ -516,8 +536,8 @@ class LDAPGroupsToAttributes(LDAPCheckbox):
         example=[
             {
                 "group_cn": "group_cn_example",
-                "attribute_to_set": "mega_menu_icons",
-                "value": "mega_menu_icons",
+                "attribute_to_set": "main_menu_icons",
+                "value": "main_menu_icons",
             }
         ],
     )
@@ -591,9 +611,9 @@ class LDAPSyncPlugins(BaseSchema):
         LDAPSyncPluginEmailAddress,
         description="Synchronizes the email of the LDAP user account into Checkmk",
     )
-    mega_menu_icons = fields.Nested(
+    main_menu_icons = fields.Nested(
         LDAPSyncPluginMenuIcons,
-        description="In the mega menus you can select between two options: Have a green icon only for "
+        description="In the main menus you can select between two options: Have a green icon only for "
         "the headlines – the 'topics' – for lean design. Or have a colored icon for every entry so that "
         "over time you can zoom in more quickly to a specific entry.",
     )
@@ -750,7 +770,7 @@ ldap_config_example: dict[str, dict[str, Any]] = {
         "authentication_expiration": {"state": "disabled"},
         "disable_notifications": {"state": "disabled"},
         "email_address": {"state": "disabled"},
-        "mega_menu_icons": {"state": "disabled"},
+        "main_menu_icons": {"state": "disabled"},
         "navigation_bar_icons": {"state": "disabled"},
         "pager": {"state": "disabled"},
         "show_mode": {"state": "disabled"},

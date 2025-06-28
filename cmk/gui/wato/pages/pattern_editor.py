@@ -5,16 +5,18 @@
 """Mode for trying out the logwatch patterns"""
 
 import re
-from collections.abc import Collection, Iterable, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 
+from livestatus import SiteConfiguration
+
+from cmk.ccc.hostaddress import HostName
 from cmk.ccc.site import SiteId
-
-from cmk.utils.hostaddress import HostName
 
 from cmk.checkengine.plugins import CheckPluginName
 
 from cmk.gui import forms
 from cmk.gui.breadcrumb import Breadcrumb
+from cmk.gui.config import active_config
 from cmk.gui.exceptions import MKUserError
 from cmk.gui.htmllib.generator import HTMLWriter
 from cmk.gui.htmllib.html import html
@@ -32,6 +34,11 @@ from cmk.gui.type_defs import PermissionName
 from cmk.gui.utils.html import HTML
 from cmk.gui.utils.urls import makeuri_contextless
 from cmk.gui.wato.pages.rulesets import ModeEditRuleset
+from cmk.gui.watolib.automations import (
+    LocalAutomationConfig,
+    make_automation_config,
+    RemoteAutomationConfig,
+)
 from cmk.gui.watolib.check_mk_automations import (
     analyse_service,
     analyze_service_rule_matches,
@@ -85,8 +92,11 @@ class ModePatternEditor(WatoMode):
             request.del_var("service")
             return super().breadcrumb()
 
-    def _from_vars(self):
-        self._hostname = self._vs_host().from_html_vars("host")
+    def _from_vars(self) -> None:
+        try:
+            self._hostname = HostName(self._vs_host().from_html_vars("host"))
+        except ValueError as e:
+            raise MKUserError("host", str(e))
         self._vs_host().validate_value(self._hostname, "host")
 
         # TODO: validate all fields
@@ -102,7 +112,7 @@ class ModePatternEditor(WatoMode):
             raise MKUserError(None, _("You need to specify a host name to test file matching."))
 
     @staticmethod
-    def title_pattern_analyzer():
+    def title_pattern_analyzer() -> str:
         return _("Log file pattern analyzer")
 
     def title(self) -> str:
@@ -167,9 +177,9 @@ class ModePatternEditor(WatoMode):
         )
 
         self._show_try_form()
-        self._show_patterns()
+        self._show_patterns(site_configs=active_config.sites, debug=active_config.debug)
 
-    def _show_try_form(self):
+    def _show_try_form(self) -> None:
         with html.form_context("try"):
             forms.header(_("Try pattern match"))
             forms.section(_("Host name"))
@@ -191,10 +201,12 @@ class ModePatternEditor(WatoMode):
             request.del_var("folder")  # Never hand over the folder here
             html.hidden_fields()
 
-    def _vs_host(self):
+    def _vs_host(self) -> ConfigHostname:
         return ConfigHostname()
 
-    def _show_patterns(self):
+    def _show_patterns(
+        self, *, site_configs: Mapping[SiteId, SiteConfiguration], debug: bool
+    ) -> None:
         from cmk.gui import logwatch
 
         ruleset = SingleRulesetRecursively.load_single_ruleset_recursively("logwatch_rules").get(
@@ -224,7 +236,11 @@ class ModePatternEditor(WatoMode):
         rules = ruleset.get_rules()
         rule_match_results = (
             self._analyze_rule_matches(
-                self._host.site_id(), self._hostname, self._item, [r[2] for r in rules]
+                make_automation_config(site_configs[self._host.site_id()]),
+                self._hostname,
+                self._item,
+                [r[2] for r in rules],
+                debug=debug,
             )
             if self._hostname and self._host
             else {}
@@ -344,13 +360,22 @@ class ModePatternEditor(WatoMode):
                     html.icon_button(edit_url, _("Edit this rule"), "edit")
 
     def _analyze_rule_matches(
-        self, site_id: SiteId, host_name: HostName, item: str, rules: Sequence[Rule]
+        self,
+        automation_config: LocalAutomationConfig | RemoteAutomationConfig,
+        host_name: HostName,
+        item: str,
+        rules: Sequence[Rule],
+        *,
+        debug: bool,
     ) -> dict[str, bool]:
-        service_desc = get_service_name(host_name, CheckPluginName("logwatch"), item).service_name
+        service_desc = get_service_name(
+            host_name, CheckPluginName("logwatch"), item, debug=debug
+        ).service_name
         service_labels = analyse_service(
-            site_id,
+            automation_config,
             host_name,
             service_desc,
+            debug=debug,
         ).labels
 
         return {
@@ -360,6 +385,7 @@ class ModePatternEditor(WatoMode):
                 item,
                 service_labels,
                 [r.to_single_base_ruleset() for r in rules],
+                debug=debug,
             ).results.items()
             for rule in rules
         }

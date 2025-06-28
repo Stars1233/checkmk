@@ -534,7 +534,9 @@ private:
     void createScript() {
         auto bat_file = fmt::format(
             "@echo start>{0}\n"
+            "@echo %PATH%>>{0}\n"
             "@if defined MK_STATEDIR echo %MK_STATEDIR%>>{0}\n"
+            "@if defined MK_LIBDIR echo %MK_LIBDIR%>>{0}\n"
             "@if defined MK_CONFDIR echo %MK_CONFDIR%>>{0}\n"
             "@if defined MK_LOCALDIR echo %MK_LOCALDIR%>>{0}\n"
             "@if defined MK_TEMPDIR echo %MK_TEMPDIR%>>{0}\n"
@@ -584,7 +586,14 @@ TEST(CmaCfg, SetupPluginEnvironmentComponent) {
     for (auto const &raw : table) {
         all.insert(raw);
     }
-    EXPECT_EQ(all.size(), 11);
+
+    EXPECT_EQ(all.size(), 13);
+
+    const auto fuck2 = rs::count_if(all, [](const auto &s) {
+        return s.contains(wtools::ToUtf8(cma::cfg::GetLibDir()) + ";");
+    });
+    EXPECT_EQ(fuck2, 1) << "Log dir must be in PATH, but not found: "
+                        << cma::cfg::GetLibDir();
 }
 
 }  // namespace cma::cfg

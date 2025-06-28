@@ -10,14 +10,14 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Literal
 
+from cmk.ccc import tty
 from cmk.ccc.exceptions import OnError
+from cmk.ccc.hostaddress import HostName
 
 import cmk.utils.password_store
 import cmk.utils.paths
 import cmk.utils.render
-from cmk.utils import ip_lookup, tty
-from cmk.utils.hostaddress import HostAddress, HostName, Hosts
-from cmk.utils.ip_lookup import IPStackConfig
+from cmk.utils.ip_lookup import IPLookup, IPStackConfig
 from cmk.utils.paths import tmp_dir
 from cmk.utils.tags import ComputedDataSources
 from cmk.utils.timeperiod import timeperiod_active
@@ -41,13 +41,7 @@ from cmk.checkengine.parser import NO_SELECTION
 from cmk.checkengine.plugins import AgentBasedPlugins
 
 from cmk.base import sources
-from cmk.base.config import (
-    ConfigCache,
-    ConfiguredIPLookup,
-    handle_ip_lookup_failure,
-    lookup_ip_address,
-    lookup_mgmt_board_ip_address,
-)
+from cmk.base.config import ConfigCache
 from cmk.base.configlib.servicename import PassiveServiceNameConfig
 from cmk.base.sources import SNMPFetcherConfig, Source
 
@@ -82,7 +76,7 @@ def dump_source(source: Source) -> str:
         if snmp_config.snmp_version is SNMPVersion.V3:
             credentials_text = "Credentials: '%s'" % ", ".join(snmp_config.credentials)
         else:
-            credentials_text = "Community: %r" % snmp_config.credentials
+            credentials_text = f"Community: {snmp_config.credentials!r}"
 
         bulk = "yes" if snmp_config.use_bulkwalk else "no"
 
@@ -131,11 +125,14 @@ def dump_host(
     plugins: AgentBasedPlugins,
     hostname: HostName,
     *,
+    ip_address_of: IPLookup,
+    ip_address_of_mgmt: IPLookup,
     simulation_mode: bool,
 ) -> None:
     print_("\n")
     label_manager = config_cache.label_manager
     hosts_config = config_cache.hosts_config
+
     if hostname in hosts_config.clusters:
         assert config_cache.nodes(hostname)
         color = tty.bgmagenta
@@ -146,15 +143,9 @@ def dump_host(
     print_("%s%s%s%-78s %s\n" % (color, tty.bold, tty.white, hostname + add_txt, tty.normal))
 
     ip_stack_config = ConfigCache.ip_stack_config(hostname)
+    primary_family = config_cache.default_address_family(hostname)
     ipaddress = (
-        None
-        if ip_stack_config is IPStackConfig.NO_IP
-        else _ip_address_for_dump_host(
-            config_cache,
-            hosts_config,
-            hostname,
-            family=config_cache.default_address_family(hostname),
-        )
+        None if ip_stack_config is IPStackConfig.NO_IP else ip_address_of(hostname, primary_family)
     )
 
     addresses: str | None = ""
@@ -162,19 +153,12 @@ def dump_host(
         addresses = ipaddress
     else:
         try:
-            secondary = str(
-                _ip_address_for_dump_host(
-                    config_cache,
-                    hosts_config,
-                    hostname,
-                    family=config_cache.default_address_family(hostname),
-                )
-            )
+            secondary = str(ip_address_of(hostname, _complementary_family(primary_family)))
         except Exception:
             secondary = "X.X.X.X"
 
         addresses = f"{ipaddress}, {secondary}"
-        if config_cache.default_address_family(hostname) is socket.AF_INET6:
+        if primary_family is socket.AF_INET6:
             addresses += " (Primary: IPv6)"
         else:
             addresses += " (Primary: IPv4)"
@@ -220,11 +204,11 @@ def dump_host(
         + "\n"
     )
 
-    oid_cache_dir = Path(cmk.utils.paths.snmp_scan_cache_dir)
-    stored_walk_path = Path(cmk.utils.paths.snmpwalks_dir)
-    walk_cache_path = Path(cmk.utils.paths.var_dir) / "snmp_cache"
-    file_cache_path = Path(cmk.utils.paths.data_source_cache_dir)
-    tcp_cache_path = Path(cmk.utils.paths.tcp_cache_dir)
+    oid_cache_dir = cmk.utils.paths.snmp_scan_cache_dir
+    stored_walk_path = cmk.utils.paths.snmpwalks_dir
+    walk_cache_path = cmk.utils.paths.var_dir / "snmp_cache"
+    file_cache_path = cmk.utils.paths.data_source_cache_dir
+    tcp_cache_path = cmk.utils.paths.tcp_cache_dir
     tls_config = TLSConfig(
         cas_dir=Path(cmk.utils.paths.agent_cas_dir),
         ca_store=Path(cmk.utils.paths.agent_cert_store),
@@ -240,7 +224,8 @@ def dump_host(
             ipaddress,
             ConfigCache.ip_stack_config(hostname),
             fetcher_factory=config_cache.fetcher_factory(
-                config_cache.make_service_configurer(plugins.check_plugins, service_name_config)
+                config_cache.make_service_configurer(plugins.check_plugins, service_name_config),
+                ip_address_of,
             ),
             snmp_fetcher_config=SNMPFetcherConfig(
                 scan_config=SNMPScanConfig(
@@ -264,16 +249,14 @@ def dump_host(
             computed_datasources=config_cache.computed_datasources(hostname),
             datasource_programs=config_cache.datasource_programs(hostname),
             tag_list=config_cache.tag_list(hostname),
-            management_ip=lookup_mgmt_board_ip_address(config_cache, hostname),
+            management_ip=ip_address_of_mgmt(hostname, primary_family),
             management_protocol=config_cache.management_protocol(hostname),
             special_agent_command_lines=config_cache.special_agent_command_lines(
                 hostname,
                 ipaddress,
                 password_store_file=used_password_store,
                 passwords=passwords,
-                ip_address_of=ConfiguredIPLookup(
-                    config_cache, error_handler=handle_ip_lookup_failure
-                ),
+                ip_address_of=ip_address_of,
             ),
             agent_connection_mode=config_cache.agent_connection_mode(hostname),
             check_mk_check_interval=config_cache.check_mk_check_interval(hostname),
@@ -325,26 +308,19 @@ def dump_host(
     tty.print_table(headers, colors, table_data, "  ")
 
 
+def _complementary_family(
+    family: Literal[socket.AddressFamily.AF_INET, socket.AddressFamily.AF_INET6],
+) -> Literal[socket.AddressFamily.AF_INET, socket.AddressFamily.AF_INET6]:
+    match family:
+        case socket.AddressFamily.AF_INET:
+            return socket.AddressFamily.AF_INET6
+        case socket.AddressFamily.AF_INET6:
+            return socket.AddressFamily.AF_INET
+
+
 def _evaluate_params(params: TimespecificParameters) -> str:
     return (
         repr(params.evaluate(timeperiod_active))
         if params.is_constant()
         else f"Timespecific parameters at {cmk.utils.render.date_and_time(time.time())}: {params.evaluate(timeperiod_active)!r}"
     )
-
-
-def _ip_address_for_dump_host(
-    config_cache: ConfigCache,
-    hosts_config: Hosts,
-    host_name: HostName,
-    *,
-    family: Literal[socket.AddressFamily.AF_INET, socket.AddressFamily.AF_INET6],
-) -> HostAddress | None:
-    try:
-        return lookup_ip_address(config_cache, host_name, family=family)
-    except Exception:
-        return (
-            HostAddress("")
-            if host_name in hosts_config.clusters
-            else ip_lookup.fallback_ip_for(family)
-        )

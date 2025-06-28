@@ -19,6 +19,7 @@ from cmk.utils.rulesets.conditions import (
 from cmk.utils.rulesets.ruleset_matcher import RuleOptionsSpec
 
 from cmk.gui import exceptions, http
+from cmk.gui.config import active_config
 from cmk.gui.i18n import _l
 from cmk.gui.logged_in import user
 from cmk.gui.openapi.endpoints.rule.fields import (
@@ -172,18 +173,20 @@ def move_rule_to(param: Mapping[str, Any]) -> http.Response:
     dest_folder.permissions.need_permission("write")
     source_entry.ruleset.move_to_folder(source_entry.rule, dest_folder, index)
     source_entry.folder = dest_folder
-    all_rulesets.save()
+    all_rulesets.save(pprint_value=active_config.wato_pprint_config, debug=active_config.debug)
     affected_sites = source_entry.folder.all_site_ids()
 
     if dest_folder != source_entry.folder:
         affected_sites.extend(dest_folder.all_site_ids())
 
     add_change(
-        "edit-rule",
-        _l('Changed properties of rule "%s", moved from folder "%s" to top of folder "%s"')
+        action_name="edit-rule",
+        text=_l('Changed properties of rule "%s", moved from folder "%s" to top of folder "%s"')
         % (source_entry.rule.id, source_entry.folder.title(), dest_folder.title()),
+        user_id=user.id,
         sites=list(set(affected_sites)),
         object_ref=source_entry.rule.object_ref(),
+        use_git=active_config.wato_use_git,
     )
 
     return serve_json(_serialize_rule(source_entry))
@@ -227,7 +230,7 @@ def create_rule(param):
     )
 
     index = ruleset.append_rule(folder, rule)
-    rulesets.save_folder()
+    rulesets.save_folder(pprint_value=active_config.wato_pprint_config, debug=active_config.debug)
     ruleset.add_new_rule_change(index, folder, rule)
     rule_entry = _get_rule_by_id(rule.id)
     return serve_json(_serialize_rule(rule_entry))
@@ -349,7 +352,9 @@ def delete_rule(param):
                         detail="Rules managed by Quick setup cannot be deleted.",
                     )
                 ruleset.delete_rule(rule)
-                all_rulesets.save()
+                all_rulesets.save(
+                    pprint_value=active_config.wato_pprint_config, debug=active_config.debug
+                )
                 return http.Response(status=204)
 
     return problem(
@@ -411,7 +416,9 @@ def edit_rule(param):
         )
 
     ruleset.edit_rule(current_rule, new_rule)
-    rulesets.save_folder(folder)
+    rulesets.save_folder(
+        folder, pprint_value=active_config.wato_pprint_config, debug=active_config.debug
+    )
 
     new_rule_entry = _get_rule_by_id(param["rule_id"])
     return serve_json(_serialize_rule(new_rule_entry))
@@ -510,7 +517,7 @@ def _create_rule(
             ),
         ),
         RuleOptions.from_config(properties),
-        value,
+        ruleset.valuespec().transform_value(value),
     )
 
     return rule
@@ -559,10 +566,10 @@ def _serialize_rule(rule_entry: RuleEntry) -> DomainObject:
     )
 
 
-def register(endpoint_registry: EndpointRegistry) -> None:
-    endpoint_registry.register(move_rule_to)
-    endpoint_registry.register(create_rule)
-    endpoint_registry.register(list_rules)
-    endpoint_registry.register(show_rule)
-    endpoint_registry.register(delete_rule)
-    endpoint_registry.register(edit_rule)
+def register(endpoint_registry: EndpointRegistry, *, ignore_duplicates: bool) -> None:
+    endpoint_registry.register(move_rule_to, ignore_duplicates=ignore_duplicates)
+    endpoint_registry.register(create_rule, ignore_duplicates=ignore_duplicates)
+    endpoint_registry.register(list_rules, ignore_duplicates=ignore_duplicates)
+    endpoint_registry.register(show_rule, ignore_duplicates=ignore_duplicates)
+    endpoint_registry.register(delete_rule, ignore_duplicates=ignore_duplicates)
+    endpoint_registry.register(edit_rule, ignore_duplicates=ignore_duplicates)

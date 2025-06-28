@@ -13,7 +13,9 @@ from pytest import MonkeyPatch
 
 from tests.testlib.unit.base_configuration_scenario import Scenario
 
-from cmk.utils.hostaddress import HostName
+from cmk.ccc.hostaddress import HostName
+
+from cmk.utils import ip_lookup
 from cmk.utils.servicename import ServiceName
 
 from cmk.checkengine.checkresults import ServiceCheckResult, SubmittableServiceCheckResult
@@ -21,7 +23,7 @@ from cmk.checkengine.fetcher import HostKey, SourceType
 from cmk.checkengine.parameters import TimespecificParameters, TimespecificParameterSet
 from cmk.checkengine.plugins import CheckPluginName, ConfiguredService
 
-from cmk.base import checkers, config
+from cmk.base import checkers
 
 from cmk.agent_based.prediction_backend import (
     InjectedParameters,
@@ -93,7 +95,7 @@ def test_consume_result_invalid() -> None:
 
 def test_config_cache_get_clustered_service_node_keys_no_cluster(monkeypatch: MonkeyPatch) -> None:
     monkeypatch.setattr(
-        config,
+        ip_lookup,
         "lookup_ip_address",
         lambda *args, **kw: "dummy.test.ip.0",
     )
@@ -115,7 +117,7 @@ def test_config_cache_get_clustered_service_node_keys_cluster_no_service(
     ts.add_cluster(cluster_test, nodes=[HostName("node1.test"), HostName("node2.test")])
 
     monkeypatch.setattr(
-        config,
+        ip_lookup,
         "lookup_ip_address",
         lambda *args, **kw: "dummy.test.ip.0",
     )
@@ -162,7 +164,7 @@ def test_config_cache_get_clustered_service_node_keys_clustered(monkeypatch: Mon
     )
 
     monkeypatch.setattr(
-        config,
+        ip_lookup,
         "lookup_ip_address",
         lambda hostname, *args, **kw: "dummy.test.ip.%s" % hostname[4],
     )
@@ -177,7 +179,7 @@ def test_config_cache_get_clustered_service_node_keys_clustered(monkeypatch: Mon
         HostKey(node2, SourceType.HOST),
     ]
     monkeypatch.setattr(
-        config,
+        ip_lookup,
         "lookup_ip_address",
         lambda *args, **kw: "dummy.test.ip.0",
     )
@@ -194,7 +196,7 @@ def test_config_cache_get_clustered_service_node_keys_clustered(monkeypatch: Mon
 
 
 def test_only_from_injection() -> None:
-    p_config = checkers.PostprocessingConfig(
+    p_config = checkers.PostprocessingServiceConfig(
         only_from=lambda: ["1.2.3.4"],
         prediction=lambda: InjectedParameters(meta_file_path_template="", predictions={}),
         service_level=lambda: 42,
@@ -214,7 +216,7 @@ def test_only_from_injection() -> None:
 
 
 def test_prediction_injection_legacy() -> None:
-    p_config = checkers.PostprocessingConfig(
+    p_config = checkers.PostprocessingServiceConfig(
         only_from=lambda: ["1.2.3.4"],
         prediction=lambda: InjectedParameters(meta_file_path_template="", predictions={}),
         service_level=lambda: 42,
@@ -256,7 +258,7 @@ def test_prediction_injection() -> None:
     metric = "my_reference_metric"
     prediction = (42.0, (50.0, 60.0))
 
-    p_config = checkers.PostprocessingConfig(
+    p_config = checkers.PostprocessingServiceConfig(
         only_from=lambda: [],
         prediction=lambda: InjectedParameters(
             meta_file_path_template="",

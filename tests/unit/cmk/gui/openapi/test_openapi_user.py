@@ -20,9 +20,9 @@ from tests.testlib.unit.rest_api_client import ClientRegistry
 from tests.unit.cmk.web_test_app import SetConfig
 
 from cmk.ccc import version
+from cmk.ccc.user import UserId
 
 from cmk.utils import paths
-from cmk.utils.user import UserId
 
 from cmk.gui import userdb
 from cmk.gui.config import active_config
@@ -122,12 +122,13 @@ def test_openapi_customer(clients: ClientRegistry, monkeypatch: MonkeyPatch) -> 
         "auth_option": {},
         "interface_options": {
             "interface_theme": "default",
-            "mega_menu_icons": "topic",
+            "main_menu_icons": "topic",
             "navigation_bar_icons": "hide",
             "show_mode": "default",
             "sidebar_position": "right",
             "contextual_help_icon": "show_icon",
         },
+        "start_url": "default_start_url",
     }
 
     resp = clients.User.edit(username=username, customer="provider")
@@ -715,13 +716,14 @@ def test_global_full_configuration(clients: ClientRegistry) -> None:
         "auth_option": {"enforce_password_change": False, "auth_type": "password"},
         "interface_options": {
             "interface_theme": "default",
-            "mega_menu_icons": "topic",
+            "main_menu_icons": "topic",
             "navigation_bar_icons": "hide",
             "show_mode": "default",
             "sidebar_position": "right",
             "contextual_help_icon": "show_icon",
         },
         "temperature_unit": "fahrenheit",
+        "start_url": "default_start_url",
     }
 
 
@@ -804,12 +806,13 @@ def test_openapi_user_update_contact_options(clients: ClientRegistry) -> None:
         "auth_option": {"enforce_password_change": False, "auth_type": "password"},
         "interface_options": {
             "interface_theme": "default",
-            "mega_menu_icons": "topic",
+            "main_menu_icons": "topic",
             "navigation_bar_icons": "hide",
             "show_mode": "default",
             "sidebar_position": "right",
             "contextual_help_icon": "show_icon",
         },
+        "start_url": "default_start_url",
     }
 
 
@@ -917,7 +920,7 @@ def test_user_interface_settings(_mock: None, clients: ClientRegistry) -> None:
             "interface_theme": "dark",
             "sidebar_position": "left",
             "navigation_bar_icons": "show",
-            "mega_menu_icons": "entry",
+            "main_menu_icons": "entry",
             "show_mode": "enforce_show_more",
         },
     )
@@ -926,7 +929,7 @@ def test_user_interface_settings(_mock: None, clients: ClientRegistry) -> None:
     assert interface_options["interface_theme"] == "dark"
     assert interface_options["sidebar_position"] == "left"
     assert interface_options["navigation_bar_icons"] == "show"
-    assert interface_options["mega_menu_icons"] == "entry"
+    assert interface_options["main_menu_icons"] == "entry"
     assert interface_options["show_mode"] == "enforce_show_more"
 
     resp = clients.User.edit(username=username, interface_options={"interface_theme": "light"})
@@ -962,7 +965,7 @@ def _internal_attributes(user_attributes):
 def test_openapi_new_user_with_cloned_role(
     clients: ClientRegistry, monkeypatch: MonkeyPatch
 ) -> None:
-    cloned_role: UserRole = clone_role(RoleID("admin"))
+    cloned_role: UserRole = clone_role(RoleID("admin"), pprint_value=False)
     username = f"new_user_with_role_{cloned_role.name}"
     fullname = f"NewUser_{cloned_role.name}"
 
@@ -1043,7 +1046,7 @@ def test_openapi_custom_attributes_of_user(
                 "interface_theme": "dark",
                 "sidebar_position": "left",
                 "navigation_bar_icons": "show",
-                "mega_menu_icons": "entry",
+                "main_menu_icons": "entry",
                 "show_mode": "enforce_show_more",
             },
             extra={
@@ -1086,7 +1089,7 @@ def test_edit_custom_attributes_of_user(_mock: None, clients: ClientRegistry) ->
                 "interface_theme": "dark",
                 "sidebar_position": "left",
                 "navigation_bar_icons": "show",
-                "mega_menu_icons": "entry",
+                "main_menu_icons": "entry",
                 "show_mode": "enforce_show_more",
             },
             extra={
@@ -1116,7 +1119,7 @@ def test_create_user_with_non_existing_custom_attribute(
             "interface_theme": "dark",
             "sidebar_position": "left",
             "navigation_bar_icons": "show",
-            "mega_menu_icons": "entry",
+            "main_menu_icons": "entry",
             "show_mode": "enforce_show_more",
         },
         extra={
@@ -1460,3 +1463,50 @@ def test_openapi_full_configuration(clients: ClientRegistry) -> None:
 def test_openapi_user_dismiss_warning(clients: ClientRegistry) -> None:
     clients.User.dismiss_warning(warning="notification_fallback")
     assert user.dismissed_warnings == {"notification_fallback"}
+
+
+@managedtest
+def test_openapi_edit_user_should_not_modify_start_url(clients: ClientRegistry) -> None:
+    username = "user_1"
+    clients.User.create(
+        username=username,
+        fullname="User Test",
+        start_url="welcome_page",
+    )
+    assert (
+        clients.User.edit(
+            username=username,
+            fullname="User Test Updated",
+        ).json["extensions"]["start_url"]
+        == "welcome_page"
+    )
+
+
+@managedtest
+def test_openapi_create_user_edit_start_url(clients: ClientRegistry) -> None:
+    username = "user_2"
+    assert (
+        clients.User.create(
+            username=username,
+            fullname="User Test",
+        ).json["extensions"]["start_url"]
+        == "default_start_url"
+    )
+
+    assert (
+        clients.User.edit(
+            username=username,
+            fullname="User Test Updated",
+            start_url="welcome_page",
+        ).json["extensions"]["start_url"]
+        == "welcome_page"
+    )
+
+    assert (
+        clients.User.edit(
+            username=username,
+            fullname="User Test Updated Again",
+            start_url="some_custom_url",
+        ).json["extensions"]["start_url"]
+        == "some_custom_url"
+    )

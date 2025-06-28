@@ -19,7 +19,6 @@ def main() {
 
     check_environment_variables([
         "DOCKER_REGISTRY",
-        "NEXUS_BUILD_CACHE_URL",
     ]);
 
     def distro = params.DISTRO;
@@ -34,9 +33,7 @@ def main() {
     def omd_env_vars = [
         "DEBFULLNAME='Checkmk Team'",
         "DEBEMAIL='feedback@checkmk.com'",
-    ] + (disable_cache ? [
-        "NEXUS_BUILD_CACHE_URL=",
-        ] : []);
+    ]
 
     def safe_branch_name = versioning.safe_branch_name();
     def branch_version = versioning.get_branch_version(checkout_dir);
@@ -104,14 +101,11 @@ def main() {
                 }
                 versioning.configure_checkout_folder(edition, cmk_version);
             }
-
-            // FIXME: should this be done by another job?
-            dir("${checkout_dir}") {
-                sh("make cmk-frontend-build frontend-vue-build");
-            }
         }
+    }
 
-        inside_container_minimal(safe_branch_name: safe_branch_name) {
+    def stages = [
+        "Build BOM": {
             def build_instance = null;
             smart_stage(
                 name: "Build BOM",
@@ -124,6 +118,7 @@ def main() {
                     build_params: [
                         CUSTOM_GIT_REF: effective_git_ref,
                         VERSION: version,
+                        EDITION: edition,
                         DISABLE_CACHE: disable_cache,
                     ],
                     build_params_no_check: [
@@ -147,22 +142,30 @@ def main() {
                     fingerprintArtifacts: true,
                 )
             }
+        },
+    ];
 
-            smart_stage(
-                name: 'Fetch agent binaries',
-                condition: !params.FAKE_WINDOWS_ARTIFACTS,
-                raiseOnError: true,
-            ) {
-                package_helper.provide_agent_binaries(version, edition, disable_cache, params.CIPARAM_BISECT_COMMENT);
-            }
-
-            smart_stage(name: 'Fake agent binaries', condition: params.FAKE_WINDOWS_ARTIFACTS) {
-                dir("${checkout_dir}") {
-                    sh("scripts/fake-artifacts");
-                }
+    if (!params.FAKE_WINDOWS_ARTIFACTS) {
+        stages += package_helper.provide_agent_binaries(
+            version: version,
+            edition: edition,
+            disable_cache: disable_cache,
+            bisect_comment: params.CIPARAM_BISECT_COMMENT,
+            artifacts_base_dir: "tmp_artifacts",
+        );
+    } else {
+        smart_stage(name: 'Fake agent binaries') {
+            dir("${checkout_dir}") {
+                sh("scripts/fake-artifacts");
             }
         }
     }
+
+    inside_container_minimal(safe_branch_name: safe_branch_name) {
+        currentBuild.result = parallel(stages).values().every { it } ? "SUCCESS" : "FAILURE";
+    }
+
+    package_helper.cleanup_provided_agent_binaries("tmp_artifacts");
 
     stage("Build package") {
         lock(label: "bzl_lock_${env.NODE_NAME.split('\\.')[0].split('-')[-1]}", quantity: 1, resource : null) {

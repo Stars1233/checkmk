@@ -3,11 +3,10 @@
 # This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
 # conditions defined in the file COPYING, which is part of this source code package.
 
-import os
 import subprocess
 import traceback
-from collections.abc import Mapping
-from typing import Any
+from pathlib import Path
+from typing import override
 
 from cmk.ccc import store
 from cmk.ccc.version import Edition, edition
@@ -17,6 +16,7 @@ from cmk.utils.config_warnings import ConfigurationWarnings
 
 from cmk.gui.i18n import _
 from cmk.gui.log import logger
+from cmk.gui.type_defs import GlobalSettings
 from cmk.gui.valuespec import (
     Age,
     Checkbox,
@@ -221,17 +221,21 @@ class ConfigDomainDiskspace(ABCConfigDomain):
     needs_sync = True
     needs_activation = False
 
+    @override
     @classmethod
     def ident(cls) -> ConfigDomainName:
         return "diskspace"
 
+    @override
     def activate(self, settings: SerializedSettings | None = None) -> ConfigurationWarnings:
         return []
 
-    def config_dir(self):
+    @override
+    def config_dir(self) -> Path:
         return cmk.utils.paths.diskspace_config_dir
 
-    def default_globals(self) -> Mapping[str, Any]:
+    @override
+    def default_globals(self) -> GlobalSettings:
         return {"diskspace_cleanup": diskspace_DEFAULT_CONFIG.model_dump(exclude_none=True)}
 
 
@@ -343,13 +347,16 @@ class ConfigDomainApache(ABCConfigDomain):
     needs_sync = True
     needs_activation = True
 
+    @override
     @classmethod
     def ident(cls) -> ConfigDomainName:
         return "apache"
 
-    def config_dir(self):
-        return cmk.utils.paths.default_config_dir + "/apache.d/wato/"
+    @override
+    def config_dir(self) -> Path:
+        return cmk.utils.paths.default_config_dir / "apache.d/wato"
 
+    @override
     def activate(self, settings: SerializedSettings | None = None) -> ConfigurationWarnings:
         try:
             self._write_config_file()
@@ -381,9 +388,7 @@ class ConfigDomainApache(ABCConfigDomain):
             output += "ServerLimit %d\n" % config["apache_process_tuning"]["number_of_processes"]
             output += "MaxClients %d\n" % config["apache_process_tuning"]["number_of_processes"]
 
-        config_file_path = os.path.join(
-            cmk.utils.paths.omd_root, "etc/apache/conf.d", "zzz_check_mk.conf"
-        )
+        config_file_path = cmk.utils.paths.omd_root / "etc/apache/conf.d/zzz_check_mk.conf"
         store.save_text_to_file(config_file_path, output)
 
     def get_effective_config(self):
@@ -392,7 +397,8 @@ class ConfigDomainApache(ABCConfigDomain):
             **self.load(site_specific=True),
         }
 
-    def default_globals(self) -> Mapping[str, Any]:
+    @override
+    def default_globals(self) -> GlobalSettings:
         return {
             "apache_process_tuning": {
                 "number_of_processes": self._get_value_from_config("MaxClients", int, 64),
@@ -459,13 +465,16 @@ class ConfigDomainRRDCached(ABCConfigDomain):
     needs_sync = True
     needs_activation = True
 
+    @override
     @classmethod
     def ident(cls) -> ConfigDomainName:
         return "rrdcached"
 
-    def config_dir(self):
-        return cmk.utils.paths.default_config_dir + "/rrdcached.d/wato/"
+    @override
+    def config_dir(self) -> Path:
+        return cmk.utils.paths.default_config_dir / "rrdcached.d/wato"
 
+    @override
     def activate(self, settings: SerializedSettings | None = None) -> ConfigurationWarnings:
         try:
             self._write_config_file()
@@ -495,9 +504,7 @@ class ConfigDomainRRDCached(ABCConfigDomain):
         for key, val in sorted(config.get("rrdcached_tuning", {}).items()):
             output += "%s=%d\n" % (key, val)
 
-        config_file_path = os.path.join(
-            cmk.utils.paths.omd_root, "etc/rrdcached.d", "zzz_check_mk.conf"
-        )
+        config_file_path = cmk.utils.paths.omd_root / "etc/rrdcached.d/zzz_check_mk.conf"
         store.save_text_to_file(config_file_path, output)
 
     def _get_effective_config(self):
@@ -506,7 +513,8 @@ class ConfigDomainRRDCached(ABCConfigDomain):
             **self.load(site_specific=True),
         }
 
-    def default_globals(self) -> Mapping[str, Any]:
+    @override
+    def default_globals(self) -> GlobalSettings:
         return {
             "rrdcached_tuning": {
                 "TIMEOUT": self._get_value_from_config("TIMEOUT", int, 3600),

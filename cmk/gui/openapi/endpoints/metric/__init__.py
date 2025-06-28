@@ -8,6 +8,8 @@ Metrics visible in the Checkmk user interface can also be retrieved via the
 REST-API.
 """
 
+from cmk.ccc.version import Edition
+
 from cmk.gui.exceptions import MKUserError
 from cmk.gui.graphing._from_api import graphs_from_api, metrics_from_api
 from cmk.gui.graphing._graph_images import graph_spec_from_request
@@ -31,6 +33,7 @@ from cmk.gui.openapi.utils import problem, serve_json
     request_schema=request_schemas.GetSchema,
     response_schema=response_schemas.GraphCollectionSchema,
     sort=0,
+    supported_editions={Edition.CRE, Edition.CEE, Edition.CCE, Edition.CME},
 )
 def get_graph(params):
     """Get metrics
@@ -68,5 +71,5 @@ def get_graph(params):
     return serve_json(response)
 
 
-def register(endpoint_registry: EndpointRegistry) -> None:
-    endpoint_registry.register(get_graph)
+def register(endpoint_registry: EndpointRegistry, *, ignore_duplicates: bool) -> None:
+    endpoint_registry.register(get_graph, ignore_duplicates=ignore_duplicates)

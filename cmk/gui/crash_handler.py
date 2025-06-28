@@ -4,7 +4,7 @@
 # conditions defined in the file COPYING, which is part of this source code package.
 
 from pathlib import Path
-from typing import Any, NotRequired, Self, TypedDict
+from typing import Any, NotRequired, override, Self, TypedDict
 
 import cmk.ccc.version as cmk_version
 from cmk.ccc.crash_reporting import (
@@ -56,8 +56,9 @@ class GUIDetails(RequestDetails, DashletDetails):
 
 
 class GUICrashReport(ABCCrashReport[GUIDetails]):
+    @override
     @classmethod
-    def type(cls):
+    def type(cls) -> str:
         return "gui"
 
     @classmethod
@@ -101,7 +102,7 @@ class GUICrashReport(ABCCrashReport[GUIDetails]):
 
         return cls(
             crashdir,
-            cls.make_crash_info(version_info, GUIDetails(**(details or {}), **request_details)),  # type: ignore[typeddict-item]
+            cls.make_crash_info(version_info, GUIDetails(**{**(details or {}), **request_details})),  # type: ignore[typeddict-item]
         )
 
     def url(self) -> str:

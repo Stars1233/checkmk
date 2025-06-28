@@ -20,6 +20,7 @@ from typing import Any
 
 from cmk.utils.notify_types import NotificationRuleID
 
+from cmk.gui.config import active_config
 from cmk.gui.http import Response
 from cmk.gui.i18n import _
 from cmk.gui.logged_in import user
@@ -64,7 +65,8 @@ RULE_ID = {
 
 def _create_or_update_rule(
     incoming_rule_config: APINotificationRule,
-    rule_id: NotificationRuleID | None = None,
+    rule_id: NotificationRuleID | None,
+    pprint_value: bool,
 ) -> Response:
     all_rules: NotificationRules = get_notification_rules()
     rule_from_request = NotificationRule.from_api_request(incoming_rule_config)
@@ -80,7 +82,11 @@ def _create_or_update_rule(
     try:
         all_rules[rule_from_request.rule_id] = rule_from_request
         NotificationRuleConfigFile().save(
-            [rule.to_mk_file_format() for rule in all_rules.values()],
+            [
+                rule.to_mk_file_format(pprint_value=active_config.wato_pprint_config)
+                for rule in all_rules.values()
+            ],
+            pprint_value=active_config.wato_pprint_config,
         )
     except BulkNotAllowedException as exc:
         raise ProblemException(
@@ -118,7 +124,11 @@ def show_rule(params: Mapping[str, Any]) -> Response:
     all_rules = get_notification_rules()
     if rule := all_rules.get(NotificationRuleID(params["rule_id"])):
         return serve_json(_serialize_notification_rule(rule))
-    return Response(status=404)
+    raise ProblemException(
+        status=404,
+        title=_("The requested notification rule was not found"),
+        detail=_("The rule_id %s does not exist.") % params["rule_id"],
+    )
 
 
 @Endpoint(
@@ -160,6 +170,8 @@ def post_rule(params: Mapping[str, Any]) -> Response:
     incoming_rule: APINotificationRule = params["body"]["rule_config"]
     return _create_or_update_rule(
         incoming_rule_config=incoming_rule,
+        rule_id=None,
+        pprint_value=active_config.wato_pprint_config,
     )
 
 
@@ -182,6 +194,7 @@ def put_rule(params: Mapping[str, Any]) -> Response:
     return _create_or_update_rule(
         incoming_rule_config=incoming_rule,
         rule_id=NotificationRuleID(params["rule_id"]),
+        pprint_value=active_config.wato_pprint_config,
     )
 
 
@@ -204,8 +217,13 @@ def delete_rule(params: Mapping[str, Any]) -> Response:
     all_rules: NotificationRules = get_notification_rules()
     if rule_id in all_rules:
         del all_rules[rule_id]
-        updated_rules = [rule.to_mk_file_format() for rule in all_rules.values()]
-        NotificationRuleConfigFile().save(updated_rules)
+        updated_rules = [
+            rule.to_mk_file_format(pprint_value=active_config.wato_pprint_config)
+            for rule in all_rules.values()
+        ]
+        NotificationRuleConfigFile().save(
+            updated_rules, pprint_value=active_config.wato_pprint_config
+        )
 
     return Response(status=204)
 
@@ -221,9 +239,9 @@ def _serialize_notification_rule(rule: NotificationRule) -> DomainObject:
     )
 
 
-def register(endpoint_registry: EndpointRegistry) -> None:
-    endpoint_registry.register(show_rule)
-    endpoint_registry.register(show_rules)
-    endpoint_registry.register(post_rule)
-    endpoint_registry.register(put_rule)
-    endpoint_registry.register(delete_rule)
+def register(endpoint_registry: EndpointRegistry, *, ignore_duplicates: bool) -> None:
+    endpoint_registry.register(show_rule, ignore_duplicates=ignore_duplicates)
+    endpoint_registry.register(show_rules, ignore_duplicates=ignore_duplicates)
+    endpoint_registry.register(post_rule, ignore_duplicates=ignore_duplicates)
+    endpoint_registry.register(put_rule, ignore_duplicates=ignore_duplicates)
+    endpoint_registry.register(delete_rule, ignore_duplicates=ignore_duplicates)

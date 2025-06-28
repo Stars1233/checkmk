@@ -8,17 +8,18 @@ import contextlib
 import http.client
 from collections.abc import Iterator
 from datetime import datetime
+from typing import override
 from urllib.parse import unquote
 
 import cmk.ccc.version as cmk_version
 from cmk.ccc.site import omd_site, url_prefix
+from cmk.ccc.user import UserId
 
 import cmk.utils.paths
 from cmk.utils.licensing.handler import LicenseStateError, RemainingTrialTime
 from cmk.utils.licensing.registry import get_remaining_trial_time_rounded
 from cmk.utils.log.security_event import log_security_event
 from cmk.utils.urls import is_allowed_url
-from cmk.utils.user import UserId
 
 import cmk.gui.mobile
 from cmk.gui import userdb
@@ -39,7 +40,7 @@ from cmk.gui.logged_in import (
     user,
 )
 from cmk.gui.main import get_page_heading
-from cmk.gui.pages import Page, PageRegistry
+from cmk.gui.pages import Page, PageEndpoint, PageRegistry
 from cmk.gui.session import session, UserContext
 from cmk.gui.theme.current_theme import theme
 from cmk.gui.userdb import get_active_saml_connections
@@ -59,11 +60,11 @@ from cmk.crypto.password import Password
 def register(page_registry: PageRegistry) -> None:
     # TODO: only overwrite this in cse specific files
     if cmk_version.edition(cmk.utils.paths.omd_root) == cmk_version.Edition.CSE:
-        page_registry.register_page("login")(SaasLoginPage)
-        page_registry.register_page("logout")(SaasLogoutPage)
+        page_registry.register(PageEndpoint("login", SaasLoginPage))
+        page_registry.register(PageEndpoint("logout", SaasLogoutPage))
     else:
-        page_registry.register_page("login")(LoginPage)
-        page_registry.register_page("logout")(LogoutPage)
+        page_registry.register(PageEndpoint("login", LoginPage))
+        page_registry.register(PageEndpoint("logout", LogoutPage))
 
 
 @contextlib.contextmanager
@@ -81,7 +82,7 @@ def authenticate() -> Iterator[bool]:
     automation secret authentication."""
     if isinstance(session.user, LoggedInNobody):
         yield False
-    elif isinstance(session.user, (LoggedInSuperUser, LoggedInRemoteSite)):
+    elif isinstance(session.user, LoggedInSuperUser | LoggedInRemoteSite):
         # This is used with the internaltoken auth
         # Let's hope we do not need the transactions for this user...
         yield True
@@ -117,11 +118,13 @@ def del_auth_cookie() -> None:
 
 
 class SaasLoginPage(Page):
+    @override
     def page(self) -> None:
         raise HTTPRedirect("cognito_sso.py")
 
 
 class SaasLogoutPage(Page):
+    @override
     def page(self) -> None:
         raise HTTPRedirect("cognito_logout.py")
 
@@ -146,6 +149,7 @@ class LoginPage(Page):
     def set_no_html_output(self, no_html_output: bool) -> None:
         self._no_html_output = no_html_output
 
+    @override
     def page(self) -> None:
         # Initialize the cmk.gui.i18n for the login dialog. This might be
         # overridden later after user login
@@ -444,6 +448,7 @@ def _show_remaining_trial_time(remaining_trial_time: RemainingTrialTime) -> None
 
 
 class LogoutPage(Page):
+    @override
     def page(self) -> None:
         assert user.id is not None
 

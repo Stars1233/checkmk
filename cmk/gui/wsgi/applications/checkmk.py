@@ -56,7 +56,7 @@ tracer = trace.get_tracer()
 #  * derive all exceptions from werkzeug's http exceptions.
 
 
-def _noauth(func: pages.PageHandlerFunc) -> Callable[[], Response]:
+def _noauth(handler: pages.PageHandlerFunc | type[pages.Page]) -> Callable[[], Response]:
     #
     # We don't have to set up anything because we assume this is only used for special calls. We
     # however have to make sure all errors get written out in plaintext, without HTML.
@@ -65,10 +65,13 @@ def _noauth(func: pages.PageHandlerFunc) -> Callable[[], Response]:
     #  * noauth:deploy_agent
     #  * noauth:automation
     #
-    @functools.wraps(func)
-    def _call_noauth():
+    @functools.wraps(handler)
+    def _call_noauth() -> Response:
         try:
-            func()
+            if isinstance(handler, type):
+                handler().handle_page()
+            else:
+                handler()
         except HTTPRedirect:
             raise
         except Exception as e:
@@ -161,6 +164,8 @@ def get_mime_type_from_output_format(output_format: str) -> str:
 
 class CheckmkApp(AbstractWSGIApp):
     """The Checkmk GUI WSGI entry point"""
+
+    __slots__ = ("testing",)
 
     def __init__(self, debug: bool = False, testing: bool = False) -> None:
         super().__init__(debug)

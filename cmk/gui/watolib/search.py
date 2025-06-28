@@ -52,7 +52,7 @@ from cmk.gui.type_defs import SearchQuery, SearchResult, SearchResultsByTopic
 from cmk.gui.utils.output_funnel import output_funnel
 from cmk.gui.utils.urls import file_name_and_query_vars_from_url, QueryVars
 from cmk.gui.watolib.mode_permissions import mode_permissions_ensurance_registry
-from cmk.gui.watolib.utils import may_edit_ruleset
+from cmk.gui.watolib.rulesets import may_edit_ruleset
 
 
 class IndexNotFoundException(MKGeneralException):
@@ -313,11 +313,16 @@ def may_see_url(url: str) -> bool:
 
 
 def _try_page(file_name: str) -> None:
-    page_handler = get_page_handler(file_name)
-    if page_handler:
-        with output_funnel.plugged():
-            page_handler()
-            output_funnel.drain()
+    handler = get_page_handler(file_name)
+    if not handler:
+        return
+
+    with output_funnel.plugged():
+        if isinstance(handler, type):
+            handler().handle_page()
+        else:
+            handler()
+        output_funnel.drain()
 
 
 class PermissionsHandler:

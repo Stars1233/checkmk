@@ -3,11 +3,15 @@
 # This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
 # conditions defined in the file COPYING, which is part of this source code package.
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
+
+from livestatus import SiteConfiguration
+
+from cmk.ccc.site import SiteId
 
 from cmk.utils.rulesets.definition import RuleGroup
 
-from cmk.gui.form_specs.private.dictionary_extended import DictionaryExtended
+from cmk.gui.form_specs.private.two_column_dictionary import TwoColumnDictionary
 from cmk.gui.htmllib.generator import HTMLWriter
 from cmk.gui.http import request
 from cmk.gui.i18n import _
@@ -54,7 +58,6 @@ from cmk.gui.utils.urls import doc_reference_url, DocReference, makeuri_contextl
 
 from cmk.rulesets.v1 import Title
 from cmk.rulesets.v1.form_specs import Dictionary
-from cmk.shared_typing.vue_formspec_components import DictionaryLayout
 
 NEXT_BUTTON_ARIA_LABEL = _("Go to the next stage")
 PREV_BUTTON_ARIA_LABEL = _("Go to the previous stage")
@@ -107,9 +110,8 @@ def prepare_aws() -> QuickSetupStage:
             ),
             FormSpecWrapper(
                 id=FormSpecId("credentials"),
-                form_spec=DictionaryExtended(
+                form_spec=TwoColumnDictionary(
                     elements=aws.quick_setup_stage_1(),
-                    layout=DictionaryLayout.two_columns,
                 ),
             ),
         ],
@@ -118,6 +120,9 @@ def prepare_aws() -> QuickSetupStage:
                 id=ActionId("connection_test"),
                 custom_validators=[
                     qs_validators.validate_unique_id,
+                    qs_validators.validate_non_quick_setup_password(
+                        parameter_form=quick_setup_aws_form_spec()
+                    ),
                     qs_validators.validate_test_connection_custom_collect_params(
                         rulespec_name=RuleGroup.SpecialAgents("aws"),
                         parameter_form=quick_setup_aws_form_spec(),
@@ -144,9 +149,8 @@ def configure_host_and_regions() -> QuickSetupStage:
             widgets.host_name_and_host_path_formspec_wrapper(host_prefill_template="aws"),
             FormSpecWrapper(
                 id=FormSpecId("configure_host_and_regions"),
-                form_spec=DictionaryExtended(
+                form_spec=TwoColumnDictionary(
                     elements=aws.quick_setup_stage_2(max_regions=5),
-                    layout=DictionaryLayout.two_columns,
                 ),
             ),
             widgets.site_formspec_wrapper(),
@@ -170,9 +174,8 @@ def _configure() -> Sequence[Widget]:
     return [
         FormSpecWrapper(
             id=FormSpecId("configure_services_to_monitor"),
-            form_spec=DictionaryExtended(
+            form_spec=TwoColumnDictionary(
                 elements=aws.quick_setup_stage_3(),
-                layout=DictionaryLayout.two_columns,
                 custom_validate=[],
             ),
         ),
@@ -181,11 +184,10 @@ def _configure() -> Sequence[Widget]:
             items=[
                 FormSpecWrapper(
                     id=FormSpecId("aws_other_options"),
-                    form_spec=DictionaryExtended(
+                    form_spec=TwoColumnDictionary(
                         elements={
                             **aws.formspec_aws_overall_tags(),
                         },
-                        layout=DictionaryLayout.two_columns,
                     ),
                 ),
             ],
@@ -215,32 +217,46 @@ def configure_services_to_monitor() -> QuickSetupStage:
     )
 
 
-class _EC2RecapMessage:
-    @staticmethod
-    def _cre_message() -> str:
-        return _(
-            "Hosts for EC2 instances need to be created manually, please check the %s."
-        ) % HTMLWriter.render_a(
-            _("documentation"),
-            href=doc_reference_url(DocReference.AWS_MANUAL_VM),
-        )
-
-    message: Callable[[], str] = _cre_message
+class _CreateEC2:
+    handle_automatically: bool = False
 
 
-ec2_recap_message = _EC2RecapMessage()
+ec2_creation = _CreateEC2()
 
 
 def _save_and_activate_recap(title: str, parsed_data: ParsedFormData) -> Sequence[Widget]:
-    message = _("Save your progress and go to the Activate Changes page to enable it.")
+    messages: list[Text | NoteText] = [
+        Text(text=title),
+        Text(text=_("Save your progress and go to the Activate Changes page to enable it.")),
+    ]
     if "ec2" in parsed_data.get(FormSpecId("configure_services_to_monitor"), {}).get(
         "services", []
     ):
-        message += " " + ec2_recap_message.message()
-    return [
-        Text(text=title),
-        Text(text=message),
-    ]
+        if not ec2_creation.handle_automatically:
+            messages.append(
+                Text(
+                    text=_(
+                        "Hosts for EC2 instances need to be created manually, please check the %s."
+                    )
+                    % HTMLWriter.render_a(
+                        _("documentation"),
+                        href=doc_reference_url(DocReference.AWS_MANUAL_VM),
+                    )
+                )
+            )
+        else:
+            messages.extend(
+                [
+                    Text(text=_("EC2 instances may take a few minutes to show up.")),
+                    Text(),
+                    NoteText(
+                        text=_(
+                            "Note: This will also enable the dynamic configuration, which regularly activates all pending changes on the selected site."
+                        )
+                    ),
+                ]
+            )
+    return messages
 
 
 def recap_found_services(
@@ -248,6 +264,8 @@ def recap_found_services(
     _stage_index: StageIndex,
     parsed_data: ParsedFormData,
     progress_logger: ProgressLogger,
+    site_configs: Mapping[SiteId, SiteConfiguration],
+    debug: bool,
 ) -> Sequence[Widget]:
     service_discovery_result = utils.get_service_discovery_preview(
         rulespec_name=RuleGroup.SpecialAgents("aws"),
@@ -255,6 +273,8 @@ def recap_found_services(
         parameter_form=quick_setup_aws_form_spec(),
         collect_params=aws_collect_params_with_defaults,
         progress_logger=progress_logger,
+        site_configs=site_configs,
+        debug=debug,
     )
     progress_logger.log_new_progress_step(
         "identify_relevant_services", "Search for AWS related services"
@@ -297,7 +317,7 @@ def review_and_run_preview_service_discovery() -> QuickSetupStage:
                 id=ActionId("skip_configuration_test"),
                 custom_validators=[],
                 recap=[
-                    lambda __, ___, parsed_data, ____: _save_and_activate_recap(
+                    lambda _a, _b, parsed_data, *args, **kargs: _save_and_activate_recap(
                         _("Skipped the configuration test."), parsed_data
                     )
                 ],

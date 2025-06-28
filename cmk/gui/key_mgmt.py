@@ -2,6 +2,7 @@
 # Copyright (C) 2019 Checkmk GmbH - License: GNU General Public License v2
 # This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
 # conditions defined in the file COPYING, which is part of this source code package.
+# mypy: disable-error-code="no-untyped-call, no-untyped-def"
 
 import pprint
 import time
@@ -9,13 +10,15 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Literal
 
+from dateutil.relativedelta import relativedelta
+
 from cmk.ccc import store
 from cmk.ccc.site import omd_site, SiteId
+from cmk.ccc.user import UserId
 
 import cmk.utils.render
 from cmk.utils.certs import CertManagementEvent
 from cmk.utils.log.security_event import log_security_event
-from cmk.utils.user import UserId
 
 from cmk.gui.breadcrumb import Breadcrumb
 from cmk.gui.exceptions import FinalizeRequest, HTTPRedirect, MKUserError
@@ -52,10 +55,10 @@ from cmk.crypto.pem import PEMDecodingError
 
 
 class KeypairStore:
-    def __init__(self, path: str, attr: str) -> None:
-        self._path = Path(path)
-        self._attr = attr
+    def __init__(self, path: Path, attr: str) -> None:
         super().__init__()
+        self._path = path
+        self._attr = attr
 
     def load(self) -> dict[int, Key]:
         if not self._path.exists():
@@ -67,7 +70,7 @@ class KeypairStore:
         return self._parse(variables[self._attr])
 
     def save(self, keys: Mapping[int, Key]) -> None:
-        store.makedirs(self._path.parent)
+        self._path.parent.mkdir(mode=0o770, exist_ok=True, parents=True)
         with store.locked(self._path):
             store.save_mk_file(
                 self._path, f"{self._attr}.update({pprint.pformat(self._unparse(keys))})"
@@ -118,6 +121,10 @@ class PageKeyManagement:
         self.key_store = key_store
 
     def title(self) -> str:
+        raise NotImplementedError()
+
+    @classmethod
+    def name(cls) -> str:
         raise NotImplementedError()
 
     def page_menu(self, breadcrumb: Breadcrumb) -> PageMenu:
@@ -240,6 +247,10 @@ class PageKeyManagement:
                 html.icon_button(download_url, _("Download this key"), "download")
                 table.cell(_("Description"), key.alias)
                 table.cell(_("Created"), cmk.utils.render.date(key.date))
+                # We need the expire date and time only for agent signing keys.
+                # see CMK-23867
+                if self.name() == "signature_keys":
+                    table.cell(_("Expires"), str(key.to_certificate().not_valid_after))
                 table.cell(_("By"), key.owner)
                 table.cell(_("Digest (MD5)"), key.fingerprint(HashAlgorithm.MD5))
                 table.cell(_("Key ID"), key_id)
@@ -595,11 +606,13 @@ def generate_key(
 ) -> Key:
     # Note: Verification of the signatures makes assumptions about the key (RSA) and the padding
     # scheme (PKCS1v15). Make sure this is adjusted before changing it here.
+    # Both agent signatures and backup encryption currently assume RSA keys.
     key_pair = CertificateWithPrivateKey.generate_self_signed(
         common_name=alias,
         organization=f"Checkmk Site {site_id}",
         organizational_unit=user_id,
         key_size=key_size,
+        expiry=relativedelta(years=10),
     )
     return Key(
         certificate=key_pair.certificate.dump_pem().str,

@@ -5,11 +5,11 @@
 
 
 import abc
-import functools
 import http.client as http_client
 import json
 from collections.abc import Callable
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, override
 
 import cmk.ccc.plugin_registry
 from cmk.ccc.exceptions import MKException
@@ -21,6 +21,7 @@ from cmk.gui.exceptions import MKMissingDataError
 from cmk.gui.htmllib.html import html
 from cmk.gui.http import request, response
 from cmk.gui.log import logger
+from cmk.gui.utils.json import CustomObjectJSONEncoder
 
 PageHandlerFunc = Callable[[], None]
 PageResult = object
@@ -38,16 +39,6 @@ PageResult = object
 # TODO: Check out the WatoMode class and find out how to do this. Looks like handle_page() could
 # implement parts of the cmk.gui.wato.page_handler.page_handler() logic.
 class Page(abc.ABC):
-    # TODO: In theory a page class could be registered below multiple URLs. For this case it would
-    # be better to move the ident out of the class, to the registry. At the moment the URL is stored
-    # in self._ident by PageRegistry.register_page().
-    # In practice this is no problem at the moment, because each page is accessible only through a
-    # single endpoint.
-
-    @classmethod
-    def ident(cls) -> str:
-        raise NotImplementedError()
-
     def handle_page(self) -> None:
         self.page()
 
@@ -72,11 +63,6 @@ class AjaxPage(Page, abc.ABC):
     def webapi_request(self) -> dict[str, Any]:
         return request.get_request()
 
-    @abc.abstractmethod
-    def page(self) -> PageResult:
-        """Override this to implement the page functionality"""
-        raise NotImplementedError()
-
     def _handle_exc(self, method: Callable[[], PageResult]) -> None:
         try:
             method()
@@ -94,6 +80,7 @@ class AjaxPage(Page, abc.ABC):
             )
             html.write_text_permissive(str(e))
 
+    @override
     def handle_page(self) -> None:
         """The page handler, called by the page registry"""
         response.set_content_type("application/json")
@@ -115,61 +102,31 @@ class AjaxPage(Page, abc.ABC):
             )
             resp = {"result_code": 1, "result": str(e), "severity": "error"}
 
-        response.set_data(json.dumps(resp))
+        response.set_data(json.dumps(resp, cls=CustomObjectJSONEncoder))
 
 
-class PageRegistry(cmk.ccc.plugin_registry.Registry[type[Page]]):
-    def plugin_name(self, instance: type[Page]) -> str:
-        return instance.ident()
+@dataclass(frozen=True)
+class PageEndpoint:
+    ident: str
+    handler: PageHandlerFunc | type[Page]
 
-    def register_page(self, path: str) -> Callable[[type[Page]], type[Page]]:
-        def wrap(plugin_class: type[Page]) -> type[Page]:
-            if not isinstance(plugin_class, type):
-                raise NotImplementedError()
 
-            # mypy is not happy with this. Find a cleaner way
-            plugin_class._ident = path  # type: ignore[attr-defined]
-            plugin_class.ident = classmethod(lambda cls: cls._ident)  # type: ignore[assignment]
-
-            self.register(plugin_class)
-            return plugin_class
-
-        return wrap
-
-    def register_page_handler(self, path: str, page_handler: PageHandlerFunc) -> type[Page]:
-        cls_name = "PageClass%s" % path.title().replace(":", "")
-        cls = type(
-            cls_name,
-            (Page,),
-            {
-                "_wrapped_callable": (page_handler,),
-                "page": lambda self: self._wrapped_callable[0](),
-            },
-        )
-        self.register_page(path)(cls)
-        return cls
+class PageRegistry(cmk.ccc.plugin_registry.Registry[PageEndpoint]):
+    @override
+    def plugin_name(self, instance: PageEndpoint) -> str:
+        return instance.ident
 
 
 page_registry = PageRegistry()
 
 
-def get_page_handler(name: str, dflt: PageHandlerFunc | None = None) -> PageHandlerFunc | None:
+def get_page_handler(
+    name: str, dflt: PageHandlerFunc | None = None
+) -> PageHandlerFunc | type[Page] | None:
     """Returns either the page handler registered for the given name or None
 
     In case dflt is given it returns dflt instead of None when there is no
     page handler for the requested name."""
-
-    def page_handler(hc: type[Page]) -> PageHandlerFunc:
-        # We pretend to wrap `hc.page` instead of `hc.handle_page`, because `hc.handle_page` is
-        # usually only defined on the superclass, which doesn't really help in debugging. The
-        # instance is not shown, and it is not 100% correct, but it's better than nothing at all.
-        @functools.wraps(hc.page)
-        def wrapper():
-            return hc().handle_page()
-
-        return wrapper
-
-    if handle_class := page_registry.get(name):
-        return page_handler(handle_class)
-
+    if endpoint := page_registry.get(name):
+        return endpoint.handler
     return dflt

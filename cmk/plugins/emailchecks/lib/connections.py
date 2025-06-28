@@ -138,7 +138,7 @@ class EWS(_Connection):
         for parent_folder in [self._account.inbox.parent, self._account.inbox]:
             i = 0
             for i, fname in enumerate(subfolder_names):
-                if f := next(parent_folder.glob(fname).resolve(), None):  # type: ignore[union-attr]
+                if f := next(parent_folder.glob(fname).resolve(), None):
                     if i == len(subfolder_names) - 1:  # full match - folder path already exists
                         return f
                     parent_folder = f
@@ -254,7 +254,10 @@ def _make_account(
                 ),
                 default_timezone=EWSTimeZone("Europe/Berlin"),
             )
-
+        case None:
+            raise RuntimeError(
+                "Either Username/Passwort or ClientID/ClientSecret/TenantID have to be set"
+            )
         case other:
             assert_never(other)
 
@@ -572,7 +575,7 @@ def verified_result(data: object) -> Sequence[bytes | tuple[bytes, bytes]] | Seq
         assert isinstance(result, list)
         if not result:
             return result  # empty list
-        if not isinstance(result[0], (str, bytes, tuple)):
+        if not isinstance(result[0], str | bytes | tuple):
             raise TypeError(f"Can not handle this datatype {result}")
         type_first_element: tuple[type, type] | type = type(result[0])
         if type_first_element in {tuple, bytes}:
@@ -638,6 +641,7 @@ def _make_connection(config: TRXConfig, timeout: int) -> EWS | IMAP | POP3 | SMT
                     auth=config.auth,
                 )
             case "EWS":
+                assert isinstance(config.auth, BasicAuth | OAuth2)
                 return EWS(
                     primary_smtp_address=config.address,
                     server=config.server,
@@ -647,12 +651,13 @@ def _make_connection(config: TRXConfig, timeout: int) -> EWS | IMAP | POP3 | SMT
                 )
 
             case "SMTP":
+                assert isinstance(config.auth, BasicAuth) or config.auth is None
                 return SMTP(
                     server=config.server,
                     port=config.port,
                     timeout=timeout,
                     tls=config.tls,
-                    auth=config.auth if isinstance(config.auth, BasicAuth) else None,
+                    auth=config.auth,
                 )
             case other:
                 assert_never(other)

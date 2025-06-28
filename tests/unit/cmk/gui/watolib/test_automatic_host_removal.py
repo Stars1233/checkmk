@@ -7,7 +7,6 @@
 import datetime
 from collections.abc import Sequence
 from io import StringIO
-from pathlib import Path
 from unittest.mock import MagicMock
 from zoneinfo import ZoneInfo
 
@@ -17,7 +16,8 @@ from pytest_mock import MockerFixture
 
 from tests.testlib.unit.base_configuration_scenario import Scenario
 
-from cmk.utils.hostaddress import HostName
+from cmk.ccc.hostaddress import HostName
+
 from cmk.utils.livestatus_helpers.testing import MockLiveStatusConnection
 from cmk.utils.paths import default_config_dir
 from cmk.utils.rulesets.ruleset_matcher import RuleSpec
@@ -33,7 +33,7 @@ from cmk.gui.watolib.rulesets import FolderRulesets, Rule, RuleConditions, RuleO
 
 @pytest.fixture(scope="function", autouse=True)
 def fixture_sitenames(mocker: MockerFixture) -> None:
-    mocker.patch.object(automatic_host_removal, "wato_site_ids", lambda: ["local"])
+    mocker.patch.object(automatic_host_removal, "wato_site_ids", lambda: ["NO_SITE"])
 
 
 @pytest.fixture(name="activate_changes_mock")
@@ -64,7 +64,9 @@ TEST_HOSTS = [
 
 @pytest.fixture(name="setup_hosts")
 def fixture_setup_hosts() -> None:
-    folder_tree().root_folder().create_hosts([(hostname, {}, None) for hostname in TEST_HOSTS])
+    folder_tree().root_folder().create_hosts(
+        [(hostname, {}, None) for hostname in TEST_HOSTS], pprint_value=False
+    )
 
 
 @pytest.fixture(name="setup_rules")
@@ -123,13 +125,16 @@ def fixture_setup_rules() -> None:
             ),
         ),
     )
-    (Path(default_config_dir) / "main.mk").touch()
-    FolderRulesets({"automatic_host_removal": ruleset}, folder=root_folder).save_folder()
+    (default_config_dir / "main.mk").touch()
+    FolderRulesets({"automatic_host_removal": ruleset}, folder=root_folder).save_folder(
+        pprint_value=False,
+        debug=False,
+    )
 
 
 @pytest.fixture(name="setup_livestatus_mock")
 def fixture_setup_livestatus_mock(mock_livestatus: MockLiveStatusConnection) -> None:
-    mock_livestatus.set_sites(["local"])
+    mock_livestatus.set_sites(["NO_SITE"])
     mock_livestatus.add_table(
         "services",
         [
@@ -188,7 +193,7 @@ def fixture_mock_analyze_host_rule_matches_automation(
     ts.apply(monkeypatch)
 
     def analyze_with_matcher(
-        h: HostName, r: Sequence[Sequence[RuleSpec]]
+        h: HostName, r: Sequence[Sequence[RuleSpec]], *, debug: bool
     ) -> AnalyzeHostRuleMatchesResult:
         with mocker.patch("sys.stdin", StringIO(repr(r))):
             return AutomationAnalyzeHostRuleMatches().execute([h], None, None)

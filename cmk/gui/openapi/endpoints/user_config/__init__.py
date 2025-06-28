@@ -9,7 +9,7 @@ import time
 from collections.abc import Mapping
 from typing import Any, Literal, NotRequired, TypedDict
 
-from cmk.utils.user import UserId
+from cmk.ccc.user import UserId
 
 from cmk.gui.exceptions import MKUserError
 from cmk.gui.fields import Username
@@ -61,7 +61,7 @@ class ApiInterfaceAttributes(TypedDict, total=False):
     interface_theme: Literal["default", "dark", "light"]
     sidebar_position: Literal["left", "right"]
     navigation_bar_icons: Literal["show", "hide"]
-    mega_menu_icons: Literal["topic", "entry"]
+    main_menu_icons: Literal["topic", "entry"]
     show_mode: Literal["default", "default_show_less", "default_show_more", "enforce_show_more"]
     contextual_help_icon: Literal["show_icon", "hide_icon"]
 
@@ -138,10 +138,7 @@ def create_user(params: Mapping[str, Any]) -> Response:
     username = api_attrs["username"]
 
     # The interface options must be set for a new user, but we restrict the setting through the API
-    internal_attrs: UserSpec = {
-        "start_url": None,
-        "force_authuser": False,
-    }
+    internal_attrs: UserSpec = {"force_authuser": False}
 
     internal_attrs = _api_to_internal_format(internal_attrs, api_attrs, new_user=True)
     edit_users(
@@ -306,6 +303,16 @@ def _api_to_internal_format(internal_attrs, api_configurations, new_user=False):
             temperature_unit,
         )
 
+    match start_url := api_configurations.get("start_url"):
+        case "welcome_page":
+            attrs["start_url"] = "welcome.py"
+        case "default_start_url":
+            attrs["start_url"] = None
+        case str():
+            attrs["start_url"] = start_url
+        case _:
+            ...  # do not modify start_url
+
     return attrs
 
 
@@ -348,6 +355,14 @@ def _internal_to_api_format(
             internal_attrs["temperature_unit"]
         )
 
+    match start_url := internal_attrs.get("start_url"):
+        case None:
+            api_attrs["start_url"] = "default_start_url"
+        case "welcome.py":
+            api_attrs["start_url"] = "welcome_page"
+        case _:
+            api_attrs["start_url"] = start_url
+
     api_attrs.update(
         {
             k: v
@@ -369,7 +384,9 @@ def _internal_to_api_format(
     return api_attrs
 
 
-def _idle_options_to_api_format(internal_attributes: UserSpec) -> dict[str, dict[str, Any]]:
+def _idle_options_to_api_format(
+    internal_attributes: UserSpec,
+) -> dict[str, dict[str, Any]]:
     if "idle_timeout" in internal_attributes:
         idle_option = internal_attributes["idle_timeout"]
         if idle_option:
@@ -478,7 +495,9 @@ class AuthOptions(TypedDict, total=False):
 
 
 def _update_auth_options(
-    internal_attrs: dict[str, int | str | bool], auth_options: AuthOptions, new_user: bool = False
+    internal_attrs: dict[str, int | str | bool],
+    auth_options: AuthOptions,
+    new_user: bool = False,
 ) -> dict[str, int | str | bool]:
     """Update the internal attributes with the authentication options (used for create and update)
 
@@ -522,7 +541,9 @@ def _update_auth_options(
     return internal_attrs
 
 
-def _auth_options_to_internal_format(auth_details: AuthOptions) -> dict[str, int | str | bool]:
+def _auth_options_to_internal_format(
+    auth_details: AuthOptions,
+) -> dict[str, int | str | bool]:
     """Format the authentication information to be Checkmk compatible
 
     Args:
@@ -569,7 +590,10 @@ def _auth_options_to_internal_format(auth_details: AuthOptions) -> dict[str, int
         return internal_options
 
     auth_type = auth_details["auth_type"]
-    assert auth_type in ["automation", "password"]  # assuming remove was handled above...
+    assert auth_type in [
+        "automation",
+        "password",
+    ]  # assuming remove was handled above...
 
     password_field: Literal["secret", "password"] = (
         "secret" if auth_type == "automation" else "password"
@@ -638,16 +662,18 @@ def _interface_options_to_internal_format(
             "light": "facelift",
         }[theme]
     if sidebar_position := api_interface_options.get("sidebar_position"):
-        internal_inteface_options["ui_sidebar_position"] = {"right": None, "left": "left"}[
-            sidebar_position
-        ]
+        internal_inteface_options["ui_sidebar_position"] = {
+            "right": None,
+            "left": "left",
+        }[sidebar_position]
     if show_icon_titles := api_interface_options.get("navigation_bar_icons"):
-        internal_inteface_options["nav_hide_icons_title"] = {"show": None, "hide": "hide"}[
-            show_icon_titles
-        ]
-    if mega_menu_icons := api_interface_options.get("mega_menu_icons"):
+        internal_inteface_options["nav_hide_icons_title"] = {
+            "show": None,
+            "hide": "hide",
+        }[show_icon_titles]
+    if main_menu_icons := api_interface_options.get("main_menu_icons"):
         internal_inteface_options["icons_per_item"] = {"topic": None, "entry": "entry"}[
-            mega_menu_icons
+            main_menu_icons
         ]
     if show_mode := api_interface_options.get("show_mode"):
         internal_inteface_options["show_mode"] = {
@@ -680,7 +706,7 @@ def _interface_options_to_api_format(
         )
 
     if "icons_per_item" in internal_interface_options:
-        attributes["mega_menu_icons"] = (
+        attributes["main_menu_icons"] = (
             "topic" if internal_interface_options["icons_per_item"] is None else "entry"
         )
 
@@ -779,7 +805,7 @@ def _notification_options_to_internal_format(
 
 def _time_stamp_range(datetime_range: TimeRange) -> TIMESTAMP_RANGE:
     def timestamp(date_time):
-        return dt.datetime.timestamp(date_time.replace(tzinfo=dt.timezone.utc))
+        return dt.datetime.timestamp(date_time.replace(tzinfo=dt.UTC))
 
     return timestamp(datetime_range["start_time"]), timestamp(datetime_range["end_time"])
 
@@ -810,10 +836,10 @@ def _internal_temperature_format_to_api_format(internal_temperature: str | None)
     return "default" if not internal_temperature else internal_temperature
 
 
-def register(endpoint_registry: EndpointRegistry) -> None:
-    endpoint_registry.register(show_user)
-    endpoint_registry.register(list_users)
-    endpoint_registry.register(create_user)
-    endpoint_registry.register(delete_user)
-    endpoint_registry.register(edit_user)
-    endpoint_registry.register(dismiss_user_warning)
+def register(endpoint_registry: EndpointRegistry, *, ignore_duplicates: bool) -> None:
+    endpoint_registry.register(show_user, ignore_duplicates=ignore_duplicates)
+    endpoint_registry.register(list_users, ignore_duplicates=ignore_duplicates)
+    endpoint_registry.register(create_user, ignore_duplicates=ignore_duplicates)
+    endpoint_registry.register(delete_user, ignore_duplicates=ignore_duplicates)
+    endpoint_registry.register(edit_user, ignore_duplicates=ignore_duplicates)
+    endpoint_registry.register(dismiss_user_warning, ignore_duplicates=ignore_duplicates)

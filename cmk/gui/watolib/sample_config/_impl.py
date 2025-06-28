@@ -9,7 +9,10 @@ from datetime import datetime
 from typing import Any
 from uuid import uuid4, uuid5
 
+from livestatus import SiteConfiguration, SiteConfigurations
+
 from cmk.ccc import store
+from cmk.ccc.site import omd_site, url_prefix
 
 from cmk.utils.encryption import raw_certificates_from_file
 from cmk.utils.log import VERBOSE
@@ -42,6 +45,7 @@ from cmk.gui.watolib.notifications import (
     NotificationRuleConfigFile,
 )
 from cmk.gui.watolib.rulesets import FolderRulesets
+from cmk.gui.watolib.sites import site_management_registry
 from cmk.gui.watolib.tags import TagConfigFile
 from cmk.gui.watolib.utils import multisite_dir, wato_root_dir
 
@@ -74,11 +78,11 @@ def init_wato_datastructures(with_wato_lock: bool = False) -> None:
 
 def _need_to_create_sample_config() -> bool:
     if (
-        os.path.exists(multisite_dir() + "tags.mk")
-        or os.path.exists(wato_root_dir() + "rules.mk")
-        or os.path.exists(wato_root_dir() + "groups.mk")
-        or os.path.exists(wato_root_dir() + "notifications.mk")
-        or os.path.exists(wato_root_dir() + "global.mk")
+        (multisite_dir() / "tags.mk").exists()
+        or (wato_root_dir() / "rules.mk").exists()
+        or (wato_root_dir() / "groups.mk").exists()
+        or (wato_root_dir() / "notifications.mk").exists()
+        or (wato_root_dir() / "global.mk").exists()
     ):
         return False
     return True
@@ -135,7 +139,7 @@ def _create_default_notify_plugin() -> NotifyPlugin:
             )
         }
     }
-    NotificationParameterConfigFile().save(default_param)
+    NotificationParameterConfigFile().save(default_param, pprint_value=True)
     return method, params_id
 
 
@@ -178,11 +182,11 @@ class ConfigGeneratorBasicWATOConfig(SampleConfigGenerator):
         root_folder = folder_tree().root_folder()
         rulesets = FolderRulesets.load_folder_rulesets(root_folder)
         rulesets.replace_folder_config(root_folder, SHIPPED_RULES)
-        rulesets.save_folder()
+        rulesets.save_folder(pprint_value=False, debug=False)
 
         _create_default_notify_plugin()
         notification_rules = [get_default_notification_rule()]
-        NotificationRuleConfigFile().save(notification_rules)
+        NotificationRuleConfigFile().save(notification_rules, pprint_value=True)
 
     def _initial_global_settings(self) -> dict[str, Any]:
         settings = {
@@ -203,7 +207,53 @@ class ConfigGeneratorBasicWATOConfig(SampleConfigGenerator):
 
     def _initialize_tag_config(self) -> None:
         tag_config = TagConfig.from_config(sample_tag_config())
-        TagConfigFile().save(tag_config.get_dict_format())
+        TagConfigFile().save(tag_config.get_dict_format(), pprint_value=True)
+
+
+class ConfigGeneratorLocalSiteConnection(SampleConfigGenerator):
+    @classmethod
+    def ident(cls) -> str:
+        return "create_local_site_connection"
+
+    @classmethod
+    def sort_index(cls) -> int:
+        return 20
+
+    def generate(self) -> None:
+        site_mgmt = site_management_registry["site_management"]
+        site_mgmt.save_sites(
+            self._default_single_site_configuration(),
+            activate=True,
+            pprint_value=True,
+        )
+
+    def _default_single_site_configuration(self) -> SiteConfigurations:
+        return SiteConfigurations(
+            {
+                omd_site(): SiteConfiguration(
+                    {
+                        "id": omd_site(),
+                        "alias": f"Local site {omd_site()}",
+                        "socket": ("local", None),
+                        "disable_wato": True,
+                        "disabled": False,
+                        "insecure": False,
+                        "url_prefix": url_prefix(),
+                        "multisiteurl": "",
+                        "persist": False,
+                        "replicate_ec": False,
+                        "replicate_mkps": False,
+                        "replication": None,
+                        "timeout": 5,
+                        "user_login": True,
+                        "proxy": None,
+                        "user_sync": "all",
+                        "status_host": None,
+                        "message_broker_port": 5672,
+                    }
+                )
+            }
+        )
 
 
 class ConfigGeneratorAcknowledgeInitialWerks(SampleConfigGenerator):

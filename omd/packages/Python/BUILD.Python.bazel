@@ -1,5 +1,5 @@
-load("@omd_packages//:package_versions.bzl", "PYTHON_VERSION")
-load("@omd_packages//omd/packages/Python:version.bzl", "PYTHON_MAJOR_DOT_MINOR", "PYTHON_VERSION_MAJOR")
+load("@@//:package_versions.bzl", "PYTHON_VERSION")
+load("@@//omd/packages/Python:version.bzl", "PYTHON_MAJOR_DOT_MINOR", "PYTHON_VERSION_MAJOR")
 load("@rules_foreign_cc//foreign_cc:defs.bzl", "configure_make")
 
 package(default_visibility = ["//visibility:public"])
@@ -40,6 +40,7 @@ configure_make(
         "LDFLAGS='-static-libstdc++ -static-libgcc'",
         "--with-openssl=$$EXT_BUILD_DEPS/openssl",
         "--with-openssl-rpath=auto",
+        "--with-ssl-default-suites=openssl",
         "CFLAGS='-Dredacted=\"redacted\"'",
         "--enable-optimizations",
         "--enable-shared",
@@ -47,8 +48,8 @@ configure_make(
         "DESTDIR=%s" % INSTALL_PREFIX,
     ],
     data = [
-        "@omd_packages//omd/packages/Python:pip",
-        "@omd_packages//omd/packages/Python:sitecustomize.py",
+        "@@//omd/packages/Python:pip",
+        "@@//omd/packages/Python:sitecustomize.py",
     ],
     env = {
         "PKG_CONFIG_PATH": ":".join([

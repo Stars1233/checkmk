@@ -4,8 +4,10 @@
 # conditions defined in the file COPYING, which is part of this source code package.
 
 import typing
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import Any, Literal, NamedTuple, TypeVar
+
+from cmk.ccc.version import Edition
 
 from cmk.utils.livestatus_helpers import tables
 from cmk.utils.livestatus_helpers.expressions import (
@@ -18,7 +20,7 @@ from cmk.utils.livestatus_helpers.expressions import (
     QueryExpression,
     UnaryExpression,
 )
-from cmk.utils.livestatus_helpers.types import Table
+from cmk.utils.livestatus_helpers.types import Column, Table
 from cmk.utils.tags import BuiltinTagConfig, TagGroup, TagID
 
 from cmk.gui.fields.base import BaseSchema as BaseSchema
@@ -161,7 +163,9 @@ def collect_attributes(
     return result
 
 
-def tree_to_expr(filter_dict: QueryExpression, table: Any = None) -> QueryExpression:
+def tree_to_expr(
+    filter_dict: QueryExpression | typing.Mapping[str, Any], table: Any = None
+) -> QueryExpression:
     """Turn a filter-dict into a QueryExpression.
 
     Examples:
@@ -221,7 +225,7 @@ def tree_to_expr(filter_dict: QueryExpression, table: Any = None) -> QueryExpres
         ValueError: when unknown columns are queried
 
     """
-    if not isinstance(filter_dict, dict):
+    if not isinstance(filter_dict, Mapping):
         # FIXME
         #   Because of not having correct Python packages at the root-level, sometimes a
         #   locally defined class ends up having a relative dotted path, like for example
@@ -271,7 +275,7 @@ def _lookup_column(table_name: str | type[Table], column_name: str) -> UnaryExpr
         table_name = table_class.__tablename__
 
     try:
-        column = getattr(table_class, column_name)
+        column: Column = getattr(table_class, column_name)
     except AttributeError as e:
         raise ValueError(f"Table {table_name!r} has no column {column_name!r}.") from e
     return column.expr
@@ -282,3 +286,46 @@ def _table_name(table: type[Table]) -> str:
         return table
 
     return table.__tablename__
+
+
+def edition_field_description(
+    description: str,
+    supported_editions: set[Edition] | None = None,
+    excluded_editions: set[Edition] | None = None,
+    field_required: bool = False,
+) -> str:
+    """
+
+    Example:
+        >>> edition_field_description("This is a test description.", supported_editions={Edition.CEE}, field_required=True)
+        '[Enterprise edition only] This is a test description. This field is required for the following editions: Enterprise.'
+
+        >>> edition_field_description("This is a test description.", supported_editions={Edition.CEE, Edition.CCE}, field_required=True)
+        '[Enterprise, Cloud editions only] This is a test description. This field is required for the following editions: Enterprise, Cloud.'
+
+    """
+    if not supported_editions and not excluded_editions:
+        raise ValueError("Either supported_editions or excluded_editions must be provided.")
+
+    if supported_editions and excluded_editions:
+        raise ValueError("supported_editions and excluded_editions are mutually exclusive.")
+
+    if supported_editions:
+        ordered_editions = [
+            edition for edition in Edition.__members__.values() if edition in supported_editions
+        ]
+    elif excluded_editions:
+        ordered_editions = [
+            edition for edition in Edition.__members__.values() if edition not in excluded_editions
+        ]
+
+    edition_capitalized_titles = ", ".join(
+        [edition.value.long.capitalize() for edition in ordered_editions]
+    )
+    description = f"[{edition_capitalized_titles} edition{'s' if len(ordered_editions) > 1 else ''} only] {description}"
+
+    if field_required:
+        description += (
+            f" This field is required for the following editions: {edition_capitalized_titles}."
+        )
+    return description

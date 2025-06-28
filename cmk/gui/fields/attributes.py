@@ -4,12 +4,14 @@
 # conditions defined in the file COPYING, which is part of this source code package.
 import datetime
 import re
-import typing
 from collections.abc import Mapping
+from typing import Any, Literal, override
 
 from marshmallow import ValidationError
 from marshmallow.decorators import post_load, pre_dump, validates_schema
 from marshmallow_oneofschema import OneOfSchema
+
+from cmk.ccc.user import UserId
 
 from cmk.utils.tags import TagGroupID
 
@@ -75,7 +77,7 @@ class RegexpRewrites(BaseSchema, CheckmkTuple):
     )
 
     @validates_schema
-    def validate_replacement(self, data, **kwargs):
+    def validate_replacement(self, data: Mapping[str, str], **kwargs: object) -> None:
         search = re.compile(data["search"])
         replace_groups = list(set(re.findall(r"\\((?:[1-9]|\d\d)+)", data["replace_with"])))
         replace_groups.sort()
@@ -145,15 +147,25 @@ class IPNetworkCIDR(String):
     marshmallow.exceptions.ValidationError: Error handling 'broken', expected a tuple of IPv4 address and network size e.g. ('192.168.0.0', 24)
     """
 
-    def _deserialize(self, value, attr, data, **kwargs):
+    @override
+    def _deserialize(
+        self, value: object, attr: str | None, data: Mapping[str, object] | None, **kwargs: object
+    ) -> tuple[str, int]:
         try:
-            network, mask = tuple(value.split("/"))
-            return (network, int(mask))
+            network, mask = tuple(str(value).split("/"))
+            return network, int(mask)
         except ValueError:
             raise ValidationError("Expected an IP network in CIDR notation like '192.168.0.0/24'")
 
-    def _serialize(self, value, attr, obj, **kwargs):
-        if isinstance(value, (list, tuple)) and len(value) == 2:
+    @override
+    def _serialize(
+        self,
+        value: tuple[str, int] | list[str | int],
+        attr: str | None,
+        obj: object,
+        **kwargs: object,
+    ) -> str:
+        if isinstance(value, list | tuple) and len(value) == 2:
             return f"{value[0]}/{value[1]}"
         raise ValidationError(
             f"Error handling {value!r}, expected a tuple of IPv4 address and network size e.g. ('192.168.0.0', 24)"
@@ -278,7 +290,8 @@ class IPRange(OneOfSchema):
         "explicit_addresses": IPAddresses,
     }
 
-    def get_obj_type(self, obj):
+    @override
+    def get_obj_type(self, obj: tuple[str, object]) -> str:
         return {
             "ip_range": "address_range",
             "ip_network": "network_range",
@@ -295,9 +308,12 @@ class IPRangeWithRegexp(OneOfSchema):
         "exclude_by_regexp": IPRegexp,
     }
 
-    def get_obj_type(self, obj):
+    @override
+    def get_obj_type(self, obj: tuple[str, object] | dict[str, object]) -> str:
         if isinstance(obj, dict):
-            return obj["type"]
+            type_key = obj["type"]
+            assert isinstance(type_key, str)
+            return type_key
         return {
             "ip_range": "address_range",
             "ip_network": "network_range",
@@ -310,7 +326,8 @@ class DateConverter(Converter):
     # NOTE that 24:00 doesn't exist. This would be 00:00 on the next day, but the intended
     # meaning is "the last second/minute of this day", so we replace it with that.
 
-    def from_checkmk(self, data):
+    @override
+    def from_checkmk(self, data: tuple[int, int] | list[int]) -> datetime.time:
         """Converts a Checkmk date string to a datetime object
 
         Examples:
@@ -321,11 +338,12 @@ class DateConverter(Converter):
             datetime.time(0, 0)
         """
         if data[0] == 24 and data[1] == 0:  # Checkmk format can be [24, 0] e.g. folder network scan
-            data = 23, 59, 59
+            return datetime.time(23, 59, 59)
 
         return datetime.time(*data)
 
-    def to_checkmk(self, data):
+    @override
+    def to_checkmk(self, data: datetime.time) -> tuple[int, int]:
         return data.hour, data.minute
 
 
@@ -356,7 +374,7 @@ class TimeAllowedRange(BaseSchema, CheckmkTuple):
     )
 
 
-def _active_users(user):
+def _active_users(user: UserId) -> None:
     users = userdb.load_users(lock=False)
     if user not in users:
         raise ValidationError(f"User {user!r} is not known.")
@@ -542,7 +560,7 @@ class NetworkScan(BaseSchema):
     translate_names = Nested(TranslateNames)
 
     @validates_schema
-    def validate_tag_criticality(self, data: dict[str, typing.Any], **kwargs: typing.Any) -> None:
+    def validate_tag_criticality(self, data: dict[str, Any], **kwargs: Any) -> None:
         tag_criticality = load_tag_group(TagGroupID("criticality"))
         if tag_criticality is None:
             if "tag_criticality" in data:
@@ -559,7 +577,10 @@ class NetworkScan(BaseSchema):
 
 
 class NetworkScanResultState(String):
-    def _serialize(self, value, attr, obj, **kwargs):
+    @override
+    def _serialize(
+        self, value: object | None, attr: str | None, obj: object, **kwargs: object
+    ) -> str:
         if value is None:
             return "running"
         if value is True:
@@ -618,7 +639,19 @@ class LockedBy(BaseSchema, CheckmkTuple):
     )
 
 
-AUTH_PROT_MAP = {
+AuthProtocolType = Literal["MD5-96", "SHA-1-96", "SHA-2-224", "SHA-2-256", "SHA-2-384", "SHA-2-512"]
+PrivacyProtocolType = Literal[
+    "CBC-DES",
+    "AES-128",
+    "3DES-EDE",
+    "AES-192",
+    "AES-256",
+    "AES-192-Blumenthal",
+    "AES-256-Blumenthal",
+]
+
+
+AUTH_PROT_MAP: Mapping[AuthProtocolType, str] = {
     "MD5-96": "md5",
     "SHA-1-96": "sha",
     "SHA-2-224": "SHA-224",
@@ -627,7 +660,7 @@ AUTH_PROT_MAP = {
     "SHA-2-512": "SHA-512",
 }
 
-PRIV_PROT_MAP = {
+PRIV_PROT_MAP: Mapping[PrivacyProtocolType, str] = {
     "CBC-DES": "DES",
     "AES-128": "AES",
     "3DES-EDE": "3DES-EDE",
@@ -638,7 +671,7 @@ PRIV_PROT_MAP = {
 }
 
 
-class MappingConverter(Converter):
+class MappingConverter[K, V](Converter):
     """Converts keys according to a mapping
 
     The direction of the mapping is defined as "INTO Checkmk":
@@ -666,17 +699,25 @@ class MappingConverter(Converter):
 
     """
 
-    def __init__(self, mapping: Mapping[str, str]) -> None:
+    __slots__ = ("mapping",)
+
+    def __init__(self, mapping: Mapping[K, V]) -> None:
         self.mapping = mapping
 
-    def to_checkmk(self, data: str) -> str:
+    @override
+    def to_checkmk(self, data: K) -> V:
         return self.mapping[data]
 
-    def from_checkmk(self, data: str) -> str:
+    @override
+    def from_checkmk(self, data: V) -> K:
         for key, value in self.mapping.items():
             if data == value:
                 return key
         raise KeyError(data)
+
+
+AuthProtocolConverter = MappingConverter(AUTH_PROT_MAP)
+PrivacyProtocolConverter = MappingConverter(PRIV_PROT_MAP)
 
 
 class SNMPCommunity(BaseSchema):
@@ -689,11 +730,11 @@ class SNMPCommunity(BaseSchema):
     )
 
     @post_load
-    def to_checkmk_str(self, data, **kwargs):
+    def to_checkmk_str(self, data: dict[str, str], **kwargs: object) -> str:
         return data["community"]
 
     @pre_dump
-    def from_tuple(self, data, **kwargs):
+    def from_tuple(self, data: object, **kwargs: object) -> dict[str, str] | None:
         """
 
         v1 'community'
@@ -732,7 +773,7 @@ class SNMPv3NoAuthNoPrivacy(BaseSchema, CheckmkTuple):
 
 class SNMPv3AuthNoPrivacy(BaseSchema, CheckmkTuple):
     tuple_fields = ("type", "auth_protocol", "security_name", "auth_password")
-    converter = (None, MappingConverter(AUTH_PROT_MAP), None, None)
+    converter = (None, AuthProtocolConverter, None, None)
     cast_to_dict = True
 
     type = Constant(
@@ -766,10 +807,10 @@ class SNMPv3AuthPrivacy(BaseSchema, CheckmkTuple):
     )
     converter = (
         None,
-        MappingConverter(AUTH_PROT_MAP),
+        AuthProtocolConverter,
         None,
         None,
-        MappingConverter(PRIV_PROT_MAP),
+        PrivacyProtocolConverter,
         None,
     )
     cast_to_dict = True
@@ -876,7 +917,8 @@ class SNMPCredentials(CmkOneOfSchema):
         "v3_auth_privacy": SNMPv3AuthPrivacy,
     }
 
-    def get_obj_type(self, obj):
+    @override
+    def get_obj_type(self, obj: str | tuple[str, ...]) -> str:
         if isinstance(obj, str):
             return "v1_v2_community"
         return {
@@ -923,16 +965,18 @@ class HostAttributeManagementBoardField(String):
             enum=["none", "snmp", "ipmi"],
         )
 
+    @override
     def _deserialize(
-        self, value: object, attr: object, data: object, **kwargs: typing.Any
-    ) -> str | None:
+        self, value: object, attr: str | None, data: Mapping[str, object] | None, **kwargs: Any
+    ) -> object:
         # get value from api, convert it to cmk/python
         deserialized = super()._deserialize(value, attr, data, **kwargs)
         if deserialized == "none":
             return None
         return deserialized
 
-    def _serialize(self, value: str | None, attr: object, obj: object, **kwargs: typing.Any) -> str:
+    @override
+    def _serialize(self, value: str | None, attr: str | None, obj: object, **kwargs: Any) -> str:
         # get value from cmk/python, convert it to api side
         serialized = super()._serialize(value, attr, obj, **kwargs)
         if serialized is None:

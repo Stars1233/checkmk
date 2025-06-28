@@ -30,10 +30,10 @@ class NotificationConfiguration(CmkPage):
         self.page.wait_for_url(
             url=re.compile(quote_plus("wato.py?mode=notifications")), wait_until="load"
         )
-        self._validate_page()
+        self.validate_page()
 
     @override
-    def _validate_page(self) -> None:
+    def validate_page(self) -> None:
         logger.info("Validate that current page is '%s' page", self.page_title)
         self.main_area.check_page_title(self.page_title)
         expect(self.add_notification_rule_button).to_be_visible()
@@ -49,6 +49,18 @@ class NotificationConfiguration(CmkPage):
     @property
     def add_notification_rule_button(self) -> Locator:
         return self.main_area.get_suggestion("Add notification rule")
+
+    @property
+    def notification_rule_rows(self) -> Locator:
+        return self.main_area.locator("table.data >> tr.data")
+
+    @property
+    def clone_and_edit_button(self) -> Locator:
+        """Return locator of button to confirm the action "clone & edit" a rule.
+
+        Apears only when a notification rule is being cloned!
+        """
+        return self.main_area.get_confirmation_popup_button("clone & edit")
 
     @overload
     def _notification_rule_row(self, rule_id: str) -> Locator: ...
@@ -92,17 +104,20 @@ class NotificationConfiguration(CmkPage):
         return self.main_area.locator("div[class='overview_container']")
 
     def collapse_notification_overview(self, collapse: bool = True) -> None:
-        is_overview_visible = self.notification_overview_container().is_visible()
+        container = self.notification_overview_container()
+        is_overview_visible = container.is_visible()
         if (collapse and is_overview_visible) or (not collapse and not is_overview_visible):
             self.main_area.locator().get_by_role("heading", name="Notification overview").locator(
                 "button"
             ).click()
+            container.wait_for(state="hidden" if collapse else "visible")
         else:
             logger.info("Notification overview is already in the desired state")
 
     def delete_notification_rule(self, rule_id: int | str) -> None:
         self.notification_rule_delete_button(rule_id).click()
         self.delete_rule_confirmation_button.click()
+        self._notification_rule_row(rule_id).wait_for(state="detached")
 
     def _get_notification_stat_count(self, title: str) -> Locator:
         return (
@@ -126,15 +141,33 @@ class NotificationConfiguration(CmkPage):
         expect(locator).to_have_text(re.compile(rf"^\s{previous_count}$"))
 
     def rule_conditions(self, rule_number: int = 0) -> Locator:
-        return self._notification_rule_row(rule_number).get_by_role(
-            "cell", name=re.compile("condition")
+        return self._notification_rule_row(rule_number).locator("td.rule_conditions")
+
+    def _rule_conditions_foldable(self, rule_number: int = 0) -> Locator:
+        return self.rule_conditions(rule_number).locator("div.foldable")
+
+    def _are_rule_conditions_closed(self, rule_number: int = 0) -> bool:
+        rule_conditions_foldable_class = self._rule_conditions_foldable(rule_number).get_attribute(
+            "class"
+        )
+        if rule_conditions_foldable_class is None:
+            error_message = "Rule conditions foldable has not class attribute"
+            raise AttributeError(error_message)
+
+        return "closed" in rule_conditions_foldable_class
+
+    def _rule_conditions_foldable_header(self, rule_number: int = 0) -> Locator:
+        return self._rule_conditions_foldable(rule_number).locator("div.foldable_header")
+
+    def notification_rule_condition(self, rule_number: int, condition_name: str) -> Locator:
+        return (
+            self.rule_conditions(rule_number)
+            .get_by_role("cell", name=condition_name)
+            .locator("+ td")
         )
 
-    def expand_conditions(self, expand: bool = True, rule_number: int = 0) -> None:
-        conditions = self.rule_conditions(rule_number)
-        # "Match host event type" should be in the default conditions
-        expanded = conditions.get_by_role("cell", name="Match host event type").is_visible()
-        if not expanded and expand:
-            conditions.click()
+    def expand_conditions(self, rule_number: int = 0) -> None:
+        if self._are_rule_conditions_closed(rule_number):
+            self._rule_conditions_foldable_header(rule_number).click()
         else:
-            logger.debug("Conditions are already visible.")
+            logger.debug("Conditions are already expanded.")

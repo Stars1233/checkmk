@@ -25,26 +25,9 @@ include $(BUILD_BASE_DIR)/build-helper-files.make
 # PACKAGES variable there to customzie the list of packages.
 
 PACKAGES := \
-    erlang \
-    libgsf \
-    cpp-libs \
-    lcab \
-    msitools \
     apache-omd \
-    xinetd \
     check_mk \
-    nagios \
-    monitoring-plugins \
-    check-cert \
-    nrpe \
-    omd \
-    pnp4nagios \
-    heirloom-mailx \
-    livestatus \
-    neb \
-    robotmk \
-    xmlsec1 \
-    rabbitmq
+    omd
 
 ifeq ($(EDITION),enterprise)
 PACKAGES += enterprise

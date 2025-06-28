@@ -26,7 +26,7 @@ from cmk.rulesets.v1.form_specs import (
 
 
 class _ServiceChoices:
-    def __init__(self):
+    def __init__(self) -> None:
         self.global_services = [
             MultipleChoiceElement(name="ce", title=Title("Costs and usage (CE)")),
         ]
@@ -293,7 +293,7 @@ def quick_setup_advanced() -> Mapping[str, DictElement]:
     }
 
 
-def quick_setup_aws_form_spec():
+def quick_setup_aws_form_spec() -> Dictionary:
     return Dictionary(
         title=Title("Amazon Web Services (AWS)"),
         elements={

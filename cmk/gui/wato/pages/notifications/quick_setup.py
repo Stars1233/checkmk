@@ -6,10 +6,14 @@ import re
 from collections.abc import Mapping, Sequence
 from typing import Any, assert_never, cast, Final, get_args, Literal
 
+from livestatus import SiteConfiguration
+
+from cmk.ccc.site import SiteId
+from cmk.ccc.user import UserId
+
 from cmk.utils.notify_types import HostEventType, ServiceEventType
 from cmk.utils.tags import AuxTag, TagGroup
 from cmk.utils.timeperiod import TimeperiodName
-from cmk.utils.user import UserId
 
 from cmk.gui.config import active_config
 from cmk.gui.form_specs.converter import Tuple
@@ -28,7 +32,7 @@ from cmk.gui.form_specs.private import (
     SingleChoiceEditable,
     SingleChoiceElementExtended,
     SingleChoiceExtended,
-    StringAutocompleter,
+    TwoColumnDictionary,
     World,
 )
 from cmk.gui.form_specs.private.cascading_single_choice_extended import (
@@ -43,6 +47,7 @@ from cmk.gui.hooks import request_memoize
 from cmk.gui.i18n import _
 from cmk.gui.mkeventd import service_levels, syslog_facilities, syslog_priorities
 from cmk.gui.quick_setup.private.widgets import (
+    ConditionalNotificationDialogWidget,
     ConditionalNotificationECAlertStageWidget,
     ConditionalNotificationServiceEventStageWidget,
 )
@@ -65,6 +70,7 @@ from cmk.gui.quick_setup.v0_unstable.type_defs import (
 )
 from cmk.gui.quick_setup.v0_unstable.widgets import (
     Collapsible,
+    Dialog,
     FormSpecId,
     FormSpecWrapper,
     Widget,
@@ -104,6 +110,7 @@ from cmk.rulesets.v1.form_specs import (
     HostState,
     InputHint,
     Integer,
+    MonitoredHost,
     ServiceState,
     SingleChoice,
     SingleChoiceElement,
@@ -127,7 +134,6 @@ from cmk.shared_typing.vue_formspec_components import (
     CascadingSingleChoiceLayout,
     Condition,
     ConditionGroup,
-    DictionaryLayout,
     ListOfStringsLayout,
 )
 
@@ -265,7 +271,11 @@ def _event_choices(
 
 
 def _validate_at_least_one_event(trigger_events: Mapping) -> None:
-    if not trigger_events:
+    if (
+        not trigger_events["host_events"]
+        and not trigger_events["service_events"]
+        and not trigger_events.get("ec_alerts", False)
+    ):
         raise ValidationError(Message("At least one triggering event must be selected."))
 
 
@@ -281,21 +291,8 @@ def triggering_events() -> QuickSetupStage:
                         CascadingSingleChoiceElement(
                             name="specific_events",
                             title=Title("Specific events"),
-                            parameter_form=DictionaryExtended(
-                                layout=DictionaryLayout.two_columns,
-                                prefill=DefaultValue(
-                                    {
-                                        "host_events": [
-                                            ("state_change", (-1, HostState.DOWN)),
-                                            ("state_change", (-1, HostState.UP)),
-                                        ],
-                                        "service_events": [
-                                            ("state_change", (-1, ServiceState.CRIT)),
-                                            ("state_change", (-1, ServiceState.WARN)),
-                                            ("state_change", (-1, ServiceState.OK)),
-                                        ],
-                                    }
-                                ),
+                            parameter_form=TwoColumnDictionary(
+                                default_checked=["host_events", "service_events"],
                                 elements={
                                     "host_events": DictElement(
                                         parameter_form=ListUniqueSelection(
@@ -303,14 +300,23 @@ def triggering_events() -> QuickSetupStage:
                                             help_text=Help(
                                                 "Notifications are sent only for event types "
                                                 "defined by the 'Notified events for "
-                                                "hosts' ruleset"
+                                                "hosts' ruleset. "
+                                                "Note: Host events do not match "
+                                                "this rule if a service filter "
+                                                "matches. However, if an exclude "
+                                                "service filter matches, host events are "
+                                                "still matched by the rule."
                                             ),
-                                            prefill=DefaultValue([]),
+                                            prefill=DefaultValue(
+                                                [
+                                                    ("state_change", (-1, HostState.DOWN)),
+                                                    ("state_change", (-1, HostState.UP)),
+                                                ]
+                                            ),
                                             single_choice_type=CascadingSingleChoice,
                                             cascading_single_choice_layout=CascadingSingleChoiceLayout.horizontal,
                                             elements=_event_choices("host"),
                                             add_element_label=Label("Add event"),
-                                            custom_validate=[_validate_empty_selection],
                                         )
                                     ),
                                     "service_events": DictElement(
@@ -321,12 +327,17 @@ def triggering_events() -> QuickSetupStage:
                                                 "defined by the 'Notified events for "
                                                 "services' ruleset"
                                             ),
-                                            prefill=DefaultValue([]),
+                                            prefill=DefaultValue(
+                                                [
+                                                    ("state_change", (-1, ServiceState.CRIT)),
+                                                    ("state_change", (-1, ServiceState.WARN)),
+                                                    ("state_change", (-1, ServiceState.OK)),
+                                                ]
+                                            ),
                                             single_choice_type=CascadingSingleChoice,
                                             cascading_single_choice_layout=CascadingSingleChoiceLayout.horizontal,
                                             elements=_event_choices("service"),
                                             add_element_label=Label("Add event"),
-                                            custom_validate=[_validate_empty_selection],
                                         )
                                     ),
                                     "ec_alerts": DictElement(
@@ -376,6 +387,8 @@ def custom_recap_formspec_triggering_events(
     stage_index: StageIndex,
     all_stages_form_data: ParsedFormData,
     progress_logger: ProgressLogger,
+    site_configs: Mapping[SiteId, SiteConfiguration],
+    debug: bool,
 ) -> Sequence[Widget]:
     cleaned_stages_form_data = {
         form_spec_wrapper_id: (
@@ -391,17 +404,13 @@ def custom_recap_formspec_triggering_events(
         for form_spec_wrapper_id, (mode, form_data) in all_stages_form_data.items()
     }
     return recaps.recaps_form_spec(
-        quick_setup_id, stage_index, cleaned_stages_form_data, progress_logger
+        quick_setup_id,
+        stage_index,
+        cleaned_stages_form_data,
+        progress_logger,
+        site_configs,
+        debug=debug,
     )
-
-
-def _validate_empty_selection(selections: Sequence[Sequence[str | None]]) -> None:
-    # TODO validation seems not to be possible for a single empty element of
-    # the Tuple
-    if ["", None] in selections or not selections:
-        raise ValidationError(
-            Message("At least one selection is missing."),
-        )
 
 
 def _get_contact_group_users() -> list[tuple[UserId, str]]:
@@ -465,6 +474,8 @@ def custom_recap_formspec_filter_for_hosts_and_services(
     stage_index: StageIndex,
     all_stages_form_data: ParsedFormData,
     progress_logger: ProgressLogger,
+    site_configs: Mapping[SiteId, SiteConfiguration],
+    debug: bool,
 ) -> Sequence[Widget]:
     cleaned_stages_form_data = {
         form_spec_wrapper_id: form_data
@@ -472,7 +483,7 @@ def custom_recap_formspec_filter_for_hosts_and_services(
         if len(form_data) > 0
     }
     return recaps.recaps_form_spec(
-        quick_setup_id, stage_index, cleaned_stages_form_data, progress_logger
+        quick_setup_id, stage_index, cleaned_stages_form_data, progress_logger, site_configs, debug
     )
 
 
@@ -514,8 +525,7 @@ def filter_for_hosts_and_services() -> QuickSetupStage:
                         items=[
                             FormSpecWrapper(
                                 id=FormSpecId("ec_alert_filters"),
-                                form_spec=DictionaryExtended(
-                                    layout=DictionaryLayout.two_columns,
+                                form_spec=TwoColumnDictionary(
                                     elements={
                                         "rule_ids": DictElement(
                                             parameter_form=ListExtended(
@@ -602,8 +612,7 @@ def filter_for_hosts_and_services() -> QuickSetupStage:
                 items=[
                     FormSpecWrapper(
                         id=FormSpecId("host_filters"),
-                        form_spec=DictionaryExtended(
-                            layout=DictionaryLayout.two_columns,
+                        form_spec=TwoColumnDictionary(
                             elements={
                                 "host_tags": DictElement(
                                     parameter_form=ConditionChoices(
@@ -663,14 +672,7 @@ def filter_for_hosts_and_services() -> QuickSetupStage:
                                 "match_hosts": DictElement(
                                     parameter_form=ListOfStrings(
                                         title=Title("Hosts"),
-                                        string_spec=StringAutocompleter(
-                                            autocompleter=Autocompleter(
-                                                data=AutocompleterData(
-                                                    ident="config_hostname",
-                                                    params=AutocompleterParams(),
-                                                ),
-                                            ),
-                                        ),
+                                        string_spec=MonitoredHost(),
                                         custom_validate=[
                                             not_empty(
                                                 error_msg=Message("Please add at least one host.")
@@ -681,14 +683,7 @@ def filter_for_hosts_and_services() -> QuickSetupStage:
                                 "exclude_hosts": DictElement(
                                     parameter_form=ListOfStrings(
                                         title=Title("Exclude hosts"),
-                                        string_spec=StringAutocompleter(
-                                            autocompleter=Autocompleter(
-                                                data=AutocompleterData(
-                                                    ident="config_hostname",
-                                                    params=AutocompleterParams(),
-                                                ),
-                                            ),
-                                        ),
+                                        string_spec=MonitoredHost(),
                                         custom_validate=[
                                             not_empty(
                                                 error_msg=Message("Please add at least one host.")
@@ -706,10 +701,23 @@ def filter_for_hosts_and_services() -> QuickSetupStage:
                     Collapsible(
                         title=_("Service filters"),
                         items=[
+                            ConditionalNotificationDialogWidget(
+                                items=[
+                                    Dialog(
+                                        text=_(
+                                            "Note: Host events do not match "
+                                            "this rule if a service filter "
+                                            "matches. However, if an exclude "
+                                            "filter matches, host events are "
+                                            "still matched by the rule."
+                                        ),
+                                    )
+                                ],
+                                target="svc_filter",
+                            ),
                             FormSpecWrapper(
                                 id=FormSpecId("service_filters"),
-                                form_spec=DictionaryExtended(
-                                    layout=DictionaryLayout.two_columns,
+                                form_spec=TwoColumnDictionary(
                                     elements={
                                         "service_labels": DictElement(
                                             parameter_form=Labels(
@@ -935,7 +943,7 @@ def filter_for_hosts_and_services() -> QuickSetupStage:
                                         ),
                                     },
                                 ),
-                            )
+                            ),
                         ],
                     ),
                 ],
@@ -949,8 +957,7 @@ def filter_for_hosts_and_services() -> QuickSetupStage:
                 items=[
                     FormSpecWrapper(
                         id=FormSpecId("assignee_filters"),
-                        form_spec=DictionaryExtended(
-                            layout=DictionaryLayout.two_columns,
+                        form_spec=TwoColumnDictionary(
                             elements={
                                 "contact_groups": DictElement(
                                     parameter_form=MultipleChoiceExtended(
@@ -1021,8 +1028,7 @@ def filter_for_hosts_and_services() -> QuickSetupStage:
                 items=[
                     FormSpecWrapper(
                         id=FormSpecId("general_filters"),
-                        form_spec=DictionaryExtended(
-                            layout=DictionaryLayout.two_columns,
+                        form_spec=TwoColumnDictionary(
                             elements={
                                 "service_level": DictElement(
                                     parameter_form=CascadingSingleChoiceExtended(
@@ -1321,8 +1327,7 @@ def notification_method() -> QuickSetupStage:
         return [
             FormSpecWrapper(
                 id=FormSpecId("notification_method"),
-                form_spec=DictionaryExtended(
-                    layout=DictionaryLayout.two_columns,
+                form_spec=TwoColumnDictionary(
                     elements={
                         "notification_effect": DictElement(
                             required=True,
@@ -1443,6 +1448,19 @@ def custom_macros_cannot_be_empty(custom_macros: Sequence[tuple[str, str]]) -> N
 def recipient() -> QuickSetupStage:
     def _components() -> Sequence[Widget]:
         return [
+            ConditionalNotificationDialogWidget(
+                items=[
+                    Dialog(
+                        text=_(
+                            "Select one user from a contact group with access "
+                            "to all hosts and services. This will prevent "
+                            "duplicate notifications, as selecting multiple "
+                            "users will trigger separate notifications."
+                        ),
+                    )
+                ],
+                target="recipient",
+            ),
             FormSpecWrapper(
                 id=FormSpecId("recipient"),
                 form_spec=DictionaryExtended(
@@ -1640,7 +1658,7 @@ def recipient() -> QuickSetupStage:
                         ),
                     }
                 ),
-            )
+            ),
         ]
 
     return QuickSetupStage(
@@ -1697,7 +1715,6 @@ def sending_conditions() -> QuickSetupStage:
             FormSpecWrapper(
                 id=FormSpecId("sending_conditions"),
                 form_spec=DictionaryExtended(
-                    layout=DictionaryLayout.one_column,
                     elements={
                         "frequency_and_timing": DictElement(
                             required=True,
@@ -1837,8 +1854,7 @@ def general_properties() -> QuickSetupStage:
         return [
             FormSpecWrapper(
                 id=FormSpecId("general_properties"),
-                form_spec=DictionaryExtended(
-                    layout=DictionaryLayout.two_columns,
+                form_spec=TwoColumnDictionary(
                     elements={
                         "description": DictElement(
                             required=True,
@@ -1962,7 +1978,7 @@ def _save(all_stages_form_data: ParsedFormData) -> None:
     notifications_rules += [
         migrate_to_event_rule(cast(NotificationQuickSetupSpec, all_stages_form_data))
     ]
-    config_file.save(notifications_rules)
+    config_file.save(notifications_rules, pprint_value=active_config.wato_pprint_config)
 
 
 def _edit(all_stages_form_data: ParsedFormData, object_id: str) -> None:
@@ -1974,7 +1990,7 @@ def _edit(all_stages_form_data: ParsedFormData, object_id: str) -> None:
                 cast(NotificationQuickSetupSpec, all_stages_form_data)
             )
             break
-    config_file.save(notification_rules)
+    config_file.save(notification_rules, pprint_value=active_config.wato_pprint_config)
 
 
 def load_notifications(object_id: str) -> ParsedFormData:

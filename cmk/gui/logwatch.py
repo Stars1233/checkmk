@@ -2,6 +2,7 @@
 # Copyright (C) 2019 Checkmk GmbH - License: GNU General Public License v2
 # This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
 # conditions defined in the file COPYING, which is part of this source code package.
+# mypy: disable-error-code="no-untyped-call, no-untyped-def"
 
 import datetime
 import time
@@ -11,9 +12,8 @@ from typing import Any
 import livestatus
 
 from cmk.ccc.exceptions import MKGeneralException
+from cmk.ccc.hostaddress import HostName
 from cmk.ccc.site import SiteId
-
-from cmk.utils.hostaddress import HostName
 
 from cmk.gui import sites
 from cmk.gui.breadcrumb import (
@@ -30,7 +30,7 @@ from cmk.gui.htmllib.html import html
 from cmk.gui.http import request
 from cmk.gui.i18n import _
 from cmk.gui.logged_in import user
-from cmk.gui.main_menu import mega_menu_registry
+from cmk.gui.main_menu import main_menu_registry
 from cmk.gui.page_menu import (
     make_display_options_dropdown,
     make_simple_link,
@@ -39,7 +39,7 @@ from cmk.gui.page_menu import (
     PageMenuEntry,
     PageMenuTopic,
 )
-from cmk.gui.pages import PageRegistry
+from cmk.gui.pages import PageEndpoint, PageRegistry
 from cmk.gui.table import table_element
 from cmk.gui.type_defs import HTTPVariables
 from cmk.gui.utils.transaction_manager import transactions
@@ -59,7 +59,7 @@ from cmk.gui.view_breadcrumbs import make_host_breadcrumb
 
 
 def register(page_registry: PageRegistry) -> None:
-    page_registry.register_page_handler("logwatch", page_show)
+    page_registry.register(PageEndpoint("logwatch", page_show))
 
 
 def page_show():
@@ -88,7 +88,7 @@ def page_show():
 # Shows a list of all problematic logfiles grouped by host
 def show_log_list():
     title = _("All problematic log files")
-    breadcrumb = make_simple_page_breadcrumb(mega_menu_registry.menu_monitoring(), title)
+    breadcrumb = make_simple_page_breadcrumb(main_menu_registry.menu_monitoring(), title)
     make_header(html, title, breadcrumb, _log_list_page_menu(breadcrumb))
 
     if request.has_var("_ack") and not request.var("_do_actions") == _("No"):
@@ -303,7 +303,10 @@ def show_file(site, host_name, file_name):
     title = _("Logfiles of Host %s: %s") % (host_name, int_filename)
     breadcrumb = _show_file_breadcrumb(host_name, title)
     make_header(
-        html, title, breadcrumb, _show_file_page_menu(breadcrumb, site, host_name, int_filename)
+        html,
+        title,
+        breadcrumb,
+        _show_file_page_menu(breadcrumb, site, host_name, int_filename),
     )
 
     if request.has_var("_ack") and not request.var("_do_actions") == _("No"):
@@ -312,7 +315,10 @@ def show_file(site, host_name, file_name):
 
     try:
         log_chunks = parse_file(
-            site, host_name, int_filename, hidecontext=request.var("_hidecontext", "no") == "yes"
+            site,
+            host_name,
+            int_filename,
+            hidecontext=request.var("_hidecontext", "no") == "yes",
         )
     except Exception as e:
         if active_config.debug:
@@ -398,7 +404,10 @@ def _show_file_page_menu(
                                 title=_("All log files"),
                                 icon_name="logwatch",
                                 item=make_simple_link(
-                                    makeuri(request, [("site", ""), ("host", ""), ("file", "")])
+                                    makeuri(
+                                        request,
+                                        [("site", ""), ("host", ""), ("file", "")],
+                                    )
                                 ),
                             ),
                         ],
@@ -567,7 +576,8 @@ def do_log_ack(site, host_name, file_name):
 
     html.show_message(
         "<b>{}</b><p>{}</p>".format(
-            _("Acknowledged %s") % ack_msg, _("Acknowledged all messages in %s.") % ack_msg
+            _("Acknowledged %s") % ack_msg,
+            _("Acknowledged all messages in %s.") % ack_msg,
         )
     )
     html.footer()
@@ -816,7 +826,10 @@ def logfiles_of_host(site, host_name):
                 "does not support fetching logfile information. Please upgrade "
                 "to a newer version."
             )
-            % (site, sites.states().get(site, sites.SiteStatus({})).get("program_version", "???"))
+            % (
+                site,
+                sites.states().get(site, sites.SiteStatus({})).get("program_version", "???"),
+            )
         )
     return file_names
 

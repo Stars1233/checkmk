@@ -3,8 +3,11 @@
 # This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
 # conditions defined in the file COPYING, which is part of this source code package.
 
+# mypy: disable-error-code="explicit-override, no-untyped-call, no-untyped-def"
+
 import re
 from collections.abc import Callable, Collection, Sequence
+from typing import get_args
 
 from livestatus import LivestatusColumn, MultiSiteConnection
 
@@ -13,8 +16,9 @@ from cmk.utils.regex import regex
 from cmk.gui import sites
 from cmk.gui.config import active_config
 from cmk.gui.exceptions import MKUserError
+from cmk.gui.groups import GroupType
 from cmk.gui.i18n import _
-from cmk.gui.pages import AjaxPage, PageRegistry, PageResult
+from cmk.gui.pages import AjaxPage, PageEndpoint, PageRegistry, PageResult
 from cmk.gui.type_defs import Choices
 from cmk.gui.utils.labels import encode_label_for_livestatus, Label, LABEL_REGEX
 from cmk.gui.utils.user_errors import user_errors
@@ -24,7 +28,7 @@ from cmk.gui.watolib.check_mk_automations import get_check_information_cached
 
 
 def register(page_registry: PageRegistry, autocompleter_registry_: AutocompleterRegistry) -> None:
-    page_registry.register_page("ajax_vs_autocomplete")(PageVsAutocomplete)
+    page_registry.register(PageEndpoint("ajax_vs_autocomplete", PageVsAutocomplete))
     autocompleter_registry_.register_autocompleter(
         "monitored_hostname", monitored_hostname_autocompleter
     )
@@ -100,6 +104,12 @@ def hostgroup_autocompleter(value: str, params: dict) -> Choices:
     Called by the webservice with the current input field value and the completions_params to get the list of choices
     """
     group_type = params["group_type"]
+    if group_type not in (valid_group_types := get_args(GroupType)):
+        raise MKUserError(
+            "params",
+            _("you need to set %s parameter to either %s.")
+            % ("group_type", str(valid_group_types)),
+        )
     choices: Choices = sorted(
         (v for v in sites.all_groups(group_type) if _matches_id_or_title(value, v)),
         key=lambda a: a[1].lower(),
@@ -215,7 +225,7 @@ def label_autocompleter(value: str, params: dict) -> Choices:
 def check_types_autocompleter(value: str, params: dict) -> Choices:
     return [
         (str(cn), (str(cn) + " - " + c["title"]))
-        for (cn, c) in get_check_information_cached().items()
+        for (cn, c) in get_check_information_cached(debug=active_config.debug).items()
         if not cn.is_management_name()
     ]
 
@@ -249,7 +259,7 @@ class PageVsAutocomplete(AjaxPage):
         # Check for correct result_data format
         assert isinstance(result_data, list)
         if result_data:
-            assert isinstance(result_data[0], (list, tuple))
+            assert isinstance(result_data[0], list | tuple)
             assert len(result_data[0]) == 2
 
         return {"choices": result_data}

@@ -20,7 +20,7 @@ CI ?= false
         format format-c test-format-c format-python format-shell \
         help install mrproper mrclean \
         packages setup setversion version openapi \
-        requirements.txt frontend-vue .venv
+        requirements.txt .venv
 
 help:
 	@echo "setup                          --> Prepare system for development and building"
@@ -62,7 +62,7 @@ $(SOURCE_BUILT_OHM) $(SOURCE_BUILT_WINDOWS):
 # is currently not used by most distros
 # Would also use --exclude-vcs, but this is also not available
 # And --transform is also missing ...
-dist: $(SOURCE_BUILT_AGENTS) $(SOURCE_BUILT_AGENT_UPDATER) cmk-frontend-build frontend-vue-build
+dist: $(SOURCE_BUILT_AGENTS) $(SOURCE_BUILT_AGENT_UPDATER)
 	$(MAKE) -C agents/plugins
 	set -e -o pipefail ; EXCLUDES= ; \
 	if [ -d .git ]; then \
@@ -73,7 +73,7 @@ dist: $(SOURCE_BUILT_AGENTS) $(SOURCE_BUILT_AGENT_UPDATER) cmk-frontend-build fr
 		fi ; \
 	    done ; \
 	else \
-	    for F in $(DIST_ARCHIVE) non-free/cmk-update-agent/{build,build-32,src} non-free/cmk-update-agent/{build,build-32,src} enterprise/agents/winbuild; do \
+	    for F in $(DIST_ARCHIVE) non-free/packages/cmk-update-agent/{build,build-32,src} non-free/packages/cmk-update-agent/{build,build-32,src} enterprise/agents/winbuild; do \
 		EXCLUDES+=" --exclude $$F" ; \
 	    done ; \
 	fi ; \
@@ -99,12 +99,6 @@ dist: $(SOURCE_BUILT_AGENTS) $(SOURCE_BUILT_AGENT_UPDATER) cmk-frontend-build fr
 	    check-mk-$(EDITION)-$(OMD_VERSION)
 	rm -rf check-mk-$(EDITION)-$(OMD_VERSION)
 
-cmk-frontend-build:
-	packages/cmk-frontend/run --clean --build
-
-frontend-vue-build:
-	packages/cmk-frontend-vue/run --clean --build
-
 announcement:
 	mkdir -p $(CHECK_MK_ANNOUNCE_FOLDER)
 	PYTHONPATH=${PYTHONPATH}:$(REPO_PATH) $(UVENV) python -m cmk.utils.werks announce .werks $(VERSION) --format=md > $(CHECK_MK_ANNOUNCE_MD)
@@ -125,12 +119,14 @@ version:
 # replace any character (like 'p' or 'b') with a dot. Not completely correct,
 # but better than nothing. We have to rethink this setversion madness, anyway.
 setversion:
+	# IMPORTANT do not version bazelized packages here.  Bazel can set the
+	# version natively.
 	sed -ri 's/^(VERSION[[:space:]]*:?= *).*/\1'"$(NEW_VERSION)/" defines.make
 	sed -i 's/^__version__ = ".*"$$/__version__ = "$(NEW_VERSION)"/' packages/cmk-ccc/cmk/ccc/version.py bin/livedump
 	$(MAKE) -C agents NEW_VERSION=$(NEW_VERSION) setversion
 	sed -i 's/^ARG CMK_VERSION=.*$$/ARG CMK_VERSION="$(NEW_VERSION)"/g' docker_image/Dockerfile
 ifeq ($(ENTERPRISE),yes)
-	sed -i 's/^__version__ = ".*/__version__ = "$(NEW_VERSION)"/' non-free/cmk-update-agent/cmk_update_agent.py
+	sed -i 's/^__version__ = ".*/__version__ = "$(NEW_VERSION)"/' non-free/packages/cmk-update-agent/cmk_update_agent.py
 	sed -i 's/^VERSION = ".*/VERSION = "$(NEW_VERSION)"/' omd/packages/enterprise/bin/cmcdump
 endif
 
@@ -162,7 +158,7 @@ EXCLUDE_CLEAN=$(EXCLUDE_PROPER) \
 
 # The list of files and folders to be protected from remove after "buildclean" is called
 # Rust dirs are kept due to heavy load when compiled: .cargo, controller
-HOST_PACKAGES_TARGET_PATH=packages/host/target
+HOST_PACKAGES_TARGET_PATH=packages/target
 EXCLUDE_BUILD_CLEAN=$(EXCLUDE_CLEAN) \
 	    --exclude="doc/plugin-api/build" \
 	    --exclude=".cargo" \
@@ -230,31 +226,31 @@ documentation:
 sw-documentation:
 	scripts/run-uvenv make -C doc/documentation html
 
-# Use this target to update the requirements_*_lock.txt files
-# TODO: Find a _way_ better ways to handle this
-# HINT: If you want to update dependencies and only running `make relock_venv`
-#       does not work, remove `requirements.txt` and try again.
-relock_venv:
-	touch requirements.txt
-	touch runtime-requirements.txt
-	bazel mod deps --lockfile_mode=update > /dev/null
-	bazel run //:requirements.update > /dev/null
-	bazel mod deps --lockfile_mode=update > /dev/null
-	bazel run //:runtime_requirements.update > /dev/null
-	bazel mod deps --lockfile_mode=update > /dev/null
+update_venv:
+	echo > requirements.txt
+	bazel run //:lock_python_requirements > /dev/null
 
-# .venv is PHONY because the dependencies are resolved by bazel
-.venv:
+relock_venv:
+	bazel run //:lock_python_requirements > /dev/null
+
+ifeq ($(EDITION),raw)
+    # Bazel cannot `select()` tests in a `test_suite` and cannot `alias` tests.
+    # See discussion under https://github.com/bazelbuild/bazel/issues/11458
+    PYTHON_REQUIREMENTS_TEST = //:py_requirements_test_gpl
+else
+    PYTHON_REQUIREMENTS_TEST = //:py_requirements_test_enterprise
+endif
+
+check_python_requirements:
 	@set -e; \
-	if ! bazel test //:requirements_test > /dev/null; then \
+	if ! bazel test $(PYTHON_REQUIREMENTS_TEST) > /dev/null; then \
 		if [ "${CI}" == "true" ]; then \
 			echo "A locking of python requirements is needed, but we're executed in the CI, where this should not be done."; \
 			echo "It seems you forgot to commit the new lock file. Regenerate with: make relock_venv"; \
 			exit 1; \
 		fi; \
-		# TODO: We currently need to first have an updated runtime lock file as this is the input for the all_lock file. \
-		# Therefore execution order matters! \
-		bazel run //:runtime_requirements.update; bazel mod deps --lockfile_mode=update; \
-		bazel run //:requirements.update; bazel mod deps --lockfile_mode=update; \
-	fi; \
+	fi;
+
+# .venv is PHONY because the dependencies are resolved by bazel
+.venv: check_python_requirements
 	CC="gcc" bazel run //:create_venv

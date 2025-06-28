@@ -4,6 +4,7 @@ load("@com_google_protobuf//:protobuf_version.bzl", "PROTOBUF_PYTHON_VERSION")
 load("@gazelle//:def.bzl", "gazelle")
 load("@hedron_compile_commands//:refresh_compile_commands.bzl", "refresh_compile_commands")
 load("@repo_license//:license.bzl", "REPO_LICENSE")
+load("@rules_multirun//:defs.bzl", "multirun")
 load("@rules_uv//uv:pip.bzl", "pip_compile")
 load("@rules_uv//uv:venv.bzl", "create_venv")
 load("//:bazel_variables.bzl", "RUFF_VERSION")
@@ -23,39 +24,6 @@ copy_to_directory(
     srcs = glob([".werks/*"]),
     out_dir = "werks_dir",
     visibility = ["//:__subpackages__"],
-)
-
-string_flag(
-    name = "cmk_version",
-    build_setting_default = "UNSET",
-    visibility = ["//:__subpackages__"],
-)
-
-string_flag(
-    name = "cmk_edition",
-    build_setting_default = "UNSET",
-    visibility = ["//:__subpackages__"],
-)
-
-string_flag(
-    # For a discussion of Linux Standard Base (LSB) vs Filesystem Hierarchy Standard (FHS),
-    # see https://lists.linux-foundation.org/pipermail/lsb-discuss/2011-February/006674.html
-    #
-    # Current state: debian-based distros use LSB and the others, including el{8,9} and sles
-    # use FHS.
-    name = "filesystem_layout",
-    build_setting_default = "FILESYSTEM_LAYOUT_INVALID",
-    visibility = ["//visibility:public"],
-)
-
-config_setting(
-    name = "lsb_filesystem_layout",
-    flag_values = {":filesystem_layout": "lsb"},
-)
-
-config_setting(
-    name = "fhs_filesystem_layout",
-    flag_values = {":filesystem_layout": "fhs"},
 )
 
 string_flag(
@@ -123,6 +91,27 @@ pip_compile(
 )
 
 compile_requirements_in(
+    name = "raw-requirements-in",
+    constraints = [
+        ":bazel-requirements-constraints.txt",
+        ":requirements.txt",
+        "//:constraints.txt",
+    ],
+    requirements = [
+        "//cmk:requirements.in",
+        "//packages:python_requirements",
+        "//:dev-requirements.in",
+    ],
+)
+
+pip_compile(
+    name = "raw_requirements",
+    requirements_in = ":raw-requirements-in",
+    requirements_txt = ":raw-requirements.txt",
+    tags = ["manual"],
+)
+
+compile_requirements_in(
     name = "runtime-requirements-in",
     constraints = [
         ":bazel-requirements-constraints.txt",
@@ -143,15 +132,32 @@ pip_compile(
     requirements_in = ":runtime-requirements-in",
     requirements_txt = ":runtime-requirements.txt",
     tags = ["manual"],
-    visibility = ["//visibility:public"],
+)
+
+multirun(
+    name = "lock_python_requirements",
+    commands = [
+        ":requirements",
+        ":raw_requirements",
+        ":runtime_requirements",
+    ],
+    # Running in a single threaded mode allows consecutive `uv` invocations to benefit
+    # from the `uv` cache from the first run.
+    jobs = 1,
 )
 
 test_suite(
-    name = "requirements_test_suite",
+    name = "py_requirements_test_enterprise",
     tests = [
+        ":raw_requirements_test",
         ":requirements_test",
         ":runtime_requirements_test",
     ],
+)
+
+test_suite(
+    name = "py_requirements_test_gpl",
+    tests = [":raw_requirements_test"],
 )
 
 write_file(
@@ -182,7 +188,7 @@ write_file(
         "@//:gpl+enterprise_repo": [
             "add_packages(repo_path.joinpath('non-free'))",
             # needed for composition tests: they want to 'import cmk_update_agent' via the .venv
-            "sys.path.insert(0, str(repo_path.joinpath('non-free/cmk-update-agent')))",
+            "sys.path.insert(0, str(repo_path.joinpath('non-free/packages/cmk-update-agent')))",
         ],
     }),
 )
@@ -190,11 +196,16 @@ write_file(
 create_venv(
     name = "create_venv",
     destination_folder = ".venv",
-    requirements_txt = "@//:requirements.txt",
+    requirements_txt = select({
+        "@//:gpl_repo": ":raw-requirements.txt",
+        "@//:gpl+enterprise_repo": ":requirements.txt",
+    }),
     site_packages_extra_files = [":sitecustomize.py"],
     whls = [
         "@rrdtool_native//:rrdtool_python_wheel",
+        "//packages/cmk-shared-typing:wheel",
         "//packages/cmk-werks:wheel_entrypoint_only",
+        "//packages/cmk-mkp-tool:wheel_entrypoint_only",
     ] + select({
         "@//:gpl_repo": [],
         "@//:gpl+enterprise_repo": [
@@ -244,4 +255,15 @@ gazelle(
 
 gazelle(
     name = "gazelle",
+)
+
+alias(
+    name = "format",
+    actual = "//bazel/tools:format",
+    visibility = ["//visibility:public"],
+)
+
+alias(
+    name = "format.check",
+    actual = "//bazel/tools:format.check",
 )

@@ -2,34 +2,6 @@
 
 /// file: notify.groovy
 
-email_address_team_ci = [ "timotheus.bachinger@checkmk.com", "frans.fuerst@checkmk.com", "jonas.scharpf@checkmk.com" ];
-email_address_team_qa = [ "matteo.stifano@checkmk.com", "rene.slowenski@checkmk.com" ];
-email_address_team_werks = [ "benedikt.seidl@checkmk.com" ];
-
-def get_author_email() {
-    // Workaround since CHANGE_AUTHOR_EMAIL is not available
-    // Bug: https://issues.jenkins-ci.org/browse/JENKINS-39838
-    return (
-        onWindows ?
-            /// windows will replace %ae with ae..
-            cmd_output('git log -1 --pretty=format:%%ae') :
-            cmd_output('git log -1 --pretty=format:%ae'));
-}
-
-// Send a build failed massage to jenkins
-def slack_build_failed(error) {
-    slackSend(
-        botUser: true,
-        color: 'danger',
-        message: ("""
-            |Build Failed:
-            |    ${env.JOB_NAME} ${env.BUILD_NUMBER} (<${env.BUILD_URL}|Open>)
-            |Error Message:
-            |    ${error}
-            |""".stripMargin()),
-    );
-}
-
 def notify_maintainer_of_package(maintainers, package_name, build_url) {
     try {
         mail(
@@ -54,6 +26,9 @@ def notify_error(error) {
     // See: https://ci.lan.tribe29.com/configure
     // So ensure here we only notify internal addresses.
     def projectname = currentBuild.fullProjectName;
+
+    def email_address_team_werks = ["benedikt.seidl@checkmk.com"];
+
     try {
         def isChangeValidation = projectname.contains("cv");
         def isTesting = projectname.contains("Testing");
@@ -111,12 +86,12 @@ def notify_error(error) {
 
             /// Inform QA if something's wrong with those jobs
             if (projectname.contains("test-plugins") || projectname.contains("test-update")) {
-                notify_emails.addAll(email_address_team_qa);
+                notify_emails.addAll(TEAM_QA_MAIL.replaceAll(',', ' ').split(' ').grep());
             }
 
             /// fallback - for investigation
             /* groovylint-disable DuplicateListLiteral */
-            notify_emails = notify_emails ?: email_address_team_ci;
+            notify_emails = notify_emails ?: TEAM_CI_MAIL.split(",");
             /* groovylint-enable DuplicateListLiteral */
 
             print("|| error-reporting: notify_emails ${notify_emails}");
@@ -144,23 +119,6 @@ def notify_error(error) {
     } catch (Exception exc) {    // groovylint-disable CatchException
         print("Could not report error by mail - got ${exc}");
     }
-
-    // Disabled for the moment. It currently does not work because of some
-    // wrong configuration.
-    //
-    // From the build logs:
-    //
-    // [Pipeline] slackSend
-    // Slack Send Pipeline step running, values are - baseUrl: <empty>,
-    // teamDomain: <empty>, channel: build-notifications, color: danger,
-    // botUser: true, tokenCredentialId: <empty>, iconEmoji <empty>, username
-    // <empty>
-    //ERROR: Slack notification failed with exception:
-    //java.lang.IllegalArgumentException: the token with the provided ID could not be found and no token was specified
-    //
-    //slack_build_failed(error)
-    // after notifying everybody, the error needs to be thrown again
-    // This ensures that the build status is set correctly
 }
 
 return this;

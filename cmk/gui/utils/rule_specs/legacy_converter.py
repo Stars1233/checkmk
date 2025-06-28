@@ -11,11 +11,11 @@ from dataclasses import dataclass
 from functools import partial
 from typing import Any, assert_never, Literal, Self, TypeVar
 
+from cmk.ccc.user import UserId
 from cmk.ccc.version import Edition
 
 from cmk.utils.password_store import ad_hoc_password_id
 from cmk.utils.rulesets.definition import RuleGroup
-from cmk.utils.user import UserId
 
 import cmk.gui.graphing._valuespecs as legacy_graphing_valuespecs
 from cmk.gui import inventory as legacy_inventory_groups
@@ -31,14 +31,13 @@ from cmk.gui.form_specs.private import (
     SingleChoiceExtended,
     UserSelection,
 )
-from cmk.gui.form_specs.vue.visitors import DefaultValue as VueDefaultValue
 from cmk.gui.userdb._user_selection import UserSelection as LegacyUserSelection
 from cmk.gui.utils.autocompleter_config import ContextAutocompleterConfig
 from cmk.gui.utils.rule_specs.loader import RuleSpec as APIV1RuleSpec
 from cmk.gui.utils.urls import DocReference
 from cmk.gui.valuespec import Transform
-from cmk.gui.wato import _check_mk_configuration as legacy_cmk_config_groups
 from cmk.gui.wato import _rulespec_groups as legacy_wato_groups
+from cmk.gui.wato._check_mk_configuration import RulespecGroupAgent
 from cmk.gui.watolib import config_domains as legacy_config_domains
 from cmk.gui.watolib import rulespec_groups as legacy_rulespec_groups
 from cmk.gui.watolib import rulespecs as legacy_rulespecs
@@ -150,7 +149,7 @@ def convert_to_legacy_rulespec(
         case ruleset_api_v1.rule_specs.AgentAccess():
             return _convert_to_legacy_host_rule_spec_rulespec(
                 to_convert,
-                legacy_cmk_config_groups.RulespecGroupAgent,
+                RulespecGroupAgent,
                 localizer,
             )
         case ruleset_api_v1.rule_specs.AgentConfig():
@@ -1168,7 +1167,7 @@ def _pack_dict_groups(
         nested_packed_dict = {}
         if isinstance(
             (nested_form := dict_elements[key_to_pack].parameter_form),
-            (ruleset_api_v1.form_specs.Dictionary, DictionaryExtended),
+            ruleset_api_v1.form_specs.Dictionary | DictionaryExtended,
         ):
             # handle innermost migrations
             if nested_form.migrate is not None:
@@ -1284,14 +1283,8 @@ def _convert_to_legacy_dictionary(
     required_group_keys = set(grouped_elements_map.keys()) - hidden_group_keys
 
     default_keys: list[str] | None = None
-    if isinstance(to_convert, DictionaryExtended) and (prefill := to_convert.prefill) is not None:
-        default_keys = []
-        for key, value in prefill.value.items():
-            if not isinstance(value, VueDefaultValue):
-                raise ValueError(
-                    "Unable to migrate prefill value. Only able to use Vue-DefaultValue as value for key."
-                )
-            default_keys.append(key)
+    if isinstance(to_convert, DictionaryExtended):
+        default_keys = to_convert.default_checked
 
     return legacy_valuespecs.Transform(
         legacy_valuespecs.Dictionary(

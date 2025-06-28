@@ -13,10 +13,7 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any, Final
 
-from livestatus import SiteConfiguration, SiteConfigurations
-
 import cmk.ccc.version as cmk_version
-from cmk.ccc.site import omd_site, url_prefix
 
 import cmk.utils.tags
 from cmk.utils import paths
@@ -166,20 +163,16 @@ def load_config() -> None:
     # Set default values for all user-changable configuration settings
     raw_config = get_default_config()
 
-    # Initialize sites with default site configuration. Need to do it here to
-    # override possibly deleted sites
-    raw_config["sites"] = default_single_site_configuration()
-
     # Load assorted experimental parameters if any
     experimental_config = cmk.utils.paths.make_experimental_config_file()
     if experimental_config.exists():
         _load_config_file_to(str(experimental_config), raw_config)
 
     # First load main file
-    _load_config_file_to(cmk.utils.paths.default_config_dir + "/multisite.mk", raw_config)
+    _load_config_file_to(str(cmk.utils.paths.default_config_dir / "multisite.mk"), raw_config)
 
     # Load also recursively all files below multisite.d
-    conf_dir = cmk.utils.paths.default_config_dir + "/multisite.d"
+    conf_dir = cmk.utils.paths.default_config_dir / "multisite.d"
     filelist = []
     if os.path.isdir(conf_dir):
         for root, _directories, files in os.walk(conf_dir):
@@ -191,7 +184,6 @@ def load_config() -> None:
     for p in filelist:
         _load_config_file_to(p, raw_config)
 
-    raw_config["sites"] = prepare_raw_site_config(raw_config["sites"])
     raw_config["tags"] = cmk.utils.tags.get_effective_tag_config(raw_config["wato_tags"])
 
     # TODO: Temporary local hack to transform the values to the correct type. This needs
@@ -233,7 +225,7 @@ def make_config_object(raw_config: dict[str, Any]) -> Config:
             bases=(Config,),
         )
 
-    return cls(**raw_config)
+    return cls(**raw_config)  # type: ignore[no-any-return]
 
 
 def execute_post_config_load_hooks() -> None:
@@ -277,7 +269,7 @@ def _get_default_config_from_module_plugins() -> dict[str, Any]:
         if k[0] == "_" or k in ("CREConfig", "CEEConfig", "CMEConfig"):
             continue
 
-        if isinstance(v, (dict, list)):
+        if isinstance(v, dict | list):
             v = copy.deepcopy(v)
 
         default_config[k] = v
@@ -301,41 +293,3 @@ def _config_plugin_modules() -> list[ModuleType]:
         )
         and module is not None
     ]
-
-
-def prepare_raw_site_config(site_config: SiteConfigurations) -> SiteConfigurations:
-    if not site_config:
-        # Prevent problem when user has deleted all sites from his
-        # configuration and sites is {}. We assume a default single site
-        # configuration in that case.
-        return default_single_site_configuration()
-    return _migrate_old_site_config(site_config)
-
-
-def _migrate_old_site_config(site_config: SiteConfigurations) -> SiteConfigurations:
-    # Fresh migration code can be added here
-    return site_config
-
-
-def default_single_site_configuration() -> SiteConfigurations:
-    return SiteConfigurations(
-        {
-            omd_site(): SiteConfiguration(
-                {
-                    "alias": _("Local site %s") % omd_site(),
-                    "socket": ("local", None),
-                    "disable_wato": True,
-                    "disabled": False,
-                    "insecure": False,
-                    "url_prefix": url_prefix(),
-                    "multisiteurl": "",
-                    "persist": False,
-                    "replicate_ec": False,
-                    "replication": None,
-                    "timeout": 5,
-                    "user_login": True,
-                    "proxy": None,
-                }
-            )
-        }
-    )

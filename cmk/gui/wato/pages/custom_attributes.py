@@ -13,10 +13,12 @@ from typing import Generic, TypeVar
 import cmk.gui.watolib.changes as _changes
 from cmk.gui import forms
 from cmk.gui.breadcrumb import Breadcrumb
+from cmk.gui.config import active_config
 from cmk.gui.exceptions import MKUserError
 from cmk.gui.htmllib.html import html
 from cmk.gui.http import request
 from cmk.gui.i18n import _
+from cmk.gui.logged_in import user
 from cmk.gui.page_menu import (
     make_simple_form_page_menu,
     make_simple_link,
@@ -193,12 +195,17 @@ class ModeEditCustomAttr(WatoMode, abc.ABC, Generic[_T_CustomAttrSpec]):
             self._attrs.append(self._attr)
 
             _changes.add_change(
-                "edit-%sattr" % self._type,
-                _("Create new %s attribute %s") % (self._type, self._name),
+                action_name="edit-%sattr" % self._type,
+                text=_("Create new %s attribute %s") % (self._type, self._name),
+                user_id=user.id,
+                use_git=active_config.wato_use_git,
             )
         else:
             _changes.add_change(
-                "edit-%sattr" % self._type, _("Modified %s attribute %s") % (self._type, self._name)
+                action_name="edit-%sattr" % self._type,
+                text=_("Modified %s attribute %s") % (self._type, self._name),
+                user_id=user.id,
+                use_git=active_config.wato_use_git,
             )
             self._attr["title"] = title
             self._attr["topic"] = topic
@@ -408,7 +415,7 @@ class ModeEditCustomHostAttr(ModeEditCustomAttr[CustomHostAttrSpec]):
         )
 
     def _update_config(self) -> None:
-        update_host_custom_attrs()
+        update_host_custom_attrs(pprint_value=active_config.wato_pprint_config)
 
     def _show_in_table_option(self) -> None:
         self._render_table_option(
@@ -512,7 +519,12 @@ class ModeCustomAttrs(WatoMode, abc.ABC, Generic[_T_CustomAttrSpec]):
         save_custom_attrs_to_mk_file(self._all_attrs)
         remove_custom_attribute_from_all_users(delname, user_features_registry.features().sites)
         self._update_config()
-        _changes.add_change("edit-%sattrs" % self._type, _("Deleted attribute %s") % (delname))
+        _changes.add_change(
+            action_name="edit-%sattrs" % self._type,
+            text=_("Deleted attribute %s") % (delname),
+            user_id=user.id,
+            use_git=active_config.wato_use_git,
+        )
         return redirect(self.mode_url())
 
     def page(self) -> None:
@@ -599,7 +611,7 @@ class ModeCustomHostAttrs(ModeCustomAttrs[CustomHostAttrSpec]):
         return self._all_attrs["host"]
 
     def _update_config(self) -> None:
-        update_host_custom_attrs()
+        update_host_custom_attrs(pprint_value=active_config.wato_pprint_config)
 
     def title(self) -> str:
         return _("Custom host attributes")

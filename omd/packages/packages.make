@@ -181,27 +181,10 @@ debug:
 
 # Include rules to make packages
 include \
-    packages/erlang/erlang.make \
     packages/apache-omd/apache-omd.make \
-    packages/xinetd/xinetd.make \
-    packages/cpp-libs/cpp-libs.make \
     packages/check_mk/check_mk.make \
-    packages/libgsf/libgsf.make \
-    packages/monitoring-plugins/monitoring-plugins.make \
-    packages/check-cert/check-cert.make \
-    packages/lcab/lcab.make \
-    packages/msitools/msitools.make \
-    packages/nagios/nagios.make \
-    packages/heirloom-mailx/heirloom-mailx.make \
-    packages/nrpe/nrpe.make \
-    packages/pnp4nagios/pnp4nagios.make \
     packages/omd/omd.make \
     packages/appliance/appliance.make \
-    packages/livestatus/livestatus.make \
-    packages/neb/neb.make \
-    packages/xmlsec1/xmlsec1.make \
-    packages/robotmk/robotmk.make \
-    packages/rabbitmq/rabbitmq.make
 
 ifeq ($(EDITION),enterprise)
 include \

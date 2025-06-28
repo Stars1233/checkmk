@@ -30,11 +30,12 @@ _FrontendModel = Mapping[str, object]
 
 class DictionaryVisitor(FormSpecVisitor[DictionaryExtended, _ParsedValueModel, _FrontendModel]):
     def _compute_default_values(self) -> _ParsedValueModel:
-        if self.form_spec.prefill is None:
-            return {
-                key: DEFAULT_VALUE for key, el in self.form_spec.elements.items() if el.required
-            }
-        return self.form_spec.prefill.value
+        default_values = {
+            k: DEFAULT_VALUE for k, el in self.form_spec.elements.items() if el.required
+        }
+        if self.form_spec.default_checked is not None:
+            default_values.update({k: DEFAULT_VALUE for k in self.form_spec.default_checked})
+        return default_values
 
     def _get_static_elements(self) -> set[str]:
         return set(self.form_spec.ignored_elements or ())
@@ -82,9 +83,7 @@ class DictionaryVisitor(FormSpecVisitor[DictionaryExtended, _ParsedValueModel, _
             )
 
     def _to_vue(
-        self,
-        raw_value: object,
-        parsed_value: _ParsedValueModel | InvalidValue[_FrontendModel],
+        self, parsed_value: _ParsedValueModel | InvalidValue[_FrontendModel]
     ) -> tuple[shared_type_defs.Dictionary, _FrontendModel]:
         title, help_text = get_title_and_help(self.form_spec)
         if isinstance(parsed_value, InvalidValue):
@@ -138,14 +137,13 @@ class DictionaryVisitor(FormSpecVisitor[DictionaryExtended, _ParsedValueModel, _
                 elements=elements_keyspec,
                 no_elements_text=localize(self.form_spec.no_elements_text),
                 additional_static_elements=self._compute_static_elements(parsed_value),
-                layout=self.form_spec.layout,
                 i18n_base=base_i18n_form_spec(),
             ),
             vue_values,
         )
 
     def _validate(
-        self, raw_value: object, parsed_value: _ParsedValueModel
+        self, parsed_value: _ParsedValueModel
     ) -> list[shared_type_defs.ValidationMessage]:
         # NOTE: the parsed_value may include keys with default values, e.g. {"ce": default_value}
         element_validations = []

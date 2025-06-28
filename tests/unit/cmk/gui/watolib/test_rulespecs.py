@@ -19,11 +19,11 @@ from cmk.gui.plugins.wato.utils import TimeperiodValuespec
 from cmk.gui.utils.rule_specs.legacy_converter import GENERATED_GROUP_PREFIX
 from cmk.gui.valuespec import Dictionary, FixedValue, TextInput
 from cmk.gui.watolib.main_menu import main_module_registry
+from cmk.gui.watolib.rule_match_item_generator import MatchItemGeneratorRules
 from cmk.gui.watolib.rulespecs import (
     get_rulegroup,
     HostRulespec,
     main_module_from_rulespec_group_name,
-    MatchItemGeneratorRules,
     rulespec_group_registry,
     rulespec_registry,
     RulespecGroup,
@@ -130,6 +130,7 @@ def _expected_rulespec_group_choices():
         ("custom_checks", "Other services"),
         ("datasource_programs/apps", "&nbsp;&nbsp;⌙ Applications"),
         ("datasource_programs/cloud", "&nbsp;&nbsp;⌙ Cloud based environments"),
+        ("datasource_programs/container", "&nbsp;&nbsp;⌙ Containerization"),
         ("datasource_programs/custom", "&nbsp;&nbsp;⌙ Custom integrations"),
         ("datasource_programs/hw", "&nbsp;&nbsp;⌙ Hardware"),
         ("datasource_programs/os", "&nbsp;&nbsp;⌙ Operating systems"),
@@ -275,6 +276,7 @@ def test_rulespec_get_all_groups() -> None:
         "datasource_programs/custom",
         "datasource_programs/hw",
         "datasource_programs/os",
+        "datasource_programs/container",
         "inventory",
         "eventconsole",
     ]
@@ -313,6 +315,7 @@ def test_rulespec_get_host_groups() -> None:
         "datasource_programs",
         "datasource_programs/apps",
         "datasource_programs/cloud",
+        "datasource_programs/container",
         "datasource_programs/custom",
         "datasource_programs/hw",
         "datasource_programs/os",
@@ -451,7 +454,7 @@ def test_all_rulespec_groups_have_main_group() -> None:
 
 
 def test_rulespec_groups_have_unique_names() -> None:
-    # The title is e.g. shown in the mega menu search. With duplicate entries a user could not
+    # The title is e.g. shown in the main menu search. With duplicate entries a user could not
     # distinguish where a rule is located in the menu hierarchy.
     main_group_titles = [e().title for e in rulespec_group_registry.get_main_groups()]
     assert len(main_group_titles) == len(set(main_group_titles)), "Main group titles are not unique"

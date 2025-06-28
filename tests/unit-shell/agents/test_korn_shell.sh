@@ -5,8 +5,7 @@
 
 #NOTE: openvms, linux and solaris not supported
 AGENT_OS_TO_TEST=("aix" "freebsd" "hpux" "macosx" "netbsd" "openbsd" "openwrt")
-#NOTE: aix, freebsd, openvms and openwrt not supported
-AGENT_OS_TO_SOURCE=("hpux" "macosx" "netbsd" "openbsd")
+AGENT_OS_TO_SOURCE=("aix" "freebsd" "hpux" "macosx" "netbsd" "openbsd" "openwrt")
 
 AGENTS_TO_TEST=()
 for agent_ext in "${AGENT_OS_TO_TEST[@]}"; do
@@ -21,7 +20,7 @@ test_korn_shell() {
     ksh -c "" >/dev/null 2>&1 || startSkipping
 
     for agent_path in "${AGENTS_TO_TEST[@]}"; do
-        ksh "${agent_path}"
+        ksh "${agent_path}" >/dev/null
 
         assertEquals "${agent_path}" "0" "$?"
     done

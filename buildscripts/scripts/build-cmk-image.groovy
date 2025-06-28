@@ -214,12 +214,50 @@ def main() {
                         --no_cache=${BUILD_IMAGE_WITHOUT_CACHE} \
                         --image_cmk_base=${CUSTOM_CMK_BASE_IMAGE} \
                         --action=build \
-                        -vvvv
+                        -vvv
                     """);
 
                     def filename = versioning.get_docker_artifact_name(EDITION, cmk_version);
+
+                    stage("Create and Upload BOM") {
+                        // The --user helps us so the bill-of-materials has the
+                        // correct owner. The --cache-dir is necessary because the
+                        // working-dir seems to be /root and we cannot write there
+                        // thanks to the --user
+                        sh("""docker run \
+                            --rm \
+                            -v ${source_dir}:/in:ro \
+                            -v ${checkout_dir}:/out \
+                            --user "\$(id -u):\$(id -g)" \
+                            ${docker_registry_no_http}/trivy:0.61.1 \
+                                --cache-dir /tmp/.cache \
+                                image \
+                                --format cyclonedx \
+                                --output /out/bill-of-materials.json \
+                                --input /in/${filename}"""
+                        );
+
+                        archiveArtifacts(
+                            artifacts: "bill-of-materials.json",
+                            fingerprint: true,
+                        );
+                        withCredentials([
+                            string(
+                                credentialsId: 'dtrack',
+                                variable: 'DTRACK_API_KEY')
+                        ]) {
+                            sh('curl -X "POST" "${DTRACK_URL}/api/v1/bom"' + \
+                                ' -H "Content-Type: multipart/form-data"' + \
+                                ' -H "X-Api-Key: ${DTRACK_API_KEY}"' + \
+                                ' -F "autoCreate=true"' + \
+                                ' -F "projectName=Checkmk Docker Container"' + \
+                                " -F \"projectVersion=${branch_version}\"" + \
+                                ' -F "bom=@bill-of-materials.json"'
+                            );
+                        }
+                    }
+
                     stage("Upload to internal registry") {
-                        println("Uploading ${filename}");
                         artifacts_helper.upload_via_rsync(
                             "${package_dir}",
                             "${cmk_version_rc_aware}",
@@ -242,7 +280,6 @@ def main() {
                         name: "Upload to public registry",
                         condition: perform_public_upload
                     ) {
-                        println("Uploading ${filename}");
                         artifacts_helper.upload_via_rsync(
                             "${package_dir}",
                             "${cmk_version_rc_aware}",
@@ -264,7 +301,7 @@ def main() {
                             --version_rc_aware=${cmk_version_rc_aware} \
                             --source_path=${source_dir} \
                             --action=load \
-                            -vvvv
+                            -vvv
                         """);
                     }
                 }
@@ -282,7 +319,7 @@ def main() {
                         --no_cache=${BUILD_IMAGE_WITHOUT_CACHE} \
                         --image_cmk_base=${CUSTOM_CMK_BASE_IMAGE} \
                         --action=push \
-                        -vvvv
+                        -vvv
                     """);
                 }
             }

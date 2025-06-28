@@ -20,6 +20,7 @@ from . import (
     activate_changes,
     autodiscovery,
     automatic_host_removal,
+    automation_background_job,
     automation_commands,
     builtin_attributes,
     config_domains,
@@ -37,11 +38,6 @@ from .activate_changes import (
 from .agent_registration import AutomationRemoveTLSRegistration
 from .analyze_configuration import AutomationCheckAnalyzeConfig
 from .automation_commands import AutomationCommandRegistry
-from .automations import (
-    AutomationCheckmkAutomationGetStatus,
-    AutomationCheckmkAutomationStart,
-    CheckmkAutomationBackgroundJob,
-)
 from .broker_certificates import (
     AutomationCreateBrokerCertificates,
     AutomationStoreBrokerCertificates,
@@ -57,6 +53,7 @@ from .config_sync import ReplicationPathRegistry
 from .groups import ContactGroupUsageFinderRegistry as ContactGroupUsageFinderRegistry
 from .host_attributes import ABCHostAttribute, HostAttributeRegistry, HostAttributeTopicRegistry
 from .host_label_sync import AutomationDiscoveredHostLabelSync
+from .host_match_item_generator import MatchItemGeneratorHosts
 from .host_rename import (
     AutomationRenameHostsUUIDLink,
     RenameHostBackgroundJob,
@@ -67,7 +64,6 @@ from .hosts_and_folders import (
     find_usages_of_contact_group_in_hosts_and_folders,
     FolderValidators,
     FolderValidatorsRegistry,
-    MatchItemGeneratorHosts,
     rebuild_folder_lookup_cache,
 )
 from .notifications import (
@@ -75,12 +71,12 @@ from .notifications import (
     find_usages_of_contact_group_in_notification_rules,
 )
 from .parent_scan import ParentScanBackgroundJob
+from .rule_match_item_generator import MatchItemGeneratorRules
 from .rulesets import (
     find_timeperiod_usage_in_host_and_service_rules,
     find_timeperiod_usage_in_time_specific_parameters,
 )
 from .rulespecs import (
-    MatchItemGeneratorRules,
     rulespec_registry,
     RulespecGroupEnforcedServices,
     RulespecGroupRegistry,
@@ -88,6 +84,7 @@ from .rulespecs import (
 from .sample_config import (
     ConfigGeneratorAcknowledgeInitialWerks,
     ConfigGeneratorBasicWATOConfig,
+    ConfigGeneratorLocalSiteConnection,
     ConfigGeneratorRegistrationUser,
 )
 from .search import launch_requests_processing_background, SearchIndexBackgroundJob
@@ -143,9 +140,8 @@ def register(
     automation_command_registry.register(AutomationRemoveTLSRegistration)
     automation_command_registry.register(AutomationCheckAnalyzeConfig)
     automation_command_registry.register(AutomationDiscoveredHostLabelSync)
-    automation_command_registry.register(AutomationCheckmkAutomationStart)
-    automation_command_registry.register(AutomationCheckmkAutomationGetStatus)
     sample_config_generator_registry.register(ConfigGeneratorBasicWATOConfig)
+    sample_config_generator_registry.register(ConfigGeneratorLocalSiteConnection)
     sample_config_generator_registry.register(ConfigGeneratorAcknowledgeInitialWerks)
     sample_config_generator_registry.register(ConfigGeneratorRegistrationUser)
     contact_group_usage_finder_registry_.register(find_usages_of_contact_group_in_hosts_and_folders)
@@ -157,6 +153,7 @@ def register(
     timeperiod_usage_finder_registry.register(find_timeperiod_usage_in_notification_rules)
     config_variable_groups.register(config_variable_group_registry)
     autocompleter_registry.register_autocompleter("config_hostname", config_hostname_autocompleter)
+    automation_background_job.register(job_registry, automation_command_registry)
     hooks.register_builtin("request-start", launch_requests_processing_background)
     hooks.register_builtin("validate-host", builtin_attributes.validate_host_parents)
     hooks.register_builtin("ldap-sync-finished", handle_ldap_sync_finished)
@@ -194,7 +191,6 @@ def _register_gui_background_jobs(job_registry: BackgroundJobRegistry) -> None:
     job_registry.register(ParentScanBackgroundJob)
     job_registry.register(RenameHostsBackgroundJob)
     job_registry.register(RenameHostBackgroundJob)
-    job_registry.register(CheckmkAutomationBackgroundJob)
     job_registry.register(ServiceDiscoveryBackgroundJob)
 
 

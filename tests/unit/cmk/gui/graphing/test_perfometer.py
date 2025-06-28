@@ -11,8 +11,8 @@ import pytest
 from cmk.gui.graphing import get_first_matching_perfometer
 from cmk.gui.graphing._formatter import AutoPrecision
 from cmk.gui.graphing._perfometer import (
+    _ArcTan,
     _make_projection,
-    _PERFOMETER_PROJECTION_PARAMETERS,
     MetricometerRendererPerfometer,
     MetricometerRendererStacked,
 )
@@ -94,16 +94,15 @@ def test_get_first_matching_perfometer(
 def test_perfometer_projection_error(focus_range: perfometers_api.FocusRange) -> None:
     projection = _make_projection(
         focus_range,
-        _PERFOMETER_PROJECTION_PARAMETERS,
+        MetricometerRendererPerfometer._PROJECTION_PARAMETERS,
         {},
         "name",
     )
-    assert math.isnan(projection.lower_x)
-    assert math.isnan(projection.upper_x)
-    assert math.isnan(projection.lower_atan(123))
-    assert math.isnan(projection.focus_linear(456))
-    assert math.isnan(projection.upper_atan(789))
-    assert math.isnan(projection.limit)
+    assert math.isnan(projection.start_of_focus_range)
+    assert math.isnan(projection.end_of_focus_range)
+    assert math.isnan(projection(projection.start_of_focus_range - 10))
+    assert math.isnan((projection.start_of_focus_range + projection.end_of_focus_range) / 2)
+    assert math.isnan(projection(projection.end_of_focus_range + 10))
 
 
 @pytest.mark.parametrize(
@@ -117,7 +116,7 @@ def test_perfometer_projection_error(focus_range: perfometers_api.FocusRange) ->
 def test_perfometer_projection_closed_closed(value: int | float, result: float) -> None:
     projection = _make_projection(
         perfometers_api.FocusRange(perfometers_api.Closed(-10), perfometers_api.Closed(20)),
-        _PERFOMETER_PROJECTION_PARAMETERS,
+        MetricometerRendererPerfometer._PROJECTION_PARAMETERS,
         {},
         "name",
     )
@@ -136,7 +135,7 @@ def test_perfometer_projection_closed_closed_exceeds(
 ) -> None:
     projection = _make_projection(
         perfometers_api.FocusRange(perfometers_api.Closed(-10), perfometers_api.Closed(20)),
-        _PERFOMETER_PROJECTION_PARAMETERS,
+        MetricometerRendererPerfometer._PROJECTION_PARAMETERS,
         {},
         "name",
     )
@@ -146,7 +145,7 @@ def test_perfometer_projection_closed_closed_exceeds(
 @pytest.mark.parametrize(
     "value, result",
     [
-        pytest.param(-11, 14.777817878976812, id="left-lower"),
+        pytest.param(-11, 12.245677114157232, id="left-lower"),
         pytest.param(-10, 15.0, id="left"),
         pytest.param(5, 57.5, id="middle"),
         pytest.param(20, 100.0, id="right"),
@@ -155,7 +154,7 @@ def test_perfometer_projection_closed_closed_exceeds(
 def test_perfometer_projection_open_closed(value: int | float, result: float) -> None:
     projection = _make_projection(
         perfometers_api.FocusRange(perfometers_api.Open(-10), perfometers_api.Closed(20)),
-        _PERFOMETER_PROJECTION_PARAMETERS,
+        MetricometerRendererPerfometer._PROJECTION_PARAMETERS,
         {},
         "name",
     )
@@ -171,7 +170,7 @@ def test_perfometer_projection_open_closed(value: int | float, result: float) ->
 def test_perfometer_projection_open_closed_exceeds(value: int | float, result: int | float) -> None:
     projection = _make_projection(
         perfometers_api.FocusRange(perfometers_api.Open(-10), perfometers_api.Closed(20)),
-        _PERFOMETER_PROJECTION_PARAMETERS,
+        MetricometerRendererPerfometer._PROJECTION_PARAMETERS,
         {},
         "name",
     )
@@ -184,13 +183,13 @@ def test_perfometer_projection_open_closed_exceeds(value: int | float, result: i
         pytest.param(-10, 0.0, id="left"),
         pytest.param(5, 42.5, id="middle"),
         pytest.param(20, 85.0, id="right"),
-        pytest.param(21, 85.2221821210232, id="right-higher"),
+        pytest.param(21, 87.75432288584277, id="right-higher"),
     ],
 )
 def test_perfometer_projection_closed_open(value: int | float, result: float) -> None:
     projection = _make_projection(
         perfometers_api.FocusRange(perfometers_api.Closed(-10), perfometers_api.Open(20)),
-        _PERFOMETER_PROJECTION_PARAMETERS,
+        MetricometerRendererPerfometer._PROJECTION_PARAMETERS,
         {},
         "name",
     )
@@ -206,7 +205,7 @@ def test_perfometer_projection_closed_open(value: int | float, result: float) ->
 def test_perfometer_projection_closed_open_exceeds(value: int | float, result: int | float) -> None:
     projection = _make_projection(
         perfometers_api.FocusRange(perfometers_api.Closed(-10), perfometers_api.Open(20)),
-        _PERFOMETER_PROJECTION_PARAMETERS,
+        MetricometerRendererPerfometer._PROJECTION_PARAMETERS,
         {},
         "name",
     )
@@ -216,17 +215,17 @@ def test_perfometer_projection_closed_open_exceeds(value: int | float, result: i
 @pytest.mark.parametrize(
     "value, result",
     [
-        pytest.param(-11, 14.777817878976812, id="left-lower"),
+        pytest.param(-11, 12.711508180641701, id="left-lower"),
         pytest.param(-10, 15.0, id="left"),
         pytest.param(5, 50.0, id="middle"),
         pytest.param(20, 85.0, id="right"),
-        pytest.param(21, 85.2221821210232, id="right-higher"),
+        pytest.param(21, 87.2884918193583, id="right-higher"),
     ],
 )
 def test_perfometer_projection_open_open(value: int | float, result: float) -> None:
     projection = _make_projection(
         perfometers_api.FocusRange(perfometers_api.Open(-10), perfometers_api.Open(20)),
-        _PERFOMETER_PROJECTION_PARAMETERS,
+        MetricometerRendererPerfometer._PROJECTION_PARAMETERS,
         {},
         "name",
     )
@@ -252,7 +251,7 @@ def test_perfometer_projection_open_open(value: int | float, result: float) -> N
                     color="#111111",
                 ),
             },
-            [(85.27, "#111111")],
+            [(88.27, "#111111")],
             id="one-metric",
         ),
         pytest.param(
@@ -283,7 +282,7 @@ def test_perfometer_projection_open_open(value: int | float, result: float) -> N
                     color="#222222",
                 ),
             },
-            [(65.59, "#111111"), (19.68, "#222222")],
+            [(67.9, "#111111"), (20.37, "#222222")],
             id="two-metrics",
         ),
         pytest.param(
@@ -326,7 +325,7 @@ def test_perfometer_projection_open_open(value: int | float, result: float) -> N
                     color="#333333",
                 ),
             },
-            [(65.59, "#111111"), (13.12, "#222222"), (6.56, "#333333")],
+            [(67.9, "#111111"), (13.58, "#222222"), (6.79, "#333333")],
             id="three-metrics",
         ),
     ],
@@ -359,7 +358,7 @@ def test_perfometer_renderer_stack(
         ),
         translated_metrics,
         "#bdbdbd",
-    ).get_stack() == [list(value_projections) + [(14.73, "#bdbdbd")]]
+    ).get_stack() == [list(value_projections) + [(11.73, "#bdbdbd")]]
 
 
 def test_perfometer_renderer_stack_same_values(request_context: None, patch_theme: None) -> None:
@@ -398,7 +397,7 @@ def test_perfometer_renderer_stack_same_values(request_context: None, patch_them
             ),
         },
         "#bdbdbd",
-    ).get_stack() == [[(42.63, "#111111"), (42.63, "#222222"), (14.74, "#bdbdbd")]]
+    ).get_stack() == [[(44.13, "#111111"), (44.13, "#222222"), (11.74, "#bdbdbd")]]
 
 
 @pytest.mark.parametrize(
@@ -543,3 +542,48 @@ def test_metricometer_renderer_stacked(request_context: None, patch_theme: None)
         [(17.0, "#111111"), (83.0, "#bdbdbd")],
     ]
     assert metricometer.get_label() == "7 / 2"
+
+
+class TestArcTan:
+    def test_inflection_point_value(self) -> None:
+        arc_tan = _ArcTan(
+            x_inflection=1.0,
+            y_inflection=2.0,
+            slope_inflection=1.0,
+            scale_in_units_of_pi_half=1.0,
+        )
+        assert abs(arc_tan(arc_tan.x_inflection) - arc_tan.y_inflection) < 1e-6
+
+    def test_inflection_point_slope(self) -> None:
+        arc_tan = _ArcTan(
+            x_inflection=0.0,
+            y_inflection=0.0,
+            slope_inflection=1.0,
+            scale_in_units_of_pi_half=1.0,
+        )
+        value_slightly_left = arc_tan(arc_tan.x_inflection - 0.05)
+        value_slightly_right = arc_tan(arc_tan.x_inflection + 0.05)
+        assert (
+            abs((value_slightly_right - value_slightly_left) / 0.1 - arc_tan.slope_inflection)
+            < 1e-2
+        )
+
+    def test_scale(self) -> None:
+        arc_tan = _ArcTan(
+            x_inflection=0.0,
+            y_inflection=3.4,
+            slope_inflection=1.0,
+            scale_in_units_of_pi_half=1.0,
+        )
+        expected_upper_limit = arc_tan.y_inflection + arc_tan.scale_in_units_of_pi_half
+        expected_lower_limit = arc_tan.y_inflection - arc_tan.scale_in_units_of_pi_half
+
+        assert arc_tan(100) < arc_tan(1000) < arc_tan(10000) < expected_upper_limit
+        assert abs(arc_tan(100) - expected_upper_limit) < 1e-2
+        assert abs(arc_tan(1000) - expected_upper_limit) < 1e-3
+        assert abs(arc_tan(10000) - expected_upper_limit) < 1e-4
+
+        assert arc_tan(-100) > arc_tan(-1000) > arc_tan(-10000) > expected_lower_limit
+        assert abs(expected_lower_limit - arc_tan(-100)) < 1e-2
+        assert abs(expected_lower_limit - arc_tan(-1000)) < 1e-3
+        assert abs(expected_lower_limit - arc_tan(-10000)) < 1e-4

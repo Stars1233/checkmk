@@ -8,8 +8,6 @@
 import contextlib
 import errno
 import fnmatch
-import io
-import logging
 import os
 import shutil
 import socket
@@ -19,15 +17,65 @@ import tarfile
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from types import TracebackType
-from typing import BinaryIO, override
+from typing import override
 
 from omdlib.contexts import SiteContext
+from omdlib.global_options import GlobalOptions
+from omdlib.site_paths import SitePaths
 from omdlib.type_defs import CommandOptions
 
-from cmk.utils.log import VERBOSE
 from cmk.utils.paths import mkbackup_lock_dir
 
-logger = logging.getLogger("cmk.omd")
+
+def _try_backup_site_to_tarfile(
+    tar: tarfile.TarFile,
+    options: CommandOptions,
+    site: SiteContext,
+    global_opts: GlobalOptions,
+) -> None:
+    try:
+        site_home = SitePaths.from_site_name(site.name).home
+        _backup_site_to_tarfile(
+            site.name,
+            site_home,
+            site.is_stopped(global_opts.verbose),
+            tar,
+            options,
+            global_opts.verbose,
+        )
+    except OSError as e:
+        sys.exit("Failed to perform backup: %s" % e)
+
+
+def main_backup(
+    _version_info: object,
+    site: SiteContext,
+    global_opts: GlobalOptions,
+    args: list[str],
+    options: CommandOptions,
+    orig_working_directory: str,
+) -> None:
+    if len(args) == 0:
+        sys.exit(
+            'You need to provide either a path to the destination file or "-" for backup to stdout.'
+        )
+
+    dest = args[0]
+
+    if dest == "-":
+        with tarfile.open(
+            fileobj=sys.stdout.buffer,
+            mode="w|" if "no-compression" in options else "w|gz",
+        ) as tar:
+            _try_backup_site_to_tarfile(tar, options, site, global_opts)
+    else:
+        if not (dest_path := Path(dest)).is_absolute():
+            dest_path = orig_working_directory / dest_path
+        with tarfile.open(
+            dest_path,
+            mode="w:" if "no-compression" in options else "w:gz",
+        ) as tar:
+            _try_backup_site_to_tarfile(tar, options, site, global_opts)
 
 
 def ensure_mkbackup_lock_dir_rights() -> None:
@@ -36,61 +84,50 @@ def ensure_mkbackup_lock_dir_rights() -> None:
         shutil.chown(mkbackup_lock_dir, group="omd")
         mkbackup_lock_dir.chmod(0o0770)
     except PermissionError:
-        logger.log(
-            VERBOSE,
-            "Unable to create %s needed for mkbackup. "
-            "This may be due to the fact that your SITE "
-            "User isn't allowed to create the backup directory. "
-            "You could resolve this issue by running 'sudo omd start' as root "
-            "(and not as SITE user).",
-            mkbackup_lock_dir,
-        )
+        pass
 
 
-def backup_site_to_tarfile(
-    site: SiteContext,
-    fh: BinaryIO | io.BufferedWriter,
-    mode: str,
+def _backup_site_to_tarfile(
+    site_name: str,
+    site_home: str,
+    site_is_stopped: bool,
+    tar: tarfile.TarFile,
     options: CommandOptions,
     verbose: bool,
 ) -> None:
-    if not os.path.isdir(site.dir):
-        raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), site.dir)
+    if not os.path.isdir(site_home):
+        raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), site_home)
 
     excludes = get_exclude_patterns(options)
 
     def accepted_files(tarinfo: tarfile.TarInfo) -> bool:
         # patterns are relative to site directory, tarinfo.name includes site name.
         return not any(
-            fnmatch.fnmatch(tarinfo.name[len(site.name) + 1 :], glob_pattern)
+            fnmatch.fnmatch(tarinfo.name[len(site_name) + 1 :], glob_pattern)
             for glob_pattern in excludes
         )
 
-    with RRDSocket(site.is_stopped(), site.name, verbose) as rrd_socket:
-        with tarfile.TarFile.open(
-            fileobj=fh,
-            mode=mode,
-        ) as tar:
-            # Add the version symlink as first file to be able to
-            # check a) the sitename and b) the version before reading
-            # the whole tar archive. Important for streaming.
-            # The file is added twice to get the first for validation
-            # and the second for extraction during restore.
-            tar_add(
-                rrd_socket,
-                tar,
-                site.dir + "/version",
-                site.name + "/version",
-                verbose=verbose,
-            )
-            tar_add(
-                rrd_socket,
-                tar,
-                site.dir,
-                site.name,
-                predicate=accepted_files,
-                verbose=verbose,
-            )
+    with _RRDSocket(site_is_stopped, site_name, verbose) as rrd_socket:
+        # Add the version symlink as first file to be able to
+        # check a) the sitename and b) the version before reading
+        # the whole tar archive. Important for streaming.
+        # The file is added twice to get the first for validation
+        # and the second for extraction during restore.
+        _tar_add(
+            rrd_socket,
+            tar,
+            site_home + "/version",
+            site_name + "/version",
+            verbose=verbose,
+        )
+        _tar_add(
+            rrd_socket,
+            tar,
+            site_home,
+            site_name,
+            predicate=accepted_files,
+            verbose=verbose,
+        )
 
 
 def get_exclude_patterns(options: CommandOptions) -> list[str]:
@@ -143,7 +180,7 @@ def get_exclude_patterns(options: CommandOptions) -> list[str]:
     return excludes
 
 
-class RRDSocket(contextlib.AbstractContextManager):
+class _RRDSocket(contextlib.AbstractContextManager):
     def __init__(self, site_stopped: bool, site_name: str, verbose: bool) -> None:
         self._rrdcached_socket_path = str(Path("site_dir") / "tmp/run/rrdcached.sock")
         self._site_requires_suspension = not site_stopped and os.path.exists(
@@ -250,8 +287,8 @@ class RRDSocket(contextlib.AbstractContextManager):
             self._sock.close()
 
 
-def tar_add(
-    rrd_socket: RRDSocket,
+def _tar_add(
+    rrd_socket: _RRDSocket,
     tar: tarfile.TarFile,
     name: str,
     arcname: str,
@@ -284,7 +321,7 @@ def tar_add(
             if name.endswith("var/mkeventd/history/history.sqlite"):
                 backup_name = f"{name}.backup"
                 try:
-                    backup_sqlite(name, backup_name)
+                    _backup_sqlite(name, backup_name)
                     backup_tarinfo = tar.gettarinfo(backup_name, arcname=arcname)
                     with open(backup_name, "rb") as file:
                         tar.addfile(backup_tarinfo, file)
@@ -306,7 +343,7 @@ def tar_add(
             sys.stdout.write("Skipping vanished file: %s\n" % arcname)
 
     for filename in directory_files:
-        tar_add(  # recursive call
+        _tar_add(  # recursive call
             rrd_socket,
             tar,
             os.path.join(name, filename),
@@ -339,7 +376,7 @@ def get_site_and_version_from_backup(tar: tarfile.TarFile) -> tuple[str, str]:
     return sitename, version
 
 
-def backup_sqlite(src: str | Path, dst: str | Path) -> None:
+def _backup_sqlite(src: str | Path, dst: str | Path) -> None:
     """Backup sqlite database file.
 
     Uses sqlite3 backup API to create a backup of the database file.

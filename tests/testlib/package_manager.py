@@ -18,16 +18,15 @@ import requests
 
 from tests.testlib.utils import (
     get_cmk_download_credentials,
-    package_hash_path,
     run,
 )
 from tests.testlib.version import (
     CMKPackageInfo,
     edition_from_env,
+    package_hash_path,
+    TypeCMKEdition,
     version_from_env,
 )
-
-from cmk.ccc.version import Edition
 
 logger = logging.getLogger()
 
@@ -80,20 +79,34 @@ class ABCPackageManager(abc.ABC):
     def download(
         self, package_info: CMKPackageInfo | None = None, target_folder: Path | None = None
     ) -> Path:
+        """Download a Checkmk package."""
         package_info = (
             package_info if package_info else CMKPackageInfo(version_from_env(), edition_from_env())
         )
-        package_name = self.package_name(package_info.edition.edition, package_info.version.version)
-        package_url = self.package_url_internal(package_info.version.version, package_name)
-
+        version = package_info.version.version_rc_aware
+        package_name = self.package_name(package_info.edition, package_info.version.version)
         target_path = (
             target_folder / package_name if target_folder else self._temp_package_path(package_name)
         )
-        if target_path.exists():
-            return target_path
-        return self._download_package(package_name, package_url, target_path)
+        if not target_path.exists():
+            try:
+                # Prefer downloading from tstbuild: This is the place where also sandbox builds
+                # should be found.
+                logger.info("Try install from tstbuild")
+                self._download_package(
+                    self.package_url_internal(version, package_name), target_path
+                )
+            except requests.exceptions.HTTPError:
+                logger.info("Could not Install from tstbuild, trying download portal...")
+                self._download_package(self.package_url_public(version, package_name), target_path)
 
-    def install(self, version: str, edition: Edition) -> None:
+        return target_path
+
+    def install(self, package_info: CMKPackageInfo) -> None:
+        """Install a Checkmk package."""
+        edition = package_info.edition
+        version = package_info.version.version_rc_aware
+
         package_name = self.package_name(edition, version)
         build_system_path = self._build_system_package_path(version, package_name)
         packages_dir = Path(__file__).parent.parent.parent / "package_download"
@@ -108,38 +121,30 @@ class ABCPackageManager(abc.ABC):
             self._install_package(build_system_path)
 
         else:
-            try:
-                # Prefer downloading from tstbuild: This is the place where also sandbox builds
-                # should be found.
-                logger.info("Try install from tstbuild")
-                package_path = self._download_package(
-                    package_name, self.package_url_internal(version, package_name)
-                )
-            except requests.exceptions.HTTPError:
-                logger.info("Could not Install from tstbuild, trying download portal...")
-                package_path = self._download_package(
-                    package_name, self.package_url_public(version, package_name)
-                )
-
-            logger.info("Install from tstbuild or portal (%s)", package_path)
+            # Install from tstbuild or portal
+            package_path = self.download(package_info)
             self._write_package_hash(version, edition, package_path)
             self._install_package(package_path)
             os.unlink(package_path)
 
-    def uninstall(self, version: str, edition: Edition) -> None:
-        package_name = self.installed_package_name(edition, version)
+    def uninstall(self, package_info: CMKPackageInfo) -> None:
+        package_name = self.installed_package_name(
+            package_info.edition, package_info.version.version_rc_aware
+        )
         self._uninstall_package(package_name)
 
-    def _write_package_hash(self, version: str, edition: Edition, package_path: Path) -> None:
+    def _write_package_hash(
+        self, version: str, edition: TypeCMKEdition, package_path: Path
+    ) -> None:
         pkg_hash = _sha256_file(package_path)
         package_hash_path(version, edition).write_text(f"{pkg_hash}  {package_path.name}\n")
 
     @abc.abstractmethod
-    def package_name(self, edition: Edition, version: str) -> str:
+    def package_name(self, edition: TypeCMKEdition, version: str) -> str:
         raise NotImplementedError()
 
     @abc.abstractmethod
-    def installed_package_name(self, edition: Edition, version: str) -> str:
+    def installed_package_name(self, edition: TypeCMKEdition, version: str) -> str:
         raise NotImplementedError()
 
     def _build_system_package_path(self, version: str, package_name: str) -> Path:
@@ -149,20 +154,28 @@ class ABCPackageManager(abc.ABC):
     def _temp_package_path(self, package_name: str) -> Path:
         return Path("/tmp", package_name)
 
-    def _download_package(
-        self, package_name: str, package_url: PackageUrl, package_path: Path | None = None
-    ) -> Path:
-        package_path = package_path or self._temp_package_path(package_name)
-        logger.info("Downloading from: %s to %s", package_url, package_path)
-        response = requests.get(  # nosec
-            package_url, auth=get_cmk_download_credentials(), verify=True
-        )
-        response.raise_for_status()
+    def _download_package(self, package_url: PackageUrl, package_path: Path) -> None:
+        hash_url = PackageUrl(f"{package_url}.hash")
+        hash_path = package_path.parent / f"{package_path.name}.hash"
+        for url, path in [(package_url, package_path), (hash_url, hash_path)]:
+            logger.info("Downloading from: %s to %s", url, path)
+            response = requests.get(  # nosec
+                url, auth=get_cmk_download_credentials(), verify=True
+            )
+            response.raise_for_status()
+            with open(path, "wb") as f:
+                f.write(response.content)
 
-        with open(package_path, "wb") as f:
-            f.write(response.content)
+        self._cmp_file_hash(package_path, hash_path)
 
-        return package_path
+    @staticmethod
+    def _cmp_file_hash(package_path: Path, hash_path: Path) -> None:
+        """Compare the SHA256 hash calculated for a package to the one from a hash file."""
+        with open(hash_path) as f:
+            expected_hash, expected_file = f.readline().split()
+        assert expected_file == package_path.name
+
+        assert _sha256_file(package_path) == expected_hash
 
     def package_url_public(self, version: str, package_name: str) -> PackageUrl:
         return PackageUrl(f"https://download.checkmk.com/checkmk/{version}/{package_name}")
@@ -200,10 +213,10 @@ class ABCPackageManager(abc.ABC):
 
 
 class PackageManagerDEB(ABCPackageManager):
-    def package_name(self, edition: Edition, version: str) -> str:
+    def package_name(self, edition: TypeCMKEdition, version: str) -> str:
         return f"check-mk-{edition.long}-{version.split('-rc')[0]}_0.{self.distro_name}_amd64.deb"
 
-    def installed_package_name(self, edition: Edition, version: str) -> str:
+    def installed_package_name(self, edition: TypeCMKEdition, version: str) -> str:
         return f"check-mk-{edition.long}-{version.split('-rc')[0]}"
 
     def _install_package(self, package_path: Path) -> None:
@@ -216,10 +229,10 @@ class PackageManagerDEB(ABCPackageManager):
 
 
 class ABCPackageManagerRPM(ABCPackageManager):
-    def package_name(self, edition: Edition, version: str) -> str:
+    def package_name(self, edition: TypeCMKEdition, version: str) -> str:
         return f"check-mk-{edition.long}-{version.split('-rc')[0]}-{self.distro_name}-38.x86_64.rpm"
 
-    def installed_package_name(self, edition: Edition, version: str) -> str:
+    def installed_package_name(self, edition: TypeCMKEdition, version: str) -> str:
         return f"check-mk-{edition.long}-{version.split('-rc')[0]}"
 
 
@@ -240,10 +253,10 @@ class PackageManagerRHEL(ABCPackageManagerRPM):
 
 
 class PackageManagerCMA(PackageManagerDEB):
-    def package_name(self, edition: Edition, version: str) -> str:
+    def package_name(self, edition: TypeCMKEdition, version: str) -> str:
         return f"check-mk-{edition.long}-{version.split('-rc')[0]}-{self.distro_name.split('-')[1]}-x86_64.cma"
 
-    def installed_package_name(self, edition: Edition, version: str) -> str:
+    def installed_package_name(self, edition: TypeCMKEdition, version: str) -> str:
         return f"check-mk-{edition.long}-{version.split('-rc')[0]}"
 
 

@@ -5,6 +5,9 @@
 import logging
 import os
 from collections.abc import Iterator
+from contextlib import contextmanager
+from pathlib import Path
+from typing import Final
 
 import pytest
 
@@ -16,9 +19,10 @@ from tests.testlib.version import CMKEdition, CMKPackageInfo, get_min_version
 from tests.plugins_integration import checks
 
 logger = logging.getLogger(__name__)
+cleanup: Final[bool] = os.getenv("CLEANUP", "1") == "1"
 
 
-def pytest_addoption(parser):
+def pytest_addoption(parser: pytest.Parser) -> None:
     parser.addoption(
         "--update-checks",
         action="store_true",
@@ -40,84 +44,44 @@ def pytest_addoption(parser):
         help="Skip cleanup process after test execution",
     )
     parser.addoption(
-        "--skip-masking",
-        action="store_true",
-        default=False,
-        help="Skip regexp masking during check validation",
-    )
-    parser.addoption(
-        "--bulk-mode",
-        action="store_true",
-        default=False,
-        help="Enable bulk mode execution",
-    )
-    parser.addoption(
-        "--enable-core-scheduling",
-        action="store_true",
-        default=False,
-        help="Enable core scheduling (disabled by default)",
-    )
-    parser.addoption(
-        "--chunk-index",
-        action="store",
-        type=int,
-        default=0,
-        help="Chunk index for bulk mode",
-    )
-    parser.addoption(
-        "--chunk-size",
-        action="store",
-        type=int,
-        default=100,
-        help="Chunk size for bulk mode",
-    )
-    parser.addoption(
-        "--host-names",
-        action="store",
-        help="Host name allow list",
-        default=None,
-    )
-    parser.addoption(
         "--check-names",
         action="store",
+        nargs="+",
         help="Check name allow list",
         default=None,
     )
     parser.addoption(
         "--data-dir",
         action="store",
+        type=Path,
         help="Data dir path",
         default=None,
     )
     parser.addoption(
         "--dump-dir",
         action="store",
+        type=Path,
         help="Dump dir path",
         default=None,
     )
     parser.addoption(
         "--response-dir",
         action="store",
+        type=Path,
         help="Response dir path",
         default=None,
     )
     parser.addoption(
         "--diff-dir",
         action="store",
+        type=Path,
         help="Diff dir path",
         default=None,
     )
-    parser.addoption(
-        "--dump-types",
-        action="store",
-        help='Selected dump types to process (default: "agent,snmp")',
-        default=None,
-    )
 
 
-def pytest_configure(config):
+def pytest_configure(config: pytest.Config) -> None:
     # parse options that control the test execution
-
     checks.config = checks.CheckConfig(
         mode=(
             checks.CheckModes.UPDATE
@@ -128,26 +92,21 @@ def pytest_configure(config):
                 else checks.CheckModes.DEFAULT
             )
         ),
-        skip_cleanup=config.getoption("--skip-cleanup"),
-        data_dir_integration=config.getoption(name="--data-dir"),
-        dump_dir_integration=config.getoption(name="--dump-dir"),
-        response_dir_integration=config.getoption(name="--response-dir"),
-        diff_dir=config.getoption(name="--diff-dir"),
-        host_names=config.getoption(name="--host-names"),
-        check_names=config.getoption(name="--check-names"),
-        dump_types=config.getoption(name="--dump-types"),
+        skip_cleanup=_skip_cleanup_option
+        if isinstance(_skip_cleanup_option := config.getoption("--skip-cleanup"), bool)
+        else False,
+        data_dir_integration=_data_dir_option
+        if isinstance(_data_dir_option := config.getoption(name="--data-dir"), Path)
+        else None,
+        dump_dir_integration=_dump_dir_option
+        if isinstance(_dump_dir_option := config.getoption(name="--dump-dir"), Path)
+        else None,
+        response_dir_integration=_response_dir_option
+        if isinstance(_response_dir_option := config.getoption(name="--response-dir"), Path)
+        else None,
+        diff_dir=_ if isinstance(_ := config.getoption(name="--diff-dir"), Path) else None,
+        check_names=_ if isinstance(_ := config.getoption(name="--check-names"), list) else None,
     )
-
-
-def pytest_collection_modifyitems(config, items):
-    """Enable or disable tests based on their bulk mode"""
-    if config.getoption(name="--bulk-mode"):
-        chunk_index = config.getoption(name="--chunk-index")
-        chunk_size = config.getoption(name="--chunk-size")
-        items[:] = items[chunk_index * chunk_size : (chunk_index + 1) * chunk_size]
-        for item in items:
-            item.fixturenames.append("bulk_setup")
-    print(f"selected {len(items)} items")
 
 
 @pytest.fixture(name="test_site", scope="session")
@@ -164,10 +123,6 @@ def _get_site(request: pytest.FixtureRequest) -> Iterator[Site]:
 
             yield site
 
-            if not request.config.getoption("--enable-core-scheduling"):
-                site.stop_host_checks()
-                site.stop_active_services()
-
             if not checks.config.skip_cleanup:
                 # cleanup existing agent-output folder in the test site
                 logger.info('Removing folder "%s"...', dump_path)
@@ -182,26 +137,58 @@ def _get_site_piggyback(request: pytest.FixtureRequest) -> Iterator[Site]:
         for site in get_site_factory(prefix="PB_").get_test_site(
             auto_cleanup=not checks.config.skip_cleanup
         ):
-            dump_path = site.path("var/check_mk/dumps")
+            with _modify_dcd_global_settings(site), _setup_datasource(site):
+                yield site
 
-            # create dump folder in the test site
-            logger.info('Creating folder "%s"...', dump_path)
-            _ = site.run(["mkdir", "-p", dump_path.as_posix()])
 
-            ruleset_name = "datasource_programs"
-            logger.info('Creating rule "%s"...', ruleset_name)
-            site.openapi.rules.create(ruleset_name=ruleset_name, value=f"cat {dump_path}/<HOST>")
-            logger.info('Rule "%s" created!', ruleset_name)
+@contextmanager
+def _modify_dcd_global_settings(site: Site) -> Iterator[None]:
+    """Set global settings for dynamic configuration
 
-            logger.info("Setting dynamic configuration global settings...")
-            site.write_text_file(
-                "etc/check_mk/dcd.d/wato/global.mk",
-                "dcd_activate_changes_timeout = 30\n"
-                "dcd_bulk_discovery_timeout = 30\n"
-                "dcd_site_update_interval = 60\n",
-            )
+    High timeout values to make DCD being only triggered manually within the test execution.
+    """
+    wato_dir = site.path("etc/check_mk/dcd.d/wato")
+    logger.info("Setting dynamic configuration global settings...")
+    try:
+        site.run(["cp", str(wato_dir / "global.mk"), str(wato_dir / "global.mk.bak")])
+        site.write_file(
+            "etc/check_mk/dcd.d/wato/global.mk",
+            "dcd_activate_changes_timeout = 3600\n"
+            "dcd_bulk_discovery_timeout = 3600\n"
+            "dcd_site_update_interval = 3600\n",
+        )
+        yield
+    finally:
+        if cleanup:
+            # restore original global settings
+            site.run(["cp", str(wato_dir / "global.mk.bak"), str(wato_dir / "global.mk")])
+            logger.info("Restored original global settings in '%s'", wato_dir / "global.mk")
+            site.run(["rm", "-f", str(wato_dir / "global.mk.bak")])
 
-            yield site
+
+@contextmanager
+def _setup_datasource(site: Site) -> Iterator[None]:
+    """Setup and teardown the datasource rule and the dump directory for the test site."""
+    dump_path = site.path("var/check_mk/dumps")
+    rule_id = None
+    try:
+        # create dump folder in the test site
+        logger.info('Creating folder "%s"...', dump_path)
+        site.run(["mkdir", "-p", dump_path.as_posix()])
+
+        ruleset_name = "datasource_programs"
+        logger.info('Creating rule "%s"...', ruleset_name)
+        rule_id = site.openapi.rules.create(
+            ruleset_name=ruleset_name, value=f"cat {dump_path}/<HOST>"
+        )
+        logger.info('Rule "%s" created!', ruleset_name)
+        yield
+    finally:
+        if cleanup:
+            if rule_id:
+                site.openapi.rules.delete(rule_id)
+            site.run(["rm", "-rf", dump_path.as_posix()])
+            site.openapi.changes.activate_and_wait_for_completion()
 
 
 @pytest.fixture(name="site_factory_update", scope="session")
@@ -235,19 +222,6 @@ def _get_site_update(
                 # cleanup existing agent-output folder in the test site
                 logger.info('Removing folder "%s"...', dump_path)
                 assert run(["rm", "-rf", dump_path.as_posix()], sudo=True).returncode == 0
-
-
-@pytest.fixture(name="bulk_setup", scope="session")
-def _bulk_setup(test_site: Site, pytestconfig: pytest.Config) -> Iterator:
-    """Setup multiple test hosts."""
-    logger.info("Running bulk setup...")
-    chunk_index = pytestconfig.getoption(name="--chunk-index")
-    chunk_size = pytestconfig.getoption(name="--chunk-size")
-    host_names = checks.get_host_names()[chunk_index * chunk_size : (chunk_index + 1) * chunk_size]
-    checks.setup_hosts(test_site, host_names)
-    yield
-    if os.getenv("CLEANUP", "1") == "1" and not checks.config.skip_cleanup:
-        checks.cleanup_hosts(test_site, host_names)
 
 
 @pytest.fixture(name="plugin_validation_site", scope="session")

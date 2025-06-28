@@ -23,11 +23,11 @@ import time_machine
 from pytest import MonkeyPatch
 
 from cmk.ccc.exceptions import MKGeneralException
+from cmk.ccc.hostaddress import HostAddress, HostName
 from cmk.ccc.site import SiteId
+from cmk.ccc.user import UserId
 
-from cmk.utils.hostaddress import HostAddress, HostName
 from cmk.utils.redis import disable_redis
-from cmk.utils.user import UserId
 
 from cmk.gui import userdb
 from cmk.gui.config import active_config
@@ -37,6 +37,7 @@ from cmk.gui.logged_in import user as logged_in_user
 from cmk.gui.watolib import hosts_and_folders
 from cmk.gui.watolib.audit_log import AuditLogStore
 from cmk.gui.watolib.host_attributes import HostAttributes
+from cmk.gui.watolib.host_match_item_generator import MatchItemGeneratorHosts
 from cmk.gui.watolib.hosts_and_folders import EffectiveAttributes, Folder, folder_tree
 from cmk.gui.watolib.search import MatchItem
 
@@ -199,7 +200,7 @@ def test_write_and_read_host_attributes(attributes: HostAttributes) -> None:
     )
 
     # Write data
-    write_data_folder.create_hosts([(HostName("testhost"), attributes, [])])
+    write_data_folder.create_hosts([(HostName("testhost"), attributes, [])], pprint_value=False)
     write_folder_hosts = write_data_folder.hosts()
     assert len(write_folder_hosts) == 1
 
@@ -215,10 +216,10 @@ def test_write_and_read_host_attributes(attributes: HostAttributes) -> None:
 
 def test_create_multiple_hosts() -> None:
     root = folder_tree().root_folder()
-    subfolder = root.create_subfolder("subfolder", "subfolder", {})
+    subfolder = root.create_subfolder("subfolder", "subfolder", {}, pprint_value=False)
 
-    root.create_hosts([(HostName("host-1"), {}, [])])
-    subfolder.create_hosts([(HostName("host-2"), {}, [])])
+    root.create_hosts([(HostName("host-1"), {}, [])], pprint_value=False)
+    subfolder.create_hosts([(HostName("host-2"), {}, [])], pprint_value=False)
 
     all_hosts = root.all_hosts_recursively()
     # to ensure that new folder instances contain the new hosts
@@ -296,6 +297,7 @@ def test_mgmt_inherit_credentials_explicit_host_snmp() -> None:
                 [],
             )
         ],
+        pprint_value=False,
     )
 
     data = folder._load_hosts_file()
@@ -330,6 +332,7 @@ def test_mgmt_inherit_credentials_explicit_host_ipmi() -> None:
                 [],
             )
         ],
+        pprint_value=False,
     )
 
     data = folder._load_hosts_file()
@@ -358,6 +361,7 @@ def test_mgmt_inherit_credentials_snmp() -> None:
                 [],
             )
         ],
+        pprint_value=False,
     )
 
     data = folder._load_hosts_file()
@@ -386,6 +390,7 @@ def test_mgmt_inherit_credentials_ipmi() -> None:
                 [],
             )
         ],
+        pprint_value=False,
     )
 
     data = folder._load_hosts_file()
@@ -416,6 +421,7 @@ def test_mgmt_inherit_protocol_explicit_host_snmp() -> None:
                 [],
             )
         ],
+        pprint_value=False,
     )
 
     data = folder._load_hosts_file()
@@ -449,6 +455,7 @@ def test_mgmt_inherit_protocol_explicit_host_ipmi() -> None:
                 [],
             )
         ],
+        pprint_value=False,
     )
 
     data = folder._load_hosts_file()
@@ -484,13 +491,13 @@ def only_root() -> hosts_and_folders.Folder:
 def three_levels() -> hosts_and_folders.Folder:
     main = folder_tree().root_folder()
 
-    a = main.create_subfolder("a", title="A", attributes={})
-    a.create_subfolder("c", title="C", attributes={})
-    a.create_subfolder("d", title="D", attributes={})
+    a = main.create_subfolder("a", title="A", attributes={}, pprint_value=False)
+    a.create_subfolder("c", title="C", attributes={}, pprint_value=False)
+    a.create_subfolder("d", title="D", attributes={}, pprint_value=False)
 
-    b = main.create_subfolder("b", title="B", attributes={})
-    e = b.create_subfolder("e", title="E", attributes={})
-    e.create_subfolder("f", title="F", attributes={})
+    b = main.create_subfolder("b", title="B", attributes={}, pprint_value=False)
+    e = b.create_subfolder("e", title="E", attributes={}, pprint_value=False)
+    e.create_subfolder("f", title="F", attributes={}, pprint_value=False)
 
     return main
 
@@ -501,17 +508,17 @@ def three_levels_leaf_permissions() -> hosts_and_folders.Folder:
     # Attribute only used for testing
     main.permissions._may_see = False  # type: ignore[attr-defined]
 
-    a = main.create_subfolder("a", title="A", attributes={})
+    a = main.create_subfolder("a", title="A", attributes={}, pprint_value=False)
     a.permissions._may_see = False  # type: ignore[attr-defined]
-    c = a.create_subfolder("c", title="C", attributes={})
+    c = a.create_subfolder("c", title="C", attributes={}, pprint_value=False)
     c.permissions._may_see = False  # type: ignore[attr-defined]
-    a.create_subfolder("d", title="D", attributes={})
+    a.create_subfolder("d", title="D", attributes={}, pprint_value=False)
 
-    b = main.create_subfolder("b", title="B", attributes={})
+    b = main.create_subfolder("b", title="B", attributes={}, pprint_value=False)
     b.permissions._may_see = False  # type: ignore[attr-defined]
-    e = b.create_subfolder("e", title="E", attributes={})
+    e = b.create_subfolder("e", title="E", attributes={}, pprint_value=False)
     e.permissions._may_see = False  # type: ignore[attr-defined]
-    e.create_subfolder("f", title="F", attributes={})
+    e.create_subfolder("f", title="F", attributes={}, pprint_value=False)
 
     return main
 
@@ -571,7 +578,7 @@ def test_recursive_subfolder_choices_function_calls(
 
 def test_subfolder_creation() -> None:
     folder = folder_tree().root_folder()
-    folder.create_subfolder("foo", "Foo Folder", {})
+    folder.create_subfolder("foo", "Foo Folder", {}, pprint_value=False)
 
     # Upon instantiation, all the subfolders should be already known.
     folder = folder_tree().root_folder()
@@ -580,7 +587,7 @@ def test_subfolder_creation() -> None:
 
 def test_match_item_generator_hosts() -> None:
     assert list(
-        hosts_and_folders.MatchItemGeneratorHosts(
+        MatchItemGeneratorHosts(
             HostName("hosts"),
             lambda: {
                 HostName("host"): {
@@ -1034,7 +1041,9 @@ def test_load_redis_folders_on_demand(monkeypatch: MonkeyPatch) -> None:
 
 def test_folder_exists() -> None:
     tree = folder_tree()
-    tree.root_folder().create_subfolder("foo", "foo", {}).create_subfolder("bar", "bar", {})
+    tree.root_folder().create_subfolder("foo", "foo", {}, pprint_value=False).create_subfolder(
+        "bar", "bar", {}, pprint_value=False
+    )
     assert tree.folder_exists("foo")
     assert tree.folder_exists("foo/bar")
     assert not tree.folder_exists("bar")
@@ -1045,7 +1054,9 @@ def test_folder_exists() -> None:
 
 def test_folder_access() -> None:
     tree = folder_tree()
-    tree.root_folder().create_subfolder("foo", "foo", {}).create_subfolder("bar", "bar", {})
+    tree.root_folder().create_subfolder("foo", "foo", {}, pprint_value=False).create_subfolder(
+        "bar", "bar", {}, pprint_value=False
+    )
     assert isinstance(tree.folder("foo/bar"), hosts_and_folders.Folder)
     assert isinstance(tree.folder(""), hosts_and_folders.Folder)
     with pytest.raises(MKGeneralException):
@@ -1171,7 +1182,7 @@ def test_folder_times() -> None:
 def test_subfolder_attributes_are_cached() -> None:
     # GIVEN folder with cached attributes
     root = folder_tree().root_folder()
-    subfolder = root.create_subfolder("sub1", "sub1", {"alias": "sub1"})
+    subfolder = root.create_subfolder("sub1", "sub1", {"alias": "sub1"}, pprint_value=False)
     subfolder.effective_attributes()
 
     # WHEN
@@ -1183,7 +1194,11 @@ def test_subfolder_attributes_are_cached() -> None:
 
 def test_subfolder_cache_invalidated() -> None:
     # GIVEN folder with cached attributes
-    subfolder = folder_tree().root_folder().create_subfolder("sub1", "sub1", {"alias": "sub1"})
+    subfolder = (
+        folder_tree()
+        .root_folder()
+        .create_subfolder("sub1", "sub1", {"alias": "sub1"}, pprint_value=False)
+    )
     subfolder.effective_attributes()
 
     # WHEN cache is invalidated from folder_tree and attribute is updated

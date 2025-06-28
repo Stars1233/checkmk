@@ -41,11 +41,11 @@ import cmk.ccc.profile
 import cmk.ccc.version as cmk_version
 from cmk.ccc import store
 from cmk.ccc.exceptions import MKException
+from cmk.ccc.hostaddress import HostAddress, HostName
 from cmk.ccc.site import omd_site
 
 import cmk.utils.paths
 from cmk.utils import log
-from cmk.utils.hostaddress import HostAddress, HostName
 from cmk.utils.iterables import partition
 from cmk.utils.log import VERBOSE
 from cmk.utils.translations import translate_hostname
@@ -658,24 +658,28 @@ class EventServer(ECServerThread):
 
     def serve(self) -> None:
         pipe = self.open_pipe()
-        listen_list = [
-            f
-            for f in (
-                pipe,
-                self._syslog_udp,
-                self._syslog_tcp,
-                self._eventsocket,
-                self._snmp_trap_socket,
-            )
-            if f is not None
+        # We just read()/recvfrom() these, so we create no new FDs via them.
+        pipe_and_datagram_sockets = [
+            f for f in (pipe, self._syslog_udp, self._snmp_trap_socket) if f is not None
         ]
+        # We use accept() on these FDs, so we must be careful to avoid creating too many additional
+        # FDs. We use an arbitrary limit below (less than the usual 1024 FD_SETSIZE limit), so we
+        # don't accept() any more connections when there are already many of them. Connections get
+        # queued in the OS queue then, and when that is full, a client will get an error, which is
+        # the right thing here.
+        stream_sockets = [f for f in (self._syslog_tcp, self._eventsocket) if f is not None]
         client_sockets: dict[FileDescr, tuple[socket.socket, tuple[str, int] | None, bytes]] = {}
         select_timeout = 1
         unprocessed_pipe_data = b""
         while not self._terminate_event.is_set():
             try:
                 readable: list[FileDescr | socket.socket] = select.select(
-                    listen_list + list(client_sockets.keys()), [], [], select_timeout
+                    pipe_and_datagram_sockets
+                    + (stream_sockets if len(client_sockets) < 900 else [])
+                    + list(client_sockets.keys()),
+                    [],
+                    [],
+                    select_timeout,
                 )[0]
             except OSError as e:
                 if e.args[0] != errno.EINTR:
@@ -2262,16 +2266,22 @@ class StatusServer(ECServerThread):
 
     def handle_command_update(self, arguments: list[str]) -> None:
         event_ids, user, acknowledged, comment, contact = arguments
+        failures = list[str]()
         for event_id in event_ids.split(","):
             event = self._event_status.event(int(event_id))
             if not event:
-                raise MKClientError(f"No event with id {event_id}")
-            # Note the common practice: We validate parameters *before* doing any changes.
+                failures.append(f"No event with id {event_id}.")
+                continue
             if acknowledged:
-                ack = int(acknowledged)
-                if ack and event["phase"] not in {"open", "ack"}:
-                    raise MKClientError("You cannot acknowledge an event that is not open.")
-                event["phase"] = "ack" if ack else "open"
+                if not int(acknowledged):
+                    event["phase"] = "open"
+                elif event["phase"] in {"open", "ack"}:
+                    event["phase"] = "ack"
+                else:
+                    failures.append(
+                        f"You cannot acknowledge event {event_id}, it is {event['phase']}."
+                    )
+                    continue
             if comment:
                 event["comment"] = comment
             if contact:
@@ -2279,6 +2289,8 @@ class StatusServer(ECServerThread):
             if user:
                 event["owner"] = user
             self._history.add(event, "UPDATE", user)
+        if failures:
+            raise MKClientError(" ".join(failures))
 
     def handle_command_create(self, arguments: list[str]) -> None:
         # Would rather use process_syslog_messages(), but we are already
@@ -2289,14 +2301,18 @@ class StatusServer(ECServerThread):
 
     def handle_command_changestate(self, arguments: list[str]) -> None:
         event_ids, user, newstate = arguments
+        failures = list[str]()
         for event_id in event_ids.split(","):
             event = self._event_status.event(int(event_id))
             if not event:
-                raise MKClientError(f"No event with id {event_id}")
+                failures.append(f"No event with id {event_id}.")
+                continue
             event["state"] = int(newstate)
             if user:
                 event["owner"] = user
             self._history.add(event, "CHANGESTATE", user)
+        if failures:
+            raise MKClientError(" ".join(failures))
 
     def handle_command_reload(self) -> None:
         self._reload_config_event.set()

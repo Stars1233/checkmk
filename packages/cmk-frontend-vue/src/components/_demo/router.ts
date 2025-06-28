@@ -40,6 +40,10 @@ import DemoFormTuple from './DemoFormTuple.vue'
 import DemoFormLabels from './DemoFormLabels.vue'
 import type { Component } from 'vue'
 import DemoHelp from './DemoHelp.vue'
+import DemoCmkChip from './DemoCmkChip.vue'
+import DemoCmkBadge from './DemoCmkBadge.vue'
+import DemoCmkProgressbar from './DemoCmkProgressbar.vue'
+import DemoTypography from './DemoTypography.vue'
 
 interface Route {
   path: string
@@ -53,6 +57,26 @@ const routes: Route[] = [
     path: '/',
     name: 'home',
     component: DemoEmpty
+  },
+  {
+    path: '/typography',
+    name: 'Typography',
+    component: DemoTypography
+  },
+  {
+    path: '/progressbar',
+    name: 'CmkProgressbar',
+    component: DemoCmkProgressbar
+  },
+  {
+    path: '/badge',
+    name: 'CmkBadge',
+    component: DemoCmkBadge
+  },
+  {
+    path: '/chip',
+    name: 'CmkChip',
+    component: DemoCmkChip
   },
   {
     path: '/alertbox',

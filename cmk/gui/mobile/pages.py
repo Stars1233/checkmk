@@ -233,10 +233,6 @@ def page_login() -> None:
 
 
 class PageMobileIndex(Page):
-    @classmethod
-    def ident(cls) -> str:
-        return "mobile"
-
     def page(self) -> PageResult:
         _page_index()
         return None
@@ -297,16 +293,12 @@ def _page_index() -> None:
 
 
 class PageMobileView(Page):
-    @classmethod
-    def ident(cls) -> str:
-        return "mobile_view"
-
     def page(self) -> PageResult:
-        _page_view()
+        _page_view(debug=active_config.debug)
         return None
 
 
-def _page_view() -> None:
+def _page_view(*, debug: bool) -> None:
     view_name = request.var("view_name")
     if not view_name:
         return _page_index()
@@ -335,10 +327,10 @@ def _page_view() -> None:
     painter_options.load(view_name)
 
     try:
-        process_view(MobileViewRenderer(view))
+        process_view(MobileViewRenderer(view), debug=debug)
     except Exception as e:
         logger.exception("error showing mobile view")
-        if active_config.debug:
+        if debug:
             raise
         html.write_text_permissive("ERROR showing view: %s" % e)
 
@@ -354,6 +346,8 @@ class MobileViewRenderer(ABCViewRenderer):
         num_columns: int,
         show_filters: list[Filter],
         unfiltered_amount_of_rows: int,
+        *,
+        debug: bool,
     ) -> None:
         view_spec = self.view.spec
         home = ("mobile.py", "Home", "home")

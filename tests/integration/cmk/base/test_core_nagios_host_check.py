@@ -14,18 +14,18 @@ from tests.integration.linux_test_host import create_linux_test_host
 
 from tests.testlib.site import Site
 
-from cmk.utils.hostaddress import HostName
+from cmk.ccc.hostaddress import HostName
 
 
 @contextmanager
 def _set_precompile(site: Site) -> Iterator[None]:
     global_mk = "etc/check_mk/conf.d/wato/global.mk"
     delay_str = "\ndelay_precompile = True\n"
-    site.write_text_file(global_mk, f"{site.read_file(global_mk)}{delay_str}")
+    site.write_file(global_mk, f"{site.read_file(global_mk)}{delay_str}")
     try:
         yield None
     finally:
-        site.write_text_file(global_mk, site.read_file(global_mk).replace(delay_str, ""))
+        site.write_file(global_mk, site.read_file(global_mk).replace(delay_str, ""))
 
 
 @contextmanager
@@ -77,4 +77,4 @@ def _test_compile_delayed_host_check(request: pytest.FixtureRequest, site: Site)
         site.check_output(["python3", "-P", f"{compiled_file}"])
         # *Now* it has been compiled:
         assert site.resolve_path(compiled_file) != site.resolve_path(source_file)
-        assert site.read_binary_file(compiled_file).startswith(importlib.util.MAGIC_NUMBER)
+        assert site.read_file(compiled_file, encoding=None).startswith(importlib.util.MAGIC_NUMBER)

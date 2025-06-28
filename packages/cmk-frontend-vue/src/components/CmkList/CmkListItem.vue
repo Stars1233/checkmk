@@ -4,10 +4,13 @@ This file is part of Checkmk (https://checkmk.com). It is subject to the terms a
 conditions defined in the file COPYING, which is part of this source code package.
 -->
 <script setup lang="ts">
+import usei18n from '@/lib/i18n'
 import { type VariantProps, cva } from 'class-variance-authority'
 import CmkIconButton from '@/components/CmkIconButton.vue'
 import CmkSpace from '@/components/CmkSpace.vue'
 import CmkIcon from '@/components/CmkIcon.vue'
+
+const { t } = usei18n('cmk-list-item')
 
 const listItemVariants = cva('', {
   variants: {
@@ -47,7 +50,7 @@ const { buttonPadding = '16px' } = defineProps<{
           -->
           <div
             class="cmk-list-item__drag-button"
-            aria-label="Drag to reorder"
+            :aria-label="t('drag-aria-label', 'Drag to reorder')"
             role="button"
             :draggable="true"
             @dragstart="draggable?.dragStart"
@@ -61,8 +64,8 @@ const { buttonPadding = '16px' } = defineProps<{
         <CmkIconButton
           name="close"
           size="small"
-          aria-label="Remove element"
-          @click.prevent="() => removeElement()"
+          :aria-label="t('remove-aria-label', 'Remove element')"
+          @click="() => removeElement()"
         />
       </div>
     </div>

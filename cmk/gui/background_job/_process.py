@@ -14,20 +14,21 @@ import os
 import threading
 import time
 from collections.abc import Callable, Iterator
+from contextlib import AbstractContextManager as ContextManager
 from contextlib import contextmanager, nullcontext
 from logging import Formatter, Logger, StreamHandler
 from pathlib import Path
-from typing import ContextManager, IO, override
+from typing import IO, override
 
 from setproctitle import setthreadtitle
 
 from cmk.ccc import store
 from cmk.ccc.exceptions import MKTerminate, MKTimeout
+from cmk.ccc.user import UserId
 from cmk.ccc.version import edition
 
 from cmk.utils import paths
 from cmk.utils.log import VERBOSE
-from cmk.utils.user import UserId
 
 from cmk.gui import log
 from cmk.gui.crash_handler import create_gui_crash_report

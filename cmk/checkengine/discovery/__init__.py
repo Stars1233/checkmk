@@ -17,8 +17,9 @@ from ._autochecks import (
 from ._autodiscovery import (
     autodiscovery,
     automation_discovery,
-    DiscoveryResult,
+    DiscoveryReport,
     get_host_services_by_host_name,
+    TransitionCounter,
 )
 from ._commandline import commandline_discovery
 from ._filters import RediscoveryParameters
@@ -26,7 +27,13 @@ from ._host_labels import analyse_cluster_labels, discover_host_labels, HostLabe
 from ._params import ABCDiscoveryConfig, DiscoveryCheckParameters, get_plugin_parameters
 from ._preview import CheckPreview, CheckPreviewEntry, get_check_preview
 from ._services import analyse_services, discover_services, find_plugins
-from ._utils import DiscoveryMode, DiscoverySettings, DiscoveryVsSettings, QualifiedDiscovery
+from ._utils import (
+    DiscoveryMode,
+    DiscoverySettingFlags,
+    DiscoverySettings,
+    DiscoveryValueSpecModel,
+    QualifiedDiscovery,
+)
 
 __all__ = [
     "analyse_cluster_labels",
@@ -45,8 +52,9 @@ __all__ = [
     "DiscoveryCheckParameters",
     "DiscoveryMode",  # in the process of being replaced by DiscoverySettings
     "DiscoverySettings",
-    "DiscoveryVsSettings",
-    "DiscoveryResult",
+    "DiscoverySettingFlags",
+    "DiscoveryValueSpecModel",
+    "DiscoveryReport",
     "execute_check_discovery",
     "find_plugins",
     "get_check_preview",
@@ -56,6 +64,7 @@ __all__ = [
     "QualifiedDiscovery",
     "RediscoveryParameters",
     "remove_autochecks_of_host",
+    "TransitionCounter",
     "set_autochecks_of_cluster",
     "set_autochecks_of_real_hosts",
     "set_autochecks_for_effective_host",

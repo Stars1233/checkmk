@@ -2,8 +2,8 @@
 # Copyright (C) 2019 Checkmk GmbH - License: GNU General Public License v2
 # This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
 # conditions defined in the file COPYING, which is part of this source code package.
+import pytest
 
-from tests.testlib.pytest_helpers.marks import skip_if_raw_edition
 from tests.testlib.site import Site
 from tests.testlib.web_session import CMKWebSession
 
@@ -15,7 +15,7 @@ def test_www_dir(site: Site) -> None:
     web.get("/%s/testfile.html" % site.id, expected_code=401)
 
     try:
-        site.write_text_file("var/www/testfile.html", "123")
+        site.write_file("var/www/testfile.html", "123")
         assert web.get("/%s/testfile.html" % site.id, auth=("cmkadmin", "cmk")).text == "123"
     finally:
         site.delete_file("var/www/testfile.html")
@@ -27,7 +27,7 @@ def test_checkmk_htdocs(site: Site) -> None:
     web.get(f"/{site.id}/check_mk/local/foobar.txt", expected_code=404)
 
     try:
-        site.write_text_file("local/share/check_mk/web/htdocs/foobar.txt", "123")
+        site.write_file("local/share/check_mk/web/htdocs/foobar.txt", "123")
         assert web.get(f"/{site.id}/check_mk/local/foobar.txt").text == "123"
     finally:
         site.delete_file("local/share/check_mk/web/htdocs/foobar.txt")
@@ -42,7 +42,7 @@ def test_checkmk_htdocs_local_overwrite(site: Site) -> None:
 
     try:
         site.makedirs("local/share/check_mk/web/htdocs/images/icons/")
-        site.write_text_file("local/share/check_mk/web/htdocs/images/icons/core.png", "123")
+        site.write_file("local/share/check_mk/web/htdocs/images/icons/core.png", "123")
 
         response = web.get("/%s/check_mk/images/icons/core.png" % site.id)
         assert response.text == "123"
@@ -108,7 +108,7 @@ def test_cmk_automation(site: Site) -> None:
     assert response.text == "Missing secret for automation command."
 
 
-@skip_if_raw_edition
+@pytest.mark.skip_if_edition("raw")
 def test_cmk_deploy_agent(site: Site) -> None:
     web = CMKWebSession(site)
     response = web.get("/%s/check_mk/deploy_agent.py" % site.id)

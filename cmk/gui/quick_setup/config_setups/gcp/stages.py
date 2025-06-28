@@ -5,9 +5,13 @@
 
 from collections.abc import Callable, Mapping, Sequence
 
+from livestatus import SiteConfiguration
+
+from cmk.ccc.site import SiteId
+
 from cmk.utils.rulesets.definition import RuleGroup
 
-from cmk.gui.form_specs.private.dictionary_extended import DictionaryExtended
+from cmk.gui.form_specs.private.two_column_dictionary import TwoColumnDictionary
 from cmk.gui.htmllib.generator import HTMLWriter
 from cmk.gui.i18n import _
 from cmk.gui.quick_setup.v0_unstable.predefined import (
@@ -46,16 +50,24 @@ from cmk.gui.quick_setup.v0_unstable.widgets import (
 )
 from cmk.gui.utils.urls import doc_reference_url, DocReference
 
-from cmk.plugins.gcp.rulesets import (  # pylint: disable=cmk-module-layer-violation
-    gcp,
-)
+from cmk.plugins.gcp.rulesets import gcp  # pylint: disable=cmk-module-layer-violation
 from cmk.rulesets.v1 import Title
 from cmk.rulesets.v1.form_specs import Dictionary
-from cmk.shared_typing.vue_formspec_components import DictionaryLayout
 
 NEXT_BUTTON_ARIA_LABEL = _("Go to the next stage")
 PREV_BUTTON_ARIA_LABEL = _("Go to the previous stage")
 PREV_BUTTON_LABEL = _("Back")
+
+
+def _collect_params_for_connection_test(
+    all_stages_form_data: ParsedFormData, parameter_form: Dictionary
+) -> Mapping[str, object]:
+    """For the quick setup validation of the AWS authentication we run a connection test only using
+    the agent option "--connection-test"."""
+    return {
+        **collect_params_with_defaults_from_form_data(all_stages_form_data, parameter_form),
+        "connection_test": True,
+    }
 
 
 def configure_authentication() -> QuickSetupStage:
@@ -97,9 +109,8 @@ def configure_authentication() -> QuickSetupStage:
             ),
             FormSpecWrapper(
                 id=FormSpecId("credentials"),
-                form_spec=DictionaryExtended(
+                form_spec=TwoColumnDictionary(
                     elements=gcp.configuration_authentication(),
-                    layout=DictionaryLayout.two_columns,
                 ),
             ),
         ],
@@ -108,10 +119,11 @@ def configure_authentication() -> QuickSetupStage:
                 id=ActionId("action"),
                 custom_validators=[
                     qs_validators.validate_unique_id,
+                    qs_validators.validate_non_quick_setup_password(parameter_form=gcp.form_spec()),
                     qs_validators.validate_test_connection_custom_collect_params(
                         rulespec_name=RuleGroup.SpecialAgents("gcp"),
                         parameter_form=gcp.form_spec(),
-                        custom_collect_params=collect_params_with_defaults_from_form_data,
+                        custom_collect_params=_collect_params_for_connection_test,
                         error_message=_(
                             "Could not access your GCP account. Please check your credentials."
                         ),
@@ -151,9 +163,8 @@ def _configure() -> Sequence[Widget]:
     return [
         FormSpecWrapper(
             id=FormSpecId("configure_services_to_monitor"),
-            form_spec=DictionaryExtended(
+            form_spec=TwoColumnDictionary(
                 elements=gcp.configuration_services(),
-                layout=DictionaryLayout.two_columns,
             ),
         ),
         Collapsible(
@@ -161,9 +172,8 @@ def _configure() -> Sequence[Widget]:
             items=[
                 FormSpecWrapper(
                     id=FormSpecId("configure_advanced"),
-                    form_spec=DictionaryExtended(
+                    form_spec=TwoColumnDictionary(
                         elements=gcp.configuration_services_advanced(),
-                        layout=DictionaryLayout.two_columns,
                     ),
                 ),
             ],
@@ -225,6 +235,8 @@ def recap_found_services(
     _stage_index: StageIndex,
     parsed_data: ParsedFormData,
     progress_logger: ProgressLogger,
+    site_configs: Mapping[SiteId, SiteConfiguration],
+    debug: bool,
 ) -> Sequence[Widget]:
     service_discovery_result = utils.get_service_discovery_preview(
         rulespec_name=RuleGroup.SpecialAgents("gcp"),
@@ -232,6 +244,8 @@ def recap_found_services(
         parameter_form=gcp.form_spec(),
         collect_params=gcp_collect_params,
         progress_logger=progress_logger,
+        site_configs=site_configs,
+        debug=debug,
     )
     gcp_service_interest = ServiceInterest("gcp_.*", "services")
     filtered_groups_of_services, _other_services = utils.group_services_by_interest(
@@ -267,7 +281,7 @@ def review_and_run_preview_service_discovery() -> QuickSetupStage:
                 id=ActionId("skip_configuration_test"),
                 custom_validators=[],
                 recap=[
-                    lambda __, ___, parsed_data, ____: _save_and_activate_recap(
+                    lambda _a, _b, parsed_data, *args, **kargs: _save_and_activate_recap(
                         _("Skipped the configuration test."), parsed_data
                     )
                 ],

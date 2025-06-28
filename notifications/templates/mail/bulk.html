@@ -21,12 +21,12 @@
     </tr>
     {% for entry in bulk_summary %}
         {% set bulk_service_notification = entry.WHAT == 'SERVICE' %}
-        <tr style=" border: 1px solid #DFDFDF; height: 35px">
+        <tr style="border: 1px solid #DFDFDF; height: 35px">
             <td style="border: 1px solid #DFDFDF;
                        padding: 0% 2% 0 2%;
                        width: 15%;
                        word-break: break-all">{{ entry.LINKEDHOSTNAME | safe }}</td>
-            <td style=" border: 1px solid #DFDFDF; padding: 0% 2% 0 2%; ">
+            <td style="border: 1px solid #DFDFDF; padding: 0% 2% 0 2%">
                 {% if bulk_service_notification %}{{ entry.LINKEDSERVICEDESC | safe }}{% endif %}
             </td>
             <td height="33"
@@ -37,14 +37,14 @@
                 <table style="border-collapse: collapse;" align="center">
                     <tr>
                         <td style="padding: 0; vertical-align: middle;">
-                            <div style="{{ macros.event_marker_bulk_style() }};
-                                        {% if service_notification %} {{ state_mapping[data.PREVIOUSSERVICEHARDSTATE] }} {% else %} {{ state_mapping[data.PREVIOUSHOSTHARDSTATE] }} {% endif %};
+                            <div class="mobile_event_marker_bulk" style="{{ macros.event_marker_bulk_style() }};
+                                        {% if service_notification %} {{ state_mapping[entry.PREVIOUSSERVICEHARDSTATE] }} {% else %} {{ state_mapping[entry.PREVIOUSHOSTHARDSTATE] }} {% endif %};
                                         display: inline-block;
                                         /* Inline block to respect width */">
                                 {% if service_notification %}
-                                    {{ data.PREVIOUSSERVICEHARDSTATE[:4] }}
+                                    {{ entry.PREVIOUSSERVICEHARDSTATE[:4] }}
                                 {% else %}
-                                    {{ data.PREVIOUSHOSTHARDSTATE[:4] }}
+                                    {{ entry.PREVIOUSHOSTHARDSTATE[:4] }}
                                 {% endif %}
                             </div>
                         </td>
@@ -65,14 +65,14 @@
                             <![endif]-->
                         </td>
                         <td style="padding: 0; vertical-align: middle;">
-                            <div style="{{ macros.event_marker_bulk_style() }};
-                                        {% if service_notification %} {{ state_mapping[data.SERVICESTATE] }} {% else %} {{ state_mapping[data.HOSTSTATE] }} {% endif %};
+                            <div class="mobile_event_marker_bulk" style="{{ macros.event_marker_bulk_style() }};
+                                        {% if service_notification %} {{ state_mapping[entry.SERVICESTATE] }} {% else %} {{ state_mapping[entry.HOSTSTATE] }} {% endif %};
                                         display: inline-block;
                                         /* Inline block to respect width */">
                                 {% if service_notification %}
-                                    {{ data.SERVICESTATE[:4] }}
+                                    {{ entry.SERVICESTATE[:4] }}
                                 {% else %}
-                                    {{ data.HOSTSTATE[:4] }}
+                                    {{ entry.HOSTSTATE[:4] }}
                                 {% endif %}
                             </div>
                         </td>

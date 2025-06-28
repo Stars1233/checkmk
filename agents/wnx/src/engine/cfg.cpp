@@ -352,6 +352,8 @@ std::wstring GetLocalDir() noexcept { return GetCfg().getLocalDir(); }
 
 std::wstring GetStateDir() noexcept { return GetCfg().getStateDir(); }
 
+std::wstring GetLibDir() noexcept { return GetCfg().getLibDir(); }
+
 std::wstring GetAuStateDir() noexcept { return GetCfg().getAuStateDir(); }
 
 std::wstring GetPluginConfigDir() noexcept {
@@ -746,7 +748,7 @@ bool CleanDataFolder(CleanMode mode) {
 
 std::vector<std::wstring_view> AllDirTable() {
     return {//
-            // may not contain user content
+            // do not contain user content
             dirs::kBakery,       // config file(s)
             dirs::kUserBin,      // placeholder for ohm
             dirs::kBackup,       // backed up files
@@ -754,6 +756,7 @@ std::vector<std::wstring_view> AllDirTable() {
             dirs::kInstall,      // for installing data
             dirs::kUpdate,       // for incoming MSI
             dirs::kUserModules,  // for all modules
+            dirs::kLib,          // shared libraries
 
             // may contain user content
             dirs::kState,          // state folder
@@ -774,7 +777,8 @@ std::vector<std::wstring_view> RemovableDirTable() {
         dirs::kInstall,      // for installing data
         dirs::kUpdate,       // for incoming MSI
         dirs::kUserModules,  // for all modules
-    };                       //
+        dirs::kLib           // shared libraries
+    };
 }
 
 /// Create project defined Directory Structure in the Data Folder
@@ -1140,10 +1144,26 @@ std::vector<std::string> GetInternalArray(const YAML::Node &yaml_node,
     return {};
 }
 
+namespace {
+void AddLibToPath() {
+    const auto lib_dir = wtools::ToUtf8(GetLibDir());
+    if (lib_dir.empty()) {
+        return;
+    }
+    const auto path = tools::win::GetEnv(std::string{"PATH"});
+    if (!path.contains(lib_dir)) {
+        const auto new_path = lib_dir + ";" + path;
+        tools::win::SetEnv(std::string{"PATH"}, new_path);
+    }
+}
+
+}  // namespace
+
 void SetupPluginEnvironment() {
-    const std::array<std::pair<const std::string_view, const std::wstring>, 10>
+    const std::array<std::pair<const std::string_view, const std::wstring>, 11>
         env_pairs{{{envs::kMkLocalDirName, GetLocalDir()},
                    {envs::kMkStateDirName, GetStateDir()},
+                   {envs::kMkLibDirName, GetLibDir()},
                    {envs::kMkPluginsDirName, GetUserPluginsDir()},
                    {envs::kMkTempDirName, GetTempDir()},
                    {envs::kMkLogDirName, GetLogDir()},
@@ -1156,6 +1176,8 @@ void SetupPluginEnvironment() {
     for (const auto &[name, val] : env_pairs) {
         tools::win::SetEnv(std::string{name}, wtools::ToUtf8(val));
     }
+
+    AddLibToPath();
 }
 
 void ProcessPluginEnvironment(
@@ -1165,13 +1187,14 @@ void ProcessPluginEnvironment(
 {
     const std::array<
         std::pair<const std::string_view, const std::function<std::wstring()>>,
-        10>
+        11>
         env_pairs{{
             // string conversion  is required because of string used in
             // interfaces
             // of SetEnv and ConvertToUTF8
             {envs::kMkLocalDirName, &GetLocalDir},
             {envs::kMkStateDirName, &GetStateDir},
+            {envs::kMkLibDirName, &GetLibDir},
             {envs::kMkPluginsDirName, &GetUserPluginsDir},
             {envs::kMkTempDirName, &GetTempDir},
             {envs::kMkLogDirName, &GetLogDir},

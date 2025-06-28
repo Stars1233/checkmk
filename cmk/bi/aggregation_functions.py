@@ -5,14 +5,14 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from typing import Any
+from typing import Literal, override, TypedDict
 
 from marshmallow import validate
 from marshmallow_oneofschema import OneOfSchema
 
 from cmk.bi.lib import (
     ABCBIAggregationFunction,
+    AggregationFunctionConfig,
     AggregationKind,
     bi_aggregation_function_registry,
     BIStates,
@@ -23,7 +23,7 @@ from cmk.bi.lib import (
 )
 from cmk.bi.schema import Schema
 
-_bi_criticality_level = {
+_bi_criticality_level: dict[int, int] = {
     BIStates.OK: 0,
     BIStates.PENDING: 2,
     BIStates.WARN: 4,
@@ -35,12 +35,10 @@ _bi_criticality_level = {
 _reversed_bi_criticality_level = {v: k for k, v in _bi_criticality_level.items()}
 
 
-def mapped_states(f: Callable[[Any, list[int]], int]) -> Callable[[Any, list[int]], int]:
-    def wrapped_f(self: ABCBIAggregationFunction, states: list[int]) -> int:
-        new_states = sorted(_bi_criticality_level[state] for state in states)
-        return _reversed_bi_criticality_level.get(f(self, new_states), BIStates.UNKNOWN)
-
-    return wrapped_f
+def map_states(states: list[int], index: int, restricted_bi_level: int) -> int:
+    new_states = sorted(_bi_criticality_level[state] for state in states)
+    level = min(restricted_bi_level, new_states[index])
+    return _reversed_bi_criticality_level.get(level, BIStates.UNKNOWN)
 
 
 #   .--Best----------------------------------------------------------------.
@@ -53,32 +51,42 @@ def mapped_states(f: Callable[[Any, list[int]], int]) -> Callable[[Any, list[int
 #   +----------------------------------------------------------------------+
 
 
+class BIAggregationFunctionBestSerialized(AggregationFunctionConfig):
+    count: int
+    restrict_state: int
+
+
 @bi_aggregation_function_registry.register
 class BIAggregationFunctionBest(ABCBIAggregationFunction):
+    @override
     @classmethod
     def kind(cls) -> AggregationKind:
         return "best"
 
+    @override
     @classmethod
     def schema(cls) -> type[BIAggregationFunctionBestSchema]:
         return BIAggregationFunctionBestSchema
 
-    def serialize(self):
-        return {
-            "type": self.kind(),
-            "count": self.count,
-            "restrict_state": self.restrict_state,
-        }
+    @override
+    def serialize(self) -> BIAggregationFunctionBestSerialized:
+        return BIAggregationFunctionBestSerialized(
+            type=self.kind(),
+            count=self.count,
+            restrict_state=self.restrict_state,
+        )
 
-    def __init__(self, aggr_function_config: dict[str, Any]) -> None:
+    @override
+    def __init__(self, aggr_function_config: BIAggregationFunctionBestSerialized) -> None:
         super().__init__(aggr_function_config)
         self.count = aggr_function_config["count"]
         self.restrict_state = aggr_function_config["restrict_state"]
         self.restricted_bi_level = _bi_criticality_level[self.restrict_state]
 
-    @mapped_states
+    @override
     def aggregate(self, states: list[int]) -> int:
-        return min(self.restricted_bi_level, states[min(len(states) - 1, self.count - 1)])
+        index = min(len(states) - 1, self.count - 1)
+        return map_states(states, index, self.restricted_bi_level)
 
 
 class BIAggregationFunctionBestSchema(Schema):
@@ -109,32 +117,42 @@ class BIAggregationFunctionBestSchema(Schema):
 #   +----------------------------------------------------------------------+
 
 
+class BIAggregationFunctionWorstSerialized(AggregationFunctionConfig):
+    count: int
+    restrict_state: int
+
+
 @bi_aggregation_function_registry.register
 class BIAggregationFunctionWorst(ABCBIAggregationFunction):
+    @override
     @classmethod
     def kind(cls) -> AggregationKind:
         return "worst"
 
+    @override
     @classmethod
     def schema(cls) -> type[BIAggregationFunctionWorstSchema]:
         return BIAggregationFunctionWorstSchema
 
-    def serialize(self):
-        return {
-            "type": self.kind(),
-            "count": self.count,
-            "restrict_state": self.restrict_state,
-        }
+    @override
+    def serialize(self) -> BIAggregationFunctionWorstSerialized:
+        return BIAggregationFunctionWorstSerialized(
+            type=self.kind(),
+            count=self.count,
+            restrict_state=self.restrict_state,
+        )
 
-    def __init__(self, aggr_function_config: dict[str, Any]) -> None:
+    @override
+    def __init__(self, aggr_function_config: BIAggregationFunctionWorstSerialized) -> None:
         super().__init__(aggr_function_config)
         self.count = aggr_function_config["count"]
         self.restrict_state = aggr_function_config["restrict_state"]
         self.restricted_bi_level = _bi_criticality_level[self.restrict_state]
 
-    @mapped_states
+    @override
     def aggregate(self, states: list[int]) -> int:
-        return min(self.restricted_bi_level, states[max(0, len(states) - self.count)])
+        index = max(0, len(states) - self.count)
+        return map_states(states, index, self.restricted_bi_level)
 
 
 class BIAggregationFunctionWorstSchema(Schema):
@@ -159,37 +177,56 @@ class BIAggregationFunctionWorstSchema(Schema):
 #   +----------------------------------------------------------------------+
 
 
+class BILevelsSerialized(TypedDict):
+    type: Literal["count", "percentage"]
+    value: float
+
+
+class BIAggregationFunctionCountOKSerialized(AggregationFunctionConfig):
+    levels_ok: BILevelsSerialized
+    levels_warn: BILevelsSerialized
+
+
 @bi_aggregation_function_registry.register
 class BIAggregationFunctionCountOK(ABCBIAggregationFunction):
+    @override
     @classmethod
     def kind(cls) -> AggregationKind:
         return "count_ok"
 
+    @override
     @classmethod
     def schema(cls) -> type[BIAggregationFunctionCountOKSchema]:
         return BIAggregationFunctionCountOKSchema
 
-    def serialize(self):
-        return {
-            "type": self.kind(),
-            "levels_ok": self.levels_ok,
-            "levels_warn": self.levels_warn,
-        }
+    @override
+    def serialize(self) -> BIAggregationFunctionCountOKSerialized:
+        return BIAggregationFunctionCountOKSerialized(
+            type=self.kind(),
+            levels_ok=self.levels_ok,
+            levels_warn=self.levels_warn,
+        )
 
-    def __init__(self, aggr_function_config: dict[str, Any]) -> None:
+    @override
+    def __init__(self, aggr_function_config: BIAggregationFunctionCountOKSerialized) -> None:
         super().__init__(aggr_function_config)
         self.levels_ok = aggr_function_config["levels_ok"]
         self.levels_warn = aggr_function_config["levels_warn"]
 
+    @override
     def aggregate(self, states: list[int]) -> int:
         ok_nodes = states.count(0)
-        if self._check_levels(ok_nodes, len(states), self.levels_ok):
-            return BIStates.OK
-        if self._check_levels(ok_nodes, len(states), self.levels_warn):
-            return BIStates.WARN
-        return BIStates.CRIT
 
-    def _check_levels(self, ok_nodes: int, total_nodes: int, levels: dict) -> bool:
+        if self._check_levels(ok_nodes, len(states), self.levels_ok):
+            state = BIStates.OK
+        elif self._check_levels(ok_nodes, len(states), self.levels_warn):
+            state = BIStates.WARN
+        else:
+            state = BIStates.CRIT
+
+        return int(state)
+
+    def _check_levels(self, ok_nodes: int, total_nodes: int, levels: BILevelsSerialized) -> bool:
         if levels["type"] == "count":
             return ok_nodes >= levels["value"]
         return (ok_nodes / total_nodes) * 100 >= levels["value"]
@@ -240,5 +277,8 @@ class BIAggregationFunctionSchema(OneOfSchema):
     #    "count_ok": BIAggregationFunctionCountOKSchema,
     # }
 
-    def get_obj_type(self, obj: ABCBIAggregationFunction | dict) -> str:
+    @override
+    def get_obj_type(
+        self, obj: ABCBIAggregationFunction | AggregationFunctionConfig
+    ) -> AggregationKind:
         return obj["type"] if isinstance(obj, dict) else obj.kind()

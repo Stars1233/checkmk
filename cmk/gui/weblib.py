@@ -7,20 +7,20 @@ from cmk.gui.exceptions import MKUserError
 from cmk.gui.http import request, response
 from cmk.gui.i18n import _
 from cmk.gui.logged_in import user
-from cmk.gui.pages import PageRegistry
+from cmk.gui.pages import PageEndpoint, PageRegistry
 from cmk.gui.utils.selection_id import SelectionId
 
 
 def register(page_registry: PageRegistry) -> None:
-    page_registry.register_page_handler("tree_openclose", ajax_tree_openclose)
-    page_registry.register_page_handler("ajax_set_rowselection", ajax_set_rowselection)
+    page_registry.register(PageEndpoint("tree_openclose", ajax_tree_openclose))
+    page_registry.register(PageEndpoint("ajax_set_rowselection", ajax_set_rowselection))
 
 
 def ajax_tree_openclose() -> None:
     tree = request.get_str_input_mandatory("tree")
     name = request.get_str_input_mandatory("name")
 
-    user.set_tree_state(tree, name, request.get_str_input("state"))
+    user.set_tree_state(tree, name, request.get_str_input("state"))  # type: ignore[no-untyped-call]
     user.save_tree_states()
     response.set_data("OK")  # Write out something to make debugging easier
 

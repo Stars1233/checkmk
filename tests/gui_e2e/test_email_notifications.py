@@ -3,7 +3,6 @@
 # This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
 # conditions defined in the file COPYING, which is part of this source code package.
 import logging
-import re
 import subprocess
 from collections.abc import Iterator
 from pathlib import Path
@@ -11,7 +10,6 @@ from pathlib import Path
 import pytest
 from playwright.sync_api import expect
 
-from tests.gui_e2e.testlib.playwright.plugin import manage_new_page_from_browser_context
 from tests.gui_e2e.testlib.playwright.pom.dashboard import Dashboard
 from tests.gui_e2e.testlib.playwright.pom.email import EmailPage
 from tests.gui_e2e.testlib.playwright.pom.monitor.service_search import ServiceSearchPage
@@ -19,10 +17,7 @@ from tests.gui_e2e.testlib.playwright.pom.setup.add_rule_filesystems import AddR
 from tests.gui_e2e.testlib.playwright.pom.setup.notification_configuration import (
     NotificationConfiguration,
 )
-from tests.gui_e2e.testlib.playwright.pom.setup.notification_rules import (
-    AddNotificationRule,
-    EditNotificationRule,
-)
+from tests.gui_e2e.testlib.playwright.pom.setup.notification_rules import EditNotificationRule
 from tests.gui_e2e.testlib.playwright.pom.setup.ruleset import Ruleset
 from tests.testlib.emails import EmailManager
 from tests.testlib.site import Site
@@ -60,7 +55,7 @@ def _modify_notification_rule(test_site: Site, linux_hosts: list[str]) -> Iterat
     try:
         content = test_site.read_file(notification_rule_path)
         new_content = content[:-3] + f", 'match_hosts': ['{hostname}']" + content[-3:]
-        test_site.write_text_file(notification_rule_path, new_content)
+        test_site.write_file(notification_rule_path, new_content)
 
         yield hostname
 
@@ -101,21 +96,24 @@ def test_filesystem_email_notifications(
     # The scrollbar interrupts the interaction with rule edit button -> collapse overview
     notification_configuration_page.collapse_notification_overview(True)
     notification_configuration_page.notification_rule_copy_button(0).click()
+    notification_configuration_page.clone_and_edit_button.click()
 
     logger.info("Modify the cloned rule")
-    add_notification_rule_page = AddNotificationRule(
-        notification_configuration_page.page, navigate_to_page=False
+    cloned_notification_rule_page = EditNotificationRule(
+        notification_configuration_page.page,
+        rule_position=1,
+        navigate_to_page=False,
     )
-    add_notification_rule_page.modify_notification_rule(
+    cloned_notification_rule_page.modify_notification_rule(
         username, f"{service_name}$", notification_description
     )
 
     logger.info("Disable the default notification rule")
-    edit_notification_rule_page = EditNotificationRule(
+    default_notification_rule_page = EditNotificationRule(
         notification_configuration_page.page, rule_position=0
     )
-    edit_notification_rule_page.check_disable_rule(True)
-    edit_notification_rule_page.apply_and_create_another_rule_button.click()
+    default_notification_rule_page.check_disable_rule(True)
+    default_notification_rule_page.apply_and_create_another_rule_button.click()
 
     logger.info(
         "Add rule for filesystems to change status '%s' when used space is more then %s percent",
@@ -131,10 +129,11 @@ def test_filesystem_email_notifications(
 
     service_search_page = None
     try:
+        checkmk_agent = "Check_MK"
         service_search_page = ServiceSearchPage(dashboard_page.page)
-        logger.info("Reschedule the 'Check_MK' service to trigger the notification")
+        logger.info("Reschedule the '%s' service to trigger the notification", checkmk_agent)
         service_search_page.filter_sidebar.apply_filters(service_search_page.services_table)
-        service_search_page.reschedule_check(host_name, "Check_MK")
+        service_search_page.reschedule_check(host_name, checkmk_agent)
         service_summary = service_search_page.wait_for_check_status_update(
             host_name, service_name, "warn/crit at"
         )
@@ -160,23 +159,25 @@ def test_filesystem_email_notifications(
         notification_configuration_page.check_total_sent_notifications_has_changed(total_sent)
         notification_configuration_page.check_failed_notifications_has_not_changed(total_failures)
 
-        with manage_new_page_from_browser_context(service_search_page.page.context) as new_page:
-            email_page = EmailPage(new_page, html_file_path)
-            email_page.check_table_content(expected_content)
+        new_page = dashboard_page.page.context.new_page()
+        email_page = EmailPage(new_page, html_file_path)
+        email_page.check_table_content(expected_content)
+        new_page.close()
 
     finally:
         logger.info("Delete the created rule")
         notification_configuration_page.navigate()
         # The scrollbar interrupts the interaction with rule delete button -> collapse overview
         notification_configuration_page.collapse_notification_overview(True)
+        # delete the cloned rule.
         notification_configuration_page.delete_notification_rule(notification_description)
 
         logger.info("Enable the default notification rule")
-        edit_notification_rule_page = EditNotificationRule(
+        default_notification_rule_page = EditNotificationRule(
             notification_configuration_page.page, rule_position=0
         )
-        edit_notification_rule_page.check_disable_rule(False)
-        edit_notification_rule_page.apply_and_create_another_rule_button.click()
+        default_notification_rule_page.check_disable_rule(False)
+        default_notification_rule_page.apply_and_create_another_rule_button.click()
 
         if service_search_page is not None:
             filesystems_rules_page = Ruleset(
@@ -187,6 +188,7 @@ def test_filesystem_email_notifications(
             logger.info("Delete the filesystems rule")
             filesystems_rules_page.delete_rule(rule_id=filesystem_rule_description)
             filesystems_rules_page.activate_changes(test_site)
+            test_site.schedule_check(host_name, checkmk_agent)
 
 
 def test_email_notifications_host_filters(
@@ -207,25 +209,25 @@ def test_email_notifications_host_filters(
 
     # pre-condition for this test to be successful
     expect(
-        notification_configuration_page.main_area.locator().get_by_role(
-            "cell", name=re.compile("conditions")
-        ),
+        notification_configuration_page.notification_rule_rows,
         message="Only one notification rule expected",
     ).to_have_count(1)
 
     notification_configuration_page.expand_conditions()
 
     expect(
-        notification_configuration_page.main_area.locator().get_by_text(host_name),
+        notification_configuration_page.notification_rule_condition(
+            rule_number=0, condition_name="Match hosts:"
+        ),
         message=f"Expected host '{host_name}' in rule conditions",
-    ).not_to_have_count(0)
+    ).to_have_text(host_name)
 
     edit_notification_rule_page = EditNotificationRule(
         notification_configuration_page.page, rule_position=0
     )
     edit_notification_rule_page.expand_host_filters()
-    edit_notification_rule_page.hosts_textfield.first.click()
+    edit_notification_rule_page.hosts_dropdown_list().click()
     expect(
-        edit_notification_rule_page.main_area.locator().get_by_text(host_name),
+        edit_notification_rule_page.hosts_dropdown_list(),
         message=f"Expected rule to be filtered by host: '{host_name}'",
-    ).to_have_count(1)
+    ).to_contain_text(host_name)
