@@ -6,18 +6,21 @@
 import sys
 from collections.abc import Sequence
 from io import StringIO
-from pathlib import Path
 
 import pytest
 
 from tests.testlib.unit.base_configuration_scenario import Scenario
 
-from cmk.utils.hostaddress import HostName
+from cmk.ccc.hostaddress import HostName
+
 from cmk.utils.labels import Labels
 from cmk.utils.paths import default_config_dir
 from cmk.utils.rulesets.ruleset_matcher import RuleSpec
 
-from cmk.automations.results import AnalyzeHostRuleMatchesResult, AnalyzeServiceRuleMatchesResult
+from cmk.automations.results import (
+    AnalyzeHostRuleMatchesResult,
+    AnalyzeServiceRuleMatchesResult,
+)
 
 from cmk.base.automations.check_mk import (
     AutomationAnalyzeHostRuleMatches,
@@ -35,7 +38,7 @@ def fixture_mock_analyze_host_rule_matches_automation(monkeypatch: pytest.Monkey
     with a direct call to the automation"""
 
     def analyze_with_matcher(
-        h: HostName, r: Sequence[Sequence[RuleSpec]]
+        h: HostName, r: Sequence[Sequence[RuleSpec]], *, debug: bool
     ) -> AnalyzeHostRuleMatchesResult:
         ts = Scenario()
         ts.add_host(HostName("ding"))
@@ -55,10 +58,12 @@ def fixture_mock_analyze_host_rule_matches_automation(monkeypatch: pytest.Monkey
 def test_analyse_host_ruleset() -> None:
     ruleset = _test_host_ruleset(folder := FolderTree().root_folder())
     _test_hosts(folder)
-    (Path(default_config_dir) / "main.mk").touch()
-    FolderRulesets({ruleset.name: ruleset}, folder=folder).save_folder()
+    (default_config_dir / "main.mk").touch()
+    FolderRulesets({ruleset.name: ruleset}, folder=folder).save_folder(
+        pprint_value=False, debug=False
+    )
 
-    result = ruleset.analyse_ruleset(HostName("ding"), None, None, {})
+    result = ruleset.analyse_ruleset(HostName("ding"), None, None, {}, debug=False)
     assert isinstance(result, tuple)
     assert len(result) == 2
 
@@ -70,7 +75,7 @@ def test_analyse_host_ruleset() -> None:
     assert entry[1] == 1  # index of rule in folder
     assert isinstance(entry[2], Rule)
 
-    result = ruleset.analyse_ruleset(HostName("dong"), None, None, {})
+    result = ruleset.analyse_ruleset(HostName("dong"), None, None, {}, debug=False)
     assert isinstance(result, tuple)
     assert len(result) == 2
 
@@ -88,7 +93,8 @@ def _test_hosts(folder: Folder) -> None:
         [
             (HostName("ding"), {}, None),
             (HostName("dong"), {}, None),
-        ]
+        ],
+        pprint_value=False,
     )
 
 
@@ -153,6 +159,8 @@ def fixture_mock_analyze_service_rule_matches_automation(monkeypatch: pytest.Mon
         service_or_item: str,
         service_labels: Labels,
         rules: Sequence[Sequence[RuleSpec]],
+        *,
+        debug: bool,
     ) -> AnalyzeServiceRuleMatchesResult:
         ts = Scenario()
         ts.add_host(HostName("ding"))
@@ -173,10 +181,12 @@ def fixture_mock_analyze_service_rule_matches_automation(monkeypatch: pytest.Mon
 def test_analyse_service_ruleset() -> None:
     ruleset = _test_service_ruleset(folder := FolderTree().root_folder())
     _test_hosts(folder)
-    (Path(default_config_dir) / "main.mk").touch()
-    FolderRulesets({ruleset.name: ruleset}, folder=folder).save_folder()
+    (default_config_dir / "main.mk").touch()
+    FolderRulesets({ruleset.name: ruleset}, folder=folder).save_folder(
+        pprint_value=False, debug=False
+    )
 
-    result = ruleset.analyse_ruleset(HostName("ding"), "Ding", "Ding", {})
+    result = ruleset.analyse_ruleset(HostName("ding"), "Ding", "Ding", {}, debug=False)
     assert isinstance(result, tuple)
     assert len(result) == 2
 
@@ -188,7 +198,9 @@ def test_analyse_service_ruleset() -> None:
     assert entry[1] == 0  # index of rule in folder
     assert isinstance(entry[2], Rule)
 
-    result = ruleset.analyse_ruleset(HostName("ding"), "Not matching", "Not matching", {})
+    result = ruleset.analyse_ruleset(
+        HostName("ding"), "Not matching", "Not matching", {}, debug=False
+    )
     assert result == (None, [])
 
 

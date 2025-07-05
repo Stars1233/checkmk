@@ -9,6 +9,7 @@ import abc
 import json
 import os
 import platform
+import re
 import shutil
 import subprocess
 import tarfile
@@ -28,12 +29,12 @@ import requests
 import livestatus
 
 import cmk.ccc.version as cmk_version
-from cmk.ccc import site, store
+from cmk.ccc import site, store, tty
+from cmk.ccc.hostaddress import HostName
 from cmk.ccc.i18n import _
 from cmk.ccc.site import omd_site
 
 import cmk.utils.paths
-from cmk.utils import tty
 from cmk.utils.diagnostics import (
     CheckmkFileEncryption,
     CheckmkFileInfoByRelFilePathMap,
@@ -57,12 +58,16 @@ from cmk.utils.diagnostics import (
     OPT_OMD_CONFIG,
     OPT_PERFORMANCE_GRAPHS,
 )
-from cmk.utils.hostaddress import HostName
 from cmk.utils.licensing.usage import deserialize_dump
 from cmk.utils.local_secrets import SiteInternalSecret
 from cmk.utils.log import console, section
 from cmk.utils.paths import omd_root
-from cmk.utils.structured_data import SDNodeName, SDRawTree, serialize_tree, TreeStore
+from cmk.utils.structured_data import (
+    InventoryStore,
+    SDNodeName,
+    SDRawTree,
+    serialize_tree,
+)
 
 from cmk.base.config import LoadedConfigFragment
 
@@ -195,7 +200,10 @@ class DiagnosticsDump:
 
         if OPT_CHECKMK_OVERVIEW in parameters:
             optional_elements.append(
-                CheckmkOverviewDiagnosticsElement(parameters.get(OPT_CHECKMK_OVERVIEW, ""))
+                CheckmkOverviewDiagnosticsElement(
+                    InventoryStore(cmk.utils.paths.omd_root),
+                    parameters.get(OPT_CHECKMK_OVERVIEW, ""),
+                )
             )
 
         if parameters.get(OPT_CHECKMK_CRASH_REPORTS):
@@ -427,10 +435,13 @@ class FilesSizeCSVDiagnosticsElement(ABCDiagnosticsElementCSVDump):
     def _collect_infos(self) -> DiagnosticsElementCSVResult:
         csv_data = []
         csv_data.append("size;path;owner;group;mode;changed")
+        tmp_file_regex = re.compile(r"^\..*\.new.*")
         for dirpath, _dirnames, filenames in os.walk(cmk.utils.paths.omd_root):
             for file in filenames:
                 f = Path(dirpath).joinpath(file)
                 if f.is_symlink():
+                    continue
+                if re.match(tmp_file_regex, f.name):
                     continue
                 csv_data.append(
                     ";".join(
@@ -747,9 +758,7 @@ class PipFreezeDiagnosticsElement(ABCDiagnosticsElementJSONDump):
     def _collect_infos(self) -> DiagnosticsElementJSONResult:
         # Execute pip freeze and convert to JSON
 
-        lines = subprocess.check_output(
-            ["pip3", "freeze", "--all", "--no-python-version-warning"], text=True
-        ).split("\n")
+        lines = subprocess.check_output(["pip3", "freeze", "--all"], text=True).split("\n")
         return {l.split("==")[0]: l.split("==")[1] for l in lines if "==" in l}
 
 
@@ -909,7 +918,8 @@ class OMDConfigDiagnosticsElement(ABCDiagnosticsElementJSONDump):
 
 
 class CheckmkOverviewDiagnosticsElement(ABCDiagnosticsElementJSONDump):
-    def __init__(self, checkmk_server_host: str) -> None:
+    def __init__(self, inventory_store: InventoryStore, checkmk_server_host: str) -> None:
+        self.inventory_store = inventory_store
         self.checkmk_server_host = checkmk_server_host
 
     @property
@@ -933,9 +943,7 @@ class CheckmkOverviewDiagnosticsElement(ABCDiagnosticsElementJSONDump):
     def _collect_infos(self) -> SDRawTree:
         checkmk_server_host = verify_checkmk_server_host(self.checkmk_server_host)
         try:
-            tree = TreeStore(Path(cmk.utils.paths.inventory_output_dir)).load(
-                host_name=checkmk_server_host
-            )
+            tree = self.inventory_store.load_inventory_tree(host_name=checkmk_server_host)
         except FileNotFoundError:
             raise DiagnosticsElementError(
                 "No HW/SW Inventory tree of '%s' found" % checkmk_server_host
@@ -1001,11 +1009,13 @@ class ABCCheckmkFilesDiagnosticsElement(ABCDiagnosticsElement):
         # We 'encrypt' only license thingies at the moment, so there is currently no need to
         # sanitize encrypted files
         elif str(rel_filepath) == "multisite.d/sites.mk":
-            sites = store.load_from_mk_file(filepath, "sites", {})
+            sites = store.load_from_mk_file(
+                filepath, key="sites", default=livestatus.SiteConfigurations({}), lock=False
+            )
             store.save_to_mk_file(
                 tmp_filepath,
-                "sites",
-                {
+                key="sites",
+                value={
                     siteid: livestatus.sanitize_site_configuration(config)
                     for siteid, config in sites.items()
                 },
@@ -1175,11 +1185,12 @@ class PerformanceGraphsDiagnosticsElement(ABCDiagnosticsElement):
             ]
         )
 
-        return requests.post(  # nosec B113 # BNS:773085
+        return requests.post(
             url,
             headers={
                 "Authorization": internal_secret,
             },
+            timeout=900,
         )
 
 

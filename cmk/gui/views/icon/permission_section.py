@@ -6,16 +6,8 @@
 from cmk.gui.i18n import _
 from cmk.gui.permissions import PermissionSection
 
-
-class PermissionSectionIconsAndActions(PermissionSection):
-    @property
-    def name(self) -> str:
-        return "icons_and_actions"
-
-    @property
-    def title(self) -> str:
-        return _("Icons")
-
-    @property
-    def do_sort(self):
-        return True
+PERMISSION_SECTION_ICONS_AND_ACTIONS = PermissionSection(
+    name="icons_and_actions",
+    title=_("Icons and Actions"),
+    do_sort=True,
+)

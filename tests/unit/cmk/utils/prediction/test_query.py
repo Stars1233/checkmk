@@ -5,7 +5,8 @@
 
 from livestatus import LocalConnection
 
-from cmk.utils.hostaddress import HostName
+from cmk.ccc.hostaddress import HostName
+
 from cmk.utils.livestatus_helpers.testing import MockLiveStatusConnection, SiteName
 from cmk.utils.prediction import DataStat, PredictionData
 from cmk.utils.prediction._query import PredictionQuerier
@@ -46,7 +47,7 @@ class TestPredictionQuerier:
                     f"prediction_file:file:{metric}/everyday-lower.info": expected_prediction_info.model_dump_json().encode(),
                 }
             ],
-            site=SiteName("local"),
+            site=SiteName("NO_SITE"),
         )
         mock_livestatus.expect_query(
             "GET services\n"
@@ -97,7 +98,7 @@ class TestPredictionQuerier:
                     f"prediction_file:file:{metric}/day-1234-lower": expected_prediction_data.model_dump_json().encode(),
                 }
             ],
-            site=SiteName("local"),
+            site=SiteName("NO_SITE"),
         )
         mock_livestatus.expect_query(
             "GET services\n"

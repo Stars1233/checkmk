@@ -11,11 +11,12 @@ from logging import Logger
 from pathlib import Path
 from typing import NamedTuple, override
 
+from cmk.ccc.hostaddress import HostAddress, HostName
 from cmk.ccc.site import omd_site, SiteId
 
 import cmk.utils.paths
-from cmk.utils.hostaddress import HostAddress, HostName
 
+from cmk.gui.config import active_config
 from cmk.gui.i18n import _
 from cmk.gui.session import SuperUserContext
 from cmk.gui.site_config import is_wato_slave_site
@@ -39,7 +40,7 @@ class MigrateParentsMK(UpdateAction):
     @override
     def __call__(self, logger: Logger) -> None:
         results: dict[Path, ParentsMKResult] = {}
-        for path in Path(cmk.utils.paths.check_mk_config_dir).glob("*.mk"):
+        for path in cmk.utils.paths.check_mk_config_dir.glob("*.mk"):
             with open(path) as f:
                 first_line = f.readline()
                 if not first_line.startswith("# Automatically created by --scan-parents at"):
@@ -88,7 +89,10 @@ class MigrateParentsMK(UpdateAction):
                     assert parents_folder is not None
                 else:
                     parents_folder = root.create_subfolder(
-                        "migrated_parents", _("Migrated Parents"), {}
+                        "migrated_parents",
+                        _("Migrated Parents"),
+                        {},
+                        pprint_value=active_config.wato_pprint_config,
                     )
 
                 for result in results.values():
@@ -146,7 +150,9 @@ class MigrateParentsMK(UpdateAction):
                 attributes = self._determine_attributes(
                     result.ipaddresses[host_name_str], central_site_id
                 )
-                parents_folder.create_hosts([(host_name, attributes, None)])
+                parents_folder.create_hosts(
+                    [(host_name, attributes, None)], pprint_value=active_config.wato_pprint_config
+                )
 
     def _assign_parents(self, result: ParentsMKResult) -> None:
         tree = folder_tree()
@@ -157,7 +163,8 @@ class MigrateParentsMK(UpdateAction):
         for child_host_name, parents in result.parents.items():
             if (child_host := hosts.get(HostName(child_host_name))) is not None:
                 child_host.update_attributes(
-                    {"parents": [HostAddress(parent) for parent in parents]}
+                    {"parents": [HostAddress(parent) for parent in parents]},
+                    pprint_value=active_config.wato_pprint_config,
                 )
 
     def _deactivate_mk(self, path: Path) -> None:

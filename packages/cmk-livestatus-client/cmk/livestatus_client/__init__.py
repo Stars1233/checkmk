@@ -23,7 +23,7 @@ from datetime import datetime
 from enum import Enum
 from functools import cache
 from io import BytesIO
-from typing import Any, Literal, NamedTuple, NewType, override, TypedDict
+from typing import Any, Literal, NamedTuple, NewType, NotRequired, override, TypedDict
 
 from cmk.ccc.site import SiteId
 
@@ -78,15 +78,12 @@ class ProxyConfig(TypedDict, total=False):
     tcp: ProxyConfigTcp
 
 
-class SiteConfiguration(TypedDict, total=False):
-    """SiteConfiguration = NewType("SiteConfiguration", Dict[str, Any])"""
-
+class SiteConfiguration(TypedDict):
     alias: str
-    ca_file_path: str | None
-    customer: str
+    customer: NotRequired[str]  # CME specific attribute: Not set in other editions
     disable_wato: bool
     disabled: bool
-    globals: SiteGlobals
+    globals: NotRequired[SiteGlobals]  # Set when configuring site specific global settings
     id: SiteId
     insecure: bool
     multisiteurl: str
@@ -96,7 +93,7 @@ class SiteConfiguration(TypedDict, total=False):
     replicate_mkps: bool
     replication: str | None
     message_broker_port: int
-    secret: str
+    secret: NotRequired[str]  # Set when doing the site login
     status_host: tuple[SiteId, str] | None
     timeout: int
     url_prefix: str
@@ -107,9 +104,11 @@ class SiteConfiguration(TypedDict, total=False):
     # probably be moved into the SingleSiteConnection
     socket: str | UnixSocketInfo | NetworkSocketInfo | LocalSocketInfo
 
-    # Livestatus specific
-    cache: bool
-    tls: TLSInfo
+    # There are actually transforms in place to convert from Checkmk managed config to the
+    # livestatus client (see cmk.gui.sites._site_config_for_livestatus). Would be desirable to
+    # clean up this conversion or make independent types of it.
+    cache: NotRequired[bool]
+    tls: NotRequired[TLSInfo]
 
 
 def sanitize_site_configuration(config: SiteConfiguration) -> dict[str, object]:
@@ -189,6 +188,10 @@ class MKLivestatusSocketError(MKLivestatusException):
 
 
 class MKLivestatusSocketClosed(MKLivestatusSocketError):
+    pass
+
+
+class MKLivestatusCertificateError(MKLivestatusSocketError):
     pass
 
 
@@ -401,7 +404,7 @@ class Helpers:
 
 
 @cache
-def get_livestatus_blob_columns() -> set[LivestatusColumn]:
+def get_livestatus_blob_columns() -> set[str]:
     # These columns should get queried from the core
     return {
         "current_host_mk_inventory",
@@ -432,8 +435,14 @@ def get_livestatus_blob_columns() -> set[LivestatusColumn]:
 @dataclass
 class QuerySpecification:
     table: str
-    columns: Sequence[LivestatusColumn] = field(default_factory=list)
+    columns: Sequence[str] = field(default_factory=list)
     headers: str = ""
+
+    def __post_init__(self) -> None:
+        if isinstance(self.columns, str):
+            raise TypeError(
+                "'columns' must be a sequence of column names, got %r" % type(self.columns).__name__
+            )
 
     @override
     def __str__(self) -> str:
@@ -824,6 +833,9 @@ class SingleSiteConnection(Helpers):
             if code == "413":
                 raise MKLivestatusPayloadTooLargeError(error_info)
 
+            if code == "495":
+                raise MKLivestatusCertificateError(error_info)
+
             if code == "502":
                 raise MKLivestatusBadGatewayError(error_info)
 
@@ -859,6 +871,13 @@ class SingleSiteConnection(Helpers):
 
         except suppress_exceptions:
             raise
+
+        except MKLivestatusCertificateError as e:
+            raise MKLivestatusCertificateError(
+                "SSL certificate verification failed. "
+                "The remote certificate(s) might not be trusted. Edit this site's Livestatus encryption to trust them. "
+                "Technical error: %s" % e
+            )
 
         except Exception as e:
             # Catches
@@ -1128,10 +1147,7 @@ class MultiSiteConnection(Helpers):
                     elif shs == 3:
                         ex = "The remote monitoring host's state it not yet determined"
                     elif shs == 4:
-                        ex = "Invalid status host: site {} has no host {!r}".format(
-                            status_host[0],
-                            status_host[1],
-                        )
+                        ex = f"Invalid status host: site {status_host[0]} has no host {status_host[1]!r}"
                     else:
                         ex = "Error determining state of remote monitoring host: %s" % shs
                     self.deadsites[sitename] = {
@@ -1460,9 +1476,14 @@ class LocalConnection(SingleSiteConnection):
             raise MKLivestatusConfigError(
                 "OMD_ROOT is not set. You are not running in OMD context."
             )
+        omd_site = os.getenv("OMD_SITE")
+        if not omd_site:
+            raise MKLivestatusConfigError(
+                "OMD_SITE is not set. You are not running in OMD context."
+            )
         super().__init__(
             "unix:" + omd_root + "/tmp/run/live",  # nosec B108 # BNS:7a2427
-            SiteId("local"),
+            SiteId(omd_site),
             *args,
             **kwargs,
         )

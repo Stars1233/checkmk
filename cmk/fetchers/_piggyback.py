@@ -7,12 +7,12 @@ import json
 import logging
 import time
 from collections.abc import Sequence
+from pathlib import Path
 from typing import Final
 
+from cmk.ccc.hostaddress import HostAddress, HostName
+
 from cmk.utils.agentdatatype import AgentRawData
-from cmk.utils.hostaddress import HostAddress, HostName
-from cmk.utils.log import VERBOSE
-from cmk.utils.paths import omd_root
 
 from cmk.piggyback.backend import Config as PiggybackConfig
 from cmk.piggyback.backend import get_messages_for, PiggybackMessage, PiggybackTimeSettings
@@ -27,12 +27,14 @@ class PiggybackFetcher(Fetcher[AgentRawData]):
         hostname: HostName,
         address: HostAddress | None,
         time_settings: PiggybackTimeSettings,
+        omd_root: Path,
     ) -> None:
         super().__init__()
         self.hostname: Final = hostname
         self.address: Final = address
         self.config: Final = PiggybackConfig(hostname, time_settings)
         self.time_settings: Final = time_settings
+        self.omd_root: Final = omd_root
         self._logger: Final = logging.getLogger("cmk.helper.piggyback")
         self._sources: list[PiggybackMessage] = []
 
@@ -63,14 +65,14 @@ class PiggybackFetcher(Fetcher[AgentRawData]):
             line
             for origin in (self.hostname, self.address)
             if origin
-            for line in PiggybackFetcher._raw_data(origin)
+            for line in PiggybackFetcher._raw_data(origin, self.omd_root)
         )
 
     def close(self) -> None:
         self._sources.clear()
 
     def _fetch_from_io(self, mode: Mode) -> AgentRawData:
-        self._logger.log(VERBOSE, "Get piggybacked data")
+        self._logger.debug("Get piggybacked data")
         return AgentRawData(
             bytes(
                 self._get_main_section()
@@ -114,5 +116,5 @@ class PiggybackFetcher(Fetcher[AgentRawData]):
         return ("<<<labels:sep(0)>>>\n%s\n" % json.dumps(labels)).encode("utf-8")
 
     @staticmethod
-    def _raw_data(hostname: HostAddress) -> Sequence[PiggybackMessage]:
+    def _raw_data(hostname: HostAddress, omd_root: Path) -> Sequence[PiggybackMessage]:
         return get_messages_for(hostname, omd_root)

@@ -6,7 +6,7 @@
 
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Any, Literal, TypedDict
+from typing import Any, Literal
 
 from livestatus import BrokerConnections, SiteConfigurations
 
@@ -14,6 +14,8 @@ from cmk.ccc.version import Edition, edition
 
 from cmk.utils import paths
 from cmk.utils.tags import TagConfigSpec
+
+from cmk.checkengine.discovery import DiscoverySettingFlags
 
 from cmk.gui.type_defs import (
     BuiltinIconVisibility,
@@ -23,6 +25,7 @@ from cmk.gui.type_defs import (
     IconSpec,
     TrustedCertificateAuthorities,
     UserSpec,
+    VirtualHostTreeSpec,
 )
 from cmk.gui.utils.temperate_unit import TemperatureUnit
 
@@ -77,13 +80,6 @@ def make_default_user_profile() -> UserSpec:
 
 
 ActivateChangesCommentMode = Literal["enforce", "optional", "disabled"]
-
-
-class VirtualHostTreeSpec(TypedDict):
-    id: str
-    title: str
-    exclude_empty_tag_choices: bool
-    tree_spec: Sequence[str]
 
 
 @dataclass
@@ -348,11 +344,13 @@ class CREConfig:
         default_factory=lambda: {
             "mode": (
                 "custom",
-                {
-                    "add_new_services": False,
-                    "remove_vanished_services": False,
-                    "update_host_labels": True,
-                },
+                DiscoverySettingFlags(
+                    add_new_services=False,
+                    remove_vanished_services=False,
+                    update_changed_service_labels=False,
+                    update_changed_service_parameters=False,
+                    update_host_labels=True,
+                ),
             ),
             "selection": (True, False, False, False),
             "performance": (True, 10),

@@ -4,9 +4,9 @@
 # conditions defined in the file COPYING, which is part of this source code package.
 
 import cmk.ccc.version as cmk_version
+from cmk.ccc.user import UserId
 
 from cmk.utils import paths
-from cmk.utils.user import UserId
 
 from cmk.gui.i18n import _, _l
 from cmk.gui.type_defs import ColumnSpec, SorterSpec, VisualLinkSpec
@@ -220,7 +220,7 @@ ProblemsDashboard = DashboardConfig(
         "add_context_to_title": True,
         "is_show_more": False,
         "packaged": False,
-        "megamenu_search_terms": [],
+        "main_menu_search_terms": [],
     }
 )
 
@@ -342,7 +342,7 @@ SimpleProblemsDashboard = DashboardConfig(
         "add_context_to_title": True,
         "is_show_more": False,
         "packaged": False,
-        "megamenu_search_terms": [],
+        "main_menu_search_terms": [],
     }
 )
 
@@ -394,6 +394,6 @@ CheckmkOverviewDashboard = DashboardConfig(
         "name": "checkmk",
         "is_show_more": False,
         "packaged": False,
-        "megamenu_search_terms": [],
+        "main_menu_search_terms": [],
     }
 )

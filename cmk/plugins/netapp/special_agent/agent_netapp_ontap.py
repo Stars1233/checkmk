@@ -5,7 +5,8 @@
 
 import logging
 import sys
-from collections.abc import Iterable, Sequence
+from collections.abc import Collection, Iterable, Sequence
+from enum import Enum
 
 import requests
 from netapp_ontap import resources as NetAppResource
@@ -21,6 +22,32 @@ from cmk.special_agents.v0_unstable.request_helper import HostnameValidationAdap
 __version__ = "2.5.0b1"
 
 USER_AGENT = f"checkmk-special-netapp-ontap-{__version__}"
+
+
+class FetchedResource(Enum):
+    """Available NetApp resources for API fetching"""
+
+    volumes = "volumes"
+    volumes_counters = "volumes_counters"
+    disk = "disk"
+    luns = "luns"
+    aggr = "aggr"
+    vs_status = "vs_status"
+    ports = "ports"
+    interfaces = "interfaces"
+    node = "node"
+    fan = "fan"
+    temp = "temp"
+    alerts = "alerts"
+    vs_traffic = "vs_traffic"
+    psu = "psu"
+    environment = "environment"
+    qtree_quota = "qtree_quota"
+    snapvault = "snapvault"
+    fc_interfaces = "fc_interfaces"
+
+    def __str__(self):
+        return self.value
 
 
 def write_section(
@@ -279,18 +306,33 @@ def fetch_luns(connection: HostConnection) -> Iterable[models.LunModel]:
         )
 
 
-def fetch_aggr(connection: HostConnection) -> Iterable[models.AggregateModel]:
+def _aggregates_ids(connection: HostConnection, args: Args) -> Collection:
+    # wee need to retrieve the uuid of the aggregates via the CLI passthrough
+    # because the REST API does not return, per design, the uuid of the root aggregates
+    response = requests.get(
+        url=f"{connection.origin}/api/private/cli/aggr?fields=uuid",
+        headers=connection.headers,
+        verify=False if args.no_cert_check else True,  # pylint: disable=simplifiable-if-expression
+        auth=(connection.username, connection.password),  # type: ignore[arg-type]
+        timeout=args.timeout,
+    )
+
+    records = response.json().get("records", [])
+    return {record["uuid"] for record in records}
+
+
+def fetch_aggr(connection: HostConnection, args: Args) -> Iterable[models.AggregateModel]:
     field_query = (
         "name",
         "space.block_storage.available",
         "space.block_storage.size",
     )
-    yield from (
-        models.AggregateModel.model_validate(element.to_dict())
-        for element in NetAppResource.Aggregate.get_collection(
-            connection=connection, fields=",".join(field_query)
-        )
-    )
+
+    aggregates = _aggregates_ids(connection, args)
+    for aggr_uuid in aggregates:
+        resource = NetAppResource.Aggregate(uuid=aggr_uuid)
+        resource.get(fields=",".join(field_query))
+        yield models.AggregateModel.model_validate(resource.to_dict())
 
 
 def fetch_vs_status(connection: HostConnection) -> Iterable[models.SvmModel]:
@@ -455,7 +497,7 @@ def fetch_fans(connection: HostConnection) -> Iterable[models.ShelfFanModel]:
         "fans.id",
         "fans.state",
         # "fans.rpm",        # Can be missing, currently unused
-        # "fans.installed",  # ! NOT WORKING
+        "fans.installed",
     )
 
     for element in NetAppResource.Shelf.get_collection(
@@ -470,6 +512,7 @@ def fetch_fans(connection: HostConnection) -> Iterable[models.ShelfFanModel]:
                 list_id=list_id,
                 id=fan["id"],
                 state=fan["state"],
+                installed=fan.get("installed"),
             )
 
 
@@ -478,7 +521,7 @@ def fetch_psu(connection: HostConnection) -> Iterable[models.ShelfPsuModel]:
         "id",
         "frus.id",
         "frus.state",
-        # "fans.installed",  # ! NOT WORKING
+        "frus.installed",
     )
 
     for element in NetAppResource.Shelf.get_collection(
@@ -488,11 +531,12 @@ def fetch_psu(connection: HostConnection) -> Iterable[models.ShelfPsuModel]:
         list_id = element_data["id"]
         frus = element_data.get("frus", [])
 
-        for fan in frus:
+        for fru in frus:
             yield models.ShelfPsuModel(
                 list_id=list_id,
-                id=fan["id"],
-                state=fan["state"],
+                id=fru["id"],
+                state=fru["state"],
+                installed=fru.get("installed"),
             )
 
 
@@ -503,7 +547,7 @@ def fetch_temperatures(
         "id",
         "temperature_sensors.id",
         "temperature_sensors.state",
-        # "fans.installed",  # ! NOT WORKING
+        "temperature_sensors.installed",
         "temperature_sensors.temperature",
         "temperature_sensors.ambient",
         "temperature_sensors.threshold.low.warning",
@@ -523,7 +567,7 @@ def fetch_temperatures(
             yield models.ShelfTemperatureModel(
                 list_id=list_id,
                 id=temp["id"],
-                # installed=temp["installed"],
+                installed=temp.get("installed"),
                 state=temp["state"],
                 temperature=temp.get("temperature"),
                 ambient=temp["ambient"],
@@ -698,13 +742,13 @@ def fetch_environment(connection):
             name=element_data["name"],
             node_name=element_data["node"]["name"],
             sensor_type=element_data["type"],
-            value=element_data["value"],
+            value=element_data.get("value"),
             warning_high_threshold=element_data.get("warning_high_threshold"),
             warning_low_threshold=element_data.get("warning_low_threshold"),
             critical_high_threshold=element_data.get("critical_high_threshold"),
             critical_low_threshold=element_data.get("critical_low_threshold"),
             threshold_state=element_data["threshold_state"],
-            value_units=element_data["value_units"],
+            value_units=element_data.get("value_units"),
         )
 
     for element in NetAppResource.Sensors.get_collection(
@@ -715,7 +759,7 @@ def fetch_environment(connection):
             name=element_data["name"],
             node_name=element_data["node"]["name"],
             sensor_type=element_data["type"],
-            discrete_value=element_data["discrete_value"],
+            discrete_value=element_data.get("discrete_value"),
             discrete_state=element_data["discrete_state"],
         )
 
@@ -754,6 +798,7 @@ def fetch_snapmirror(
 ) -> Iterable[models.SnapMirrorModel]:
     field_query = (
         "state",
+        "transfer.state",
         "policy.name",
         "policy.type",
         "source.svm.name",
@@ -773,6 +818,7 @@ def fetch_snapmirror(
             policy_name=element_data["policy"]["name"],
             policy_type=element_data["policy"]["type"],
             state=element_data.get("state"),
+            transfer_state=element_data.get("transfer", {}).get("state"),
             source_svm_name=element_data["source"]["svm"]["name"],
             lag_time=element_data.get("lag_time"),
             destination=element_data["destination"]["path"],
@@ -812,31 +858,75 @@ def fetch_fc_ports(connection: HostConnection) -> Iterable[models.FcPortModel]:
 
 
 def write_sections(connection: HostConnection, logger: logging.Logger, args: Args) -> None:
-    volumes = list(fetch_volumes(connection))
-    write_section("volumes", volumes, logger)
+    """Write monitoring sections based on selected resources"""
+    fetched_resources = {obj.value for obj in args.fetched_resources}
 
-    if "volumes" not in args.no_counters:
+    # Store interfaces and volumes for counter sections that depend on them
+    volumes = None
+
+    if (
+        FetchedResource.volumes.value in fetched_resources
+        or FetchedResource.volumes_counters.value in fetched_resources
+    ):
+        volumes = list(fetch_volumes(connection))
+        write_section("volumes", volumes, logger)
+
+    # Volume counters (depends on volumes)
+    if FetchedResource.volumes_counters.value in fetched_resources:
+        if volumes is None:
+            volumes = list(fetch_volumes(connection))
         write_section("volumes_counters", fetch_volumes_counters(connection, volumes), logger)
 
-    write_section("disk", fetch_disks(connection), logger)
-    write_section("luns", fetch_luns(connection), logger)
-    write_section("aggr", fetch_aggr(connection), logger)
-    write_section("vs_status", fetch_vs_status(connection), logger)
-    write_section("ports", fetch_ports(connection), logger)
-    interfaces = list(fetch_interfaces(connection))
-    write_section("if", interfaces, logger)
-    write_section("if_counters", fetch_interfaces_counters(connection, interfaces), logger)
-    write_section("node", fetch_nodes(connection), logger)
-    write_section("fan", fetch_fans(connection), logger)
-    write_section("temp", fetch_temperatures(connection), logger)
-    write_section("alerts", fetch_alerts(connection, args), logger)
-    write_section("vs_traffic", fetch_vs_traffic_counters(connection), logger)
-    write_section("psu", fetch_psu(connection), logger)
-    write_section("environment", fetch_environment(connection), logger)
-    write_section("qtree_quota", fetch_qtree_quota(connection), logger)
-    write_section("snapvault", fetch_snapmirror(connection), logger)
-    write_section("fc_ports", fetch_fc_ports(connection), logger)
-    write_section("fc_interfaces_counters", fetch_fc_interfaces_counters(connection), logger)
+    if FetchedResource.disk.value in fetched_resources:
+        write_section("disk", fetch_disks(connection), logger)
+
+    if FetchedResource.luns.value in fetched_resources:
+        write_section("luns", fetch_luns(connection), logger)
+
+    if FetchedResource.aggr.value in fetched_resources:
+        write_section("aggr", fetch_aggr(connection, args), logger)
+
+    if FetchedResource.qtree_quota.value in fetched_resources:
+        write_section("qtree_quota", fetch_qtree_quota(connection), logger)
+
+    if FetchedResource.snapvault.value in fetched_resources:
+        write_section("snapvault", fetch_snapmirror(connection), logger)
+
+    if FetchedResource.vs_status.value in fetched_resources:
+        write_section("vs_status", fetch_vs_status(connection), logger)
+
+    if FetchedResource.ports.value in fetched_resources:
+        write_section("ports", fetch_ports(connection), logger)
+
+    if FetchedResource.interfaces.value in fetched_resources:
+        interfaces = list(fetch_interfaces(connection))
+        write_section("if", interfaces, logger)
+        write_section("if_counters", fetch_interfaces_counters(connection, interfaces), logger)
+
+    if FetchedResource.node.value in fetched_resources:
+        write_section("node", fetch_nodes(connection), logger)
+
+    if FetchedResource.fan.value in fetched_resources:
+        write_section("fan", fetch_fans(connection), logger)
+
+    if FetchedResource.temp.value in fetched_resources:
+        write_section("temp", fetch_temperatures(connection), logger)
+
+    if FetchedResource.alerts.value in fetched_resources:
+        write_section("alerts", fetch_alerts(connection, args), logger)
+
+    if FetchedResource.vs_traffic.value in fetched_resources:
+        write_section("vs_traffic", fetch_vs_traffic_counters(connection), logger)
+
+    if FetchedResource.psu.value in fetched_resources:
+        write_section("psu", fetch_psu(connection), logger)
+
+    if FetchedResource.environment.value in fetched_resources:
+        write_section("environment", fetch_environment(connection), logger)
+
+    if FetchedResource.fc_interfaces.value in fetched_resources:
+        write_section("fc_ports", fetch_fc_ports(connection), logger)
+        write_section("fc_interfaces_counters", fetch_fc_interfaces_counters(connection), logger)
 
 
 def parse_arguments(argv: Sequence[str] | None) -> Args:
@@ -857,12 +947,31 @@ def parse_arguments(argv: Sequence[str] | None) -> Args:
         ),
     )
     parser.add_argument(
-        "--no-counters",
-        nargs="*",
-        type=str,
-        default=[],
-        choices=["volumes"],
-        help=('Skip counters for the given element. Right now only "volumes" is supported.'),
+        "--fetched-resources",
+        type=FetchedResource,
+        nargs="+",
+        default=[
+            FetchedResource.volumes,
+            FetchedResource.volumes_counters,
+            FetchedResource.disk,
+            FetchedResource.luns,
+            FetchedResource.aggr,
+            FetchedResource.vs_status,
+            FetchedResource.ports,
+            FetchedResource.interfaces,
+            FetchedResource.node,
+            FetchedResource.fan,
+            FetchedResource.temp,
+            FetchedResource.alerts,
+            FetchedResource.vs_traffic,
+            FetchedResource.psu,
+            FetchedResource.environment,
+            FetchedResource.qtree_quota,
+            FetchedResource.snapvault,
+            FetchedResource.fc_interfaces,
+        ],
+        help="The NetApp objects which are supposed to be fetched. Available resources: "
+        + ", ".join([obj.value for obj in FetchedResource]),
     )
     cert_args = parser.add_mutually_exclusive_group()
     cert_args.add_argument(

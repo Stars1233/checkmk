@@ -15,7 +15,8 @@ from tests.unit.cmk.web_test_app import WebTestAppForCMK
 from cmk.ccc.exceptions import MKGeneralException
 
 from cmk.gui import hooks
-from cmk.gui.pages import Page, page_registry
+from cmk.gui.config import Config
+from cmk.gui.pages import Page, page_registry, PageEndpoint
 
 
 @pytest.fixture()
@@ -76,15 +77,16 @@ def test_request_memoize_request_integration(
     def memoized():
         return mock()
 
-    @page_registry.register_page("my_page")
     class PageClass(Page):
-        def page(self) -> None:
+        def page(self, config: Config) -> None:
             mock.return_value = 1
             assert memoized() == 1
 
             # Test that it gives the memoized value instead of the new mock value
             mock.return_value = 2
             assert memoized() == 1
+
+    page_registry.register(PageEndpoint("my_page", PageClass))
 
     # Try a first request. Memoization within this request is tested in page() above.
     logged_in_wsgi_app.get("/NO_SITE/check_mk/my_page.py", status=200)
@@ -136,9 +138,8 @@ def test_threaded_memoize(
     def cached_function(x: int) -> int:
         return x * x
 
-    @page_registry.register_page("my_page")
     class PageClass(Page):
-        def page(self) -> None:
+        def page(self, config: Config) -> None:
             def worker(i: int) -> None:
                 cached_function(i)
                 cached_function(i)
@@ -166,6 +167,8 @@ def test_threaded_memoize(
                 assert cached_function.cache_info().misses == 10  # type: ignore[attr-defined]
             else:
                 assert cached_function.cache_info() is None  # type: ignore[attr-defined]
+
+    page_registry.register(PageEndpoint("my_page", PageClass))
 
     logged_in_wsgi_app.get("/NO_SITE/check_mk/my_page.py", status=200)
     # Note: Even after the get request from the line above, no request end has been called yet

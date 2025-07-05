@@ -8,16 +8,6 @@ filegroup(
     ),
 )
 
-#
-# This should be put somewhere toplevel, also avoiding the deprecated
-# --define syntax, see
-# https://bazel.build/docs/configurable-attributes
-#
-config_setting(
-    name = "omd_libgsf",
-    values = {"define": "omd-libgsf=true"},
-)
-
 configure_make(
     name = "msitools",
     args = ["-j4"],
@@ -36,7 +26,7 @@ configure_make(
         ]),
     } | select(
         {
-            ":omd_libgsf": {
+            "@//bazel/cmk/distro:sles": {
                 "GSF_LIBS": "-L$${EXT_BUILD_DEPS}/libgsf/lib -lgsf-1",
                 "GSF_CFLAGS": "-I$${EXT_BUILD_DEPS}/libgsf/include/libgsf-1",
             },
@@ -68,8 +58,29 @@ configure_make(
     visibility = ["//visibility:public"],
     deps = select(
         {
-            ":omd_libgsf": ["@libgsf"],
+            "@//bazel/cmk/distro:sles": ["@libgsf"],
             "//conditions:default": [],
         },
     ),
+)
+
+filegroup(
+    name = "gen_dir",
+    srcs = [":msitools"],
+    output_group = "gen_dir",
+    visibility = ["//visibility:public"],
+)
+
+filegroup(
+    name = "msibuild",
+    srcs = [":msitools"],
+    output_group = "msibuild",
+    visibility = ["//visibility:public"],
+)
+
+filegroup(
+    name = "msiinfo",
+    srcs = [":msitools"],
+    output_group = "msiinfo",
+    visibility = ["//visibility:public"],
 )

@@ -2,7 +2,7 @@ ARG DISTRO_IMAGE_BASE
 
 # hadolint ignore=DL3006
 # Create base image
-FROM ${DISTRO_IMAGE_BASE} as base
+FROM ${DISTRO_IMAGE_BASE} AS base
 
 SHELL ["/bin/bash", "-c"]
 ENV \
@@ -94,7 +94,7 @@ RUN ln -sf /usr/lib/mit/bin/krb5-config /usr/bin/
 # - cmake is needed for e.g. building re2
 # - openssl is needed by Python 3.7+
 # - python is needed by our build / test chain
-FROM base as builder
+FROM base AS builder
 ARG NEXUS_ARCHIVES_URL
 ARG NEXUS_USERNAME
 ARG NEXUS_PASSWORD
@@ -192,7 +192,7 @@ ENV RUSTUP_HOME=/opt/rust/rustup
 
 COPY ci.bazelrc /etc/
 RUN <<EOF cat >> /etc/ci.bazelrc
-common:ci --@//:filesystem_layout=fhs
+common:ci --@//bazel/cmk/distro="sles-15sp4"
 common:ci --action_env=DISTRO=${DISTRO}
 common:ci --action_env=BRANCH_VERSION=${BRANCH_VERSION}
 common:ci --action_env=RUSTUP_HOME=${RUSTUP_HOME}

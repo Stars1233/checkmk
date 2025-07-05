@@ -83,23 +83,28 @@ py_test(
         include = [
             # canned data
             "**/_check_form_submit_response",
-            "**/_innovaphone_vcrtrace",
             "**/test-files/**",
             "**/tree_test_data/**",
             "**/*.json",
             "**/*.log",
-            "**/*.pem",
-            "**/*.xml",
         ],
         exclude = ["**/*.py"],
-    ),
+    ) + select({
+        "@//:gpl_repo": [],
+        "@//:gpl+enterprise_repo": glob(
+            [
+                "**/*.xml",
+                "**/*.pem",
+            ],
+            allow_empty = True,
+        ),
+    }),
     main = ":__test__.py",
     deps = [
         ":__test__",
         requirement("astroid"),
         requirement("fastapi"),
         requirement("httpx"),
-        requirement("hypothesis"),
         requirement("mypy-boto3-logs"),
         requirement("mypy-extensions"),
         requirement("pika"),

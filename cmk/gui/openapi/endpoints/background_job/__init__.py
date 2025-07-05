@@ -23,8 +23,8 @@ from cmk.gui.openapi.endpoints.background_job.response_schemas import Background
 from cmk.gui.openapi.restful_objects import constructors, Endpoint
 from cmk.gui.openapi.restful_objects.registry import EndpointRegistry
 from cmk.gui.openapi.utils import problem, serve_json
-from cmk.gui.site_config import get_site_config, site_is_local
-from cmk.gui.watolib.automations import do_remote_automation
+from cmk.gui.site_config import site_is_local
+from cmk.gui.watolib.automations import do_remote_automation, RemoteAutomationConfig
 
 from cmk import fields as gui_fields
 
@@ -74,14 +74,15 @@ def show_background_job_snapshot(params: Mapping[str, Any]) -> Response:
     else:
         site_id = omd_site()
 
-    if not site_is_local(active_config, site_id):
+    if not site_is_local(site_config := active_config.sites[site_id]):
         snapshot = BackgroundStatusSnapshot.from_dict(
             json.loads(
                 str(
                     do_remote_automation(
-                        site=get_site_config(active_config, site_id),
+                        RemoteAutomationConfig.from_site_config(site_config),
                         command="fetch-background-job-snapshot",
                         vars_=[("job_id", job_id)],
+                        debug=active_config.debug,
                     )
                 )
             )
@@ -115,5 +116,5 @@ def show_background_job_snapshot(params: Mapping[str, Any]) -> Response:
     )
 
 
-def register(endpoint_registry: EndpointRegistry) -> None:
-    endpoint_registry.register(show_background_job_snapshot)
+def register(endpoint_registry: EndpointRegistry, *, ignore_duplicates: bool) -> None:
+    endpoint_registry.register(show_background_job_snapshot, ignore_duplicates=ignore_duplicates)

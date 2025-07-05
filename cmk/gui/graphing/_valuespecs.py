@@ -11,6 +11,7 @@ from typing import Any, assert_never, Literal, TypedDict
 
 from cmk.utils.metrics import MetricName as MetricName_
 
+from cmk.gui.config import active_config, Config
 from cmk.gui.exceptions import MKUserError
 from cmk.gui.htmllib.html import html
 from cmk.gui.i18n import _
@@ -39,7 +40,6 @@ from cmk.gui.valuespec import (
 )
 from cmk.gui.visuals import livestatus_query_bare
 
-from ..config import active_config
 from ._formatter import AutoPrecision, NotationFormatter, StrictPrecision, TimeFormatter
 from ._from_api import metrics_from_api, RegisteredMetric
 from ._graph_render_config import GraphRenderConfigBase
@@ -103,7 +103,7 @@ def migrate_graph_render_options(value):
     if value.pop("show_service", False):
         value["title_format"] = ["plain", "add_host_name", "add_service_description"]
     #   1.5.0i2->2.0.0i1 title format DropdownChoice to ListChoice
-    if isinstance(value.get("title_format"), (str, tuple)):
+    if isinstance(value.get("title_format"), str | tuple):
         value["title_format"] = migrate_graph_render_options_title_format(value["title_format"])
     return value
 
@@ -281,7 +281,7 @@ class ValuesWithUnits(CascadingDropdown):
                         validate_value_elements,
                     ),
                 )
-                for choice in _sorted_unit_choices(metrics_from_api)
+                for choice in _sorted_unit_choices(active_config, metrics_from_api)
             ],
             help=help,
             sorted=False,
@@ -333,21 +333,27 @@ _FALLBACK_UNIT_SPEC = ConvertibleUnitSpecification(
 )
 
 
-def _sorted_unit_choices(registered_metrics: Mapping[str, RegisteredMetric]) -> list[_UnitChoice]:
+def _sorted_unit_choices(
+    config: Config, registered_metrics: Mapping[str, RegisteredMetric]
+) -> list[_UnitChoice]:
     return sorted(
-        {_unit_choice_from_unit_spec(metric.unit_spec) for metric in registered_metrics.values()}
-        | {_unit_choice_from_unit_spec(_FALLBACK_UNIT_SPEC)},
+        {
+            _unit_choice_from_unit_spec(config, metric.unit_spec)
+            for metric in registered_metrics.values()
+        }
+        | {_unit_choice_from_unit_spec(config, _FALLBACK_UNIT_SPEC)},
         key=lambda choice: choice.title,
     )
 
 
 def _unit_choice_from_unit_spec(
+    config: Config,
     unit_spec: ConvertibleUnitSpecification,
 ) -> _UnitChoice:
     unit_for_current_user = user_specific_unit(
         unit_spec,
         user,
-        active_config,
+        config,
     )
     return _UnitChoice(
         id=_id_from_unit_spec(unit_spec),
@@ -410,21 +416,21 @@ def _vs_type_from_formatter(
 
 
 class PageVsAutocomplete(AjaxPage):
-    def page(self) -> PageResult:
+    def page(self, config: Config) -> PageResult:
         if metric_name := self.webapi_request()["metric"]:
             metric_spec = get_metric_spec(metric_name, metrics_from_api)
-            unit_choice_for_metric = _unit_choice_from_unit_spec(metric_spec.unit_spec)
+            unit_choice_for_metric = _unit_choice_from_unit_spec(config, metric_spec.unit_spec)
         else:
-            unit_choice_for_metric = _unit_choice_from_unit_spec(_FALLBACK_UNIT_SPEC)
+            unit_choice_for_metric = _unit_choice_from_unit_spec(config, _FALLBACK_UNIT_SPEC)
 
-        for idx, choice in enumerate(_sorted_unit_choices(metrics_from_api)):
+        for idx, choice in enumerate(_sorted_unit_choices(config, metrics_from_api)):
             if choice == unit_choice_for_metric:
                 return {
                     "unit_choice_index": idx,
                 }
 
-        fallback_choice = _unit_choice_from_unit_spec(_FALLBACK_UNIT_SPEC)
-        for idx, choice in enumerate(_sorted_unit_choices(metrics_from_api)):
+        fallback_choice = _unit_choice_from_unit_spec(config, _FALLBACK_UNIT_SPEC)
+        for idx, choice in enumerate(_sorted_unit_choices(config, metrics_from_api)):
             if choice == fallback_choice:
                 return {
                     "unit_choice_index": idx,
@@ -447,10 +453,10 @@ class MetricName(DropdownChoiceWithHostAndServiceHints):
             "css_spec": ["ajax-vals"],
             "hint_label": _("metric"),
             "title": _("Metric"),
-            "regex": re.compile("^[a-zA-Z][a-zA-Z0-9_]*$"),
+            "regex": re.compile("^[a-zA-Z0-9][a-zA-Z0-9_]*$"),
             "regex_error": _(
                 "Metric names must only consist of letters, digits and "
-                "underscores and they must start with a letter."
+                "underscores and they must start with a letter or digit."
             ),
             "autocompleter": ContextAutocompleterConfig(
                 ident=self.ident,

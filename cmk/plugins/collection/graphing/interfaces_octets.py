@@ -40,7 +40,7 @@ perfometer_if_octets = perfometers.Bidirectional(
         name="if_in_octets",
         focus_range=perfometers.FocusRange(
             perfometers.Closed(0),
-            perfometers.Open(500000),
+            perfometers.Open(125_000_000),
         ),
         segments=["if_in_octets"],
     ),
@@ -48,7 +48,7 @@ perfometer_if_octets = perfometers.Bidirectional(
         name="if_out_octets",
         focus_range=perfometers.FocusRange(
             perfometers.Closed(0),
-            perfometers.Open(500000),
+            perfometers.Open(125_000_000),
         ),
         segments=["if_out_octets"],
     ),
@@ -59,7 +59,7 @@ perfometer_if_unicast_octets = perfometers.Bidirectional(
         name="if_unicast_octets_out",
         focus_range=perfometers.FocusRange(
             perfometers.Closed(0),
-            perfometers.Open(500000),
+            perfometers.Open(125_000_000),
         ),
         segments=[
             metrics.Sum(
@@ -76,7 +76,7 @@ perfometer_if_unicast_octets = perfometers.Bidirectional(
         name="if_in_octets",
         focus_range=perfometers.FocusRange(
             perfometers.Closed(0),
-            perfometers.Open(500000),
+            perfometers.Open(125_000_000),
         ),
         segments=["if_in_octets"],
     ),
@@ -92,21 +92,47 @@ graph_bandwidth_translated = graphs.Bidirectional(
             metrics.Product(
                 Title("Output bandwidth"),
                 UNIT_BITS_PER_SECOND,
-                metrics.Color.GRAY,
+                metrics.Color.BLUE,
                 [
                     "if_out_octets",
                     metrics.Constant(
                         Title(""),
                         UNIT_NUMBER,
-                        metrics.Color.BLUE,
+                        metrics.Color.GRAY,
                         8.0,
                     ),
                 ],
             )
         ],
         simple_lines=[
-            metrics.WarningOf("if_out_octets"),
-            metrics.CriticalOf("if_out_octets"),
+            metrics.Product(
+                Title("Warning of Output bandwidth"),
+                UNIT_BITS_PER_SECOND,
+                metrics.Color.YELLOW,
+                [
+                    metrics.WarningOf("if_out_octets"),
+                    metrics.Constant(
+                        Title(""),
+                        UNIT_NUMBER,
+                        metrics.Color.GRAY,
+                        8.0,
+                    ),
+                ],
+            ),
+            metrics.Product(
+                Title("Critical of Output bandwidth"),
+                UNIT_BITS_PER_SECOND,
+                metrics.Color.RED,
+                [
+                    metrics.CriticalOf("if_out_octets"),
+                    metrics.Constant(
+                        Title(""),
+                        UNIT_NUMBER,
+                        metrics.Color.GRAY,
+                        8.0,
+                    ),
+                ],
+            ),
         ],
     ),
     upper=graphs.Graph(
@@ -116,21 +142,47 @@ graph_bandwidth_translated = graphs.Bidirectional(
             metrics.Product(
                 Title("Input bandwidth"),
                 UNIT_BITS_PER_SECOND,
-                metrics.Color.GRAY,
+                metrics.Color.GREEN,
                 [
                     "if_in_octets",
                     metrics.Constant(
                         Title(""),
                         UNIT_NUMBER,
-                        metrics.Color.BLUE,
+                        metrics.Color.GRAY,
                         8.0,
                     ),
                 ],
             )
         ],
         simple_lines=[
-            metrics.WarningOf("if_in_octets"),
-            metrics.CriticalOf("if_in_octets"),
+            metrics.Product(
+                Title("Warning of Input bandwidth"),
+                UNIT_BITS_PER_SECOND,
+                metrics.Color.YELLOW,
+                [
+                    metrics.WarningOf("if_in_octets"),
+                    metrics.Constant(
+                        Title(""),
+                        UNIT_NUMBER,
+                        metrics.Color.GRAY,
+                        8.0,
+                    ),
+                ],
+            ),
+            metrics.Product(
+                Title("Critical of Input bandwidth"),
+                UNIT_BITS_PER_SECOND,
+                metrics.Color.RED,
+                [
+                    metrics.CriticalOf("if_in_octets"),
+                    metrics.Constant(
+                        Title(""),
+                        UNIT_NUMBER,
+                        metrics.Color.GRAY,
+                        8.0,
+                    ),
+                ],
+            ),
         ],
     ),
 )

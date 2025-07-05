@@ -62,7 +62,7 @@ from cmk.gui.watolib.notification_parameter import (
 from ._check_mk_configuration import monitoring_macro_help, PluginCommandLine, UserIconOrAction
 from ._group_selection import ContactGroupSelection, HostGroupSelection, ServiceGroupSelection
 from ._http_proxy import HTTPProxyInput, HTTPProxyReference
-from ._permissions import PermissionSectionWATO
+from ._permissions import PERMISSION_SECTION_WATO
 from ._rulespec_groups import (
     RulespecGroupActiveChecks,
     RulespecGroupDatasourcePrograms,
@@ -108,7 +108,7 @@ def register() -> None:
     CMK-12228
     """
     for name, value in [
-        ("PermissionSectionWATO", PermissionSectionWATO),
+        ("PermissionSectionWATO", PERMISSION_SECTION_WATO),
         ("register_modules", register_modules),
         ("WatoModule", WatoModule),
         ("register_notification_parameters", register_notification_parameters),
@@ -202,14 +202,6 @@ def register() -> None:
     for name in (
         "host_attribute_registry",
         "host_attribute_topic_registry",
-        "HostAttributeTopicAddress",
-        "HostAttributeTopicBasicSettings",
-        "HostAttributeTopicCustomAttributes",
-        "HostAttributeTopicDataSources",
-        "HostAttributeTopicHostTags",
-        "HostAttributeTopicManagementBoard",
-        "HostAttributeTopicMetaData",
-        "HostAttributeTopicNetworkScan",
     ):
         api_module.__dict__[name] = cmk.gui.watolib.host_attributes.__dict__[name]
     for name in (

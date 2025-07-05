@@ -4,6 +4,8 @@
 # conditions defined in the file COPYING, which is part of this source code package.
 """Basic functions for cmk_figures"""
 
+# mypy: disable-error-code="no-untyped-call, no-untyped-def"
+
 from typing import Any
 
 FigureResponse = dict[str, Any]
@@ -81,7 +83,7 @@ class TableFigureDataCreator:
             extra["classes"] = classes
         return extra
 
-    # Cell which contains a dc graphing element
+    # Cell which contains a graphing element
     @classmethod
     def get_figure_cell(cls, figure_config, attrs=None, classes=None):
         classes = classes or []

@@ -28,7 +28,7 @@ from cmk.gui.breadcrumb import (
     make_current_page_breadcrumb_item,
     make_topic_breadcrumb,
 )
-from cmk.gui.config import active_config
+from cmk.gui.config import Config
 from cmk.gui.exceptions import MKUserError
 from cmk.gui.htmllib.debug_vars import debug_vars
 from cmk.gui.htmllib.generator import HTMLWriter
@@ -38,7 +38,7 @@ from cmk.gui.htmllib.tag_rendering import HTMLContent
 from cmk.gui.http import ContentDispositionType, request, response
 from cmk.gui.i18n import _
 from cmk.gui.logged_in import user
-from cmk.gui.main_menu import mega_menu_registry
+from cmk.gui.main_menu import main_menu_registry
 from cmk.gui.page_menu import (
     make_simple_link,
     PageMenu,
@@ -46,7 +46,7 @@ from cmk.gui.page_menu import (
     PageMenuEntry,
     PageMenuTopic,
 )
-from cmk.gui.pages import Page, PageRegistry
+from cmk.gui.pages import Page, PageEndpoint, PageRegistry
 from cmk.gui.pagetypes import PagetypeTopics
 from cmk.gui.utils import escaping
 from cmk.gui.utils.html import HTML
@@ -62,8 +62,8 @@ CrashReportRow = dict[str, str]
 
 
 def register(page_registry: PageRegistry) -> None:
-    page_registry.register_page("crash")(PageCrash)
-    page_registry.register_page("download_crash_report")(PageDownloadCrashReport)
+    page_registry.register(PageEndpoint("crash", PageCrash))
+    page_registry.register(PageEndpoint("download_crash_report", PageDownloadCrashReport))
     report_renderer_registry.register(ReportRendererGeneric)
     report_renderer_registry.register(ReportRendererSection)
     report_renderer_registry.register(ReportRendererCheck)
@@ -116,7 +116,7 @@ class ABCCrashReportPage(Page, abc.ABC):
 
 
 class PageCrash(ABCCrashReportPage):
-    def page(self) -> None:
+    def page(self, config: Config) -> None:
         row = self._get_crash_row()
         crash_info = self._get_crash_info(row)
 
@@ -140,7 +140,7 @@ class PageCrash(ABCCrashReportPage):
             return
 
         if request.has_var("_report") and transactions.check_transaction():
-            details = self._handle_report_form()
+            details = self._handle_report_form(config.crash_report_target, config.crash_report_url)
         else:
             details = ReportSubmitDetails(name="", mail="")
 
@@ -163,7 +163,7 @@ class PageCrash(ABCCrashReportPage):
 
     def _breadcrumb(self, title: str) -> Breadcrumb:
         breadcrumb = make_topic_breadcrumb(
-            mega_menu_registry.menu_monitoring(),
+            main_menu_registry.menu_monitoring(),
             PagetypeTopics.get_topic("analyze").title(),
         )
 
@@ -197,7 +197,11 @@ class PageCrash(ABCCrashReportPage):
                                     title=_("Download"),
                                     icon_name="download",
                                     item=make_simple_link(
-                                        makeuri(request, [], filename="download_crash_report.py")
+                                        makeuri(
+                                            request,
+                                            [],
+                                            filename="download_crash_report.py",
+                                        )
                                     ),
                                     is_shortcut=True,
                                     is_suggested=True,
@@ -226,7 +230,9 @@ class PageCrash(ABCCrashReportPage):
         renderer = self._crash_type_renderer(crash_info["crash_type"])
         yield from renderer.page_menu_entries_related_monitoring(crash_info, self._site_id)
 
-    def _handle_report_form(self) -> ReportSubmitDetails:
+    def _handle_report_form(
+        self, crash_report_target: str, crash_report_url: str
+    ) -> ReportSubmitDetails:
         details = ReportSubmitDetails(name="", mail="")
         try:
             vs = self._vs_crash_report()
@@ -277,18 +283,18 @@ class PageCrash(ABCCrashReportPage):
                 [
                     ("subject", "Checkmk Crash Report - " + self._get_version()),
                 ],
-                filename="mailto:" + self._get_crash_report_target(),
+                filename="mailto:" + crash_report_target,
             )
             html.show_error(
                 _(
                     "Failed to send the crash report. Please download it manually and send it "
                     'to <a href="%s">%s</a> or try again later.'
                 )
-                % (report_url, self._get_crash_report_target())
+                % (report_url, crash_report_target)
             )
             html.close_div()
             html.javascript(
-                f"cmk.transfer.submit_crash_report({json.dumps(active_config.crash_report_url)}, {json.dumps(url_encoded_params)});"
+                f"cmk.transfer.submit_crash_report({json.dumps(crash_report_url)}, {json.dumps(url_encoded_params)});"
             )
         except MKUserError as e:
             user_errors.add(e)
@@ -297,9 +303,6 @@ class PageCrash(ABCCrashReportPage):
 
     def _get_version(self) -> str:
         return cmk_version.__version__
-
-    def _get_crash_report_target(self) -> str:
-        return active_config.crash_report_target
 
     def _vs_crash_report(self):
         return Dictionary(
@@ -502,8 +505,17 @@ class ReportRendererSection(ABCReportRenderer):
         html.open_table(class_=["data", "crash_report"])
 
         _crash_row(_("Section Name"), details["section_name"], odd=True)
-        _crash_row(_("Inline-SNMP"), format_bool(details.get("inline_snmp")), odd=False, pre=True)
-        _crash_row(_("Section Content"), pprint.pformat(details.get("section_content")), pre=True)
+        _crash_row(
+            _("Inline-SNMP"),
+            format_bool(details.get("inline_snmp")),
+            odd=False,
+            pre=True,
+        )
+        _crash_row(
+            _("Section Content"),
+            pprint.pformat(details.get("section_content")),
+            pre=True,
+        )
 
         html.close_table()
 
@@ -575,9 +587,17 @@ class ReportRendererCheck(ABCReportRenderer):
         _crash_row(_("Is cluster host"), format_bool(details.get("is_cluster")), odd=True)
         _crash_row(_("Check type"), details["check_type"], odd=False)
         _crash_row(
-            _("Enforced service"), format_bool(details.get("enforced_service")), odd=True, pre=True
+            _("Enforced service"),
+            format_bool(details.get("enforced_service")),
+            odd=True,
+            pre=True,
         )
-        _crash_row(_("Inline-SNMP"), format_bool(details.get("inline_snmp")), odd=True, pre=True)
+        _crash_row(
+            _("Inline-SNMP"),
+            format_bool(details.get("inline_snmp")),
+            odd=True,
+            pre=True,
+        )
         _crash_row(_("Check item"), details.get("item", "This check has no item."), odd=False)
         _crash_row(_("Description"), details["description"], odd=True)
         if "params" in details:
@@ -624,7 +644,11 @@ class ReportRendererGUI(ABCReportRenderer):
 
 
 def _crash_row(
-    title: str, infotext: HTMLContent, odd: bool = True, legend: bool = False, pre: bool = False
+    title: str,
+    infotext: HTMLContent,
+    odd: bool = True,
+    legend: bool = False,
+    pre: bool = False,
 ) -> None:
     trclass = "data odd0" if odd else "data even0"
     tdclass = "left legend" if legend else "left"
@@ -664,7 +688,7 @@ def _show_agent_output(row: CrashReportRow) -> None:
 
 
 class PageDownloadCrashReport(ABCCrashReportPage):
-    def page(self) -> None:
+    def page(self, config: Config) -> None:
         user.need_permission("general.see_crash_reports")
 
         filename = "Checkmk_Crash_{}_{}_{}.tar.gz".format(

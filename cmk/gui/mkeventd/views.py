@@ -10,11 +10,11 @@ from typing import Any, Literal, TypeGuard, TypeVar
 
 from livestatus import OnlySites
 
+from cmk.ccc.hostaddress import HostName
 from cmk.ccc.site import SiteId
+from cmk.ccc.user import UserId
 
-from cmk.utils.hostaddress import HostName
 from cmk.utils.statename import short_service_state_name
-from cmk.utils.user import UserId
 
 from cmk.gui.config import Config, default_authorized_builtin_role_ids
 from cmk.gui.dashboard import DashletConfig, LinkedViewDashletConfig, ViewDashletConfig
@@ -24,7 +24,7 @@ from cmk.gui.htmllib.html import html
 from cmk.gui.http import Request
 from cmk.gui.http import request as active_request
 from cmk.gui.i18n import _, _l, ungettext
-from cmk.gui.logged_in import user
+from cmk.gui.logged_in import LoggedInUser, user
 from cmk.gui.painter.v0 import Cell, Painter, PainterRegistry
 from cmk.gui.painter.v0.helpers import paint_nagiosflag
 from cmk.gui.painter.v0.painters import paint_custom_var
@@ -72,7 +72,7 @@ from cmk.gui.visuals.filter import Filter
 from .defines import action_whats, phase_names, syslog_facilities, syslog_priorities
 from .helpers import action_choices
 from .livestatus import execute_command
-from .permission_section import PermissionSectionEventConsole
+from .permission_section import PERMISSION_SECTION_EVENT_CONSOLE
 
 
 def register(
@@ -278,7 +278,7 @@ def _ec_filter_host_information_of_not_permitted_hosts(rows: Rows) -> None:
 
 
 PermissionECSeeAll = Permission(
-    section=PermissionSectionEventConsole,
+    section=PERMISSION_SECTION_EVENT_CONSOLE,
     name="seeall",
     title=_("See all events"),
     description=_(
@@ -289,7 +289,7 @@ PermissionECSeeAll = Permission(
 )
 
 PermissionECSeeUnrelated = Permission(
-    section=PermissionSectionEventConsole,
+    section=PERMISSION_SECTION_EVENT_CONSOLE,
     name="seeunrelated",
     title=_("See events not related to a known host"),
     description=_(
@@ -301,7 +301,7 @@ PermissionECSeeUnrelated = Permission(
 )
 
 PermissionECSeeInTacticalOverview = Permission(
-    section=PermissionSectionEventConsole,
+    section=PERMISSION_SECTION_EVENT_CONSOLE,
     name="see_in_tactical_overview",
     title=_("See events in the sidebar element 'Overview'"),
     description=_(
@@ -410,7 +410,7 @@ class PainterSvcServicelevel(Painter):
     def sorter(self) -> SorterName:
         return "servicelevel"
 
-    def render(self, row: Row, cell: Cell) -> CellSpec:
+    def render(self, row: Row, cell: Cell, user: LoggedInUser) -> CellSpec:
         return paint_custom_var(
             "service",
             "EC_SL",
@@ -438,7 +438,7 @@ class PainterHostServicelevel(Painter):
     def sorter(self) -> SorterName:
         return "servicelevel"
 
-    def render(self, row: Row, cell: Cell) -> CellSpec:
+    def render(self, row: Row, cell: Cell, user: LoggedInUser) -> CellSpec:
         return paint_custom_var(
             "host",
             "EC_SL",
@@ -462,7 +462,7 @@ class PainterEventId(Painter):
     def columns(self) -> Sequence[ColumnName]:
         return ["event_id"]
 
-    def render(self, row: Row, cell: Cell) -> CellSpec:
+    def render(self, row: Row, cell: Cell, user: LoggedInUser) -> CellSpec:
         return ("number", str(row["event_id"]))
 
 
@@ -481,7 +481,7 @@ class PainterEventCount(Painter):
     def columns(self) -> Sequence[ColumnName]:
         return ["event_count"]
 
-    def render(self, row: Row, cell: Cell) -> CellSpec:
+    def render(self, row: Row, cell: Cell, user: LoggedInUser) -> CellSpec:
         return ("number", str(row["event_count"]))
 
 
@@ -500,7 +500,7 @@ class PainterEventText(Painter):
     def columns(self) -> Sequence[ColumnName]:
         return ["event_text"]
 
-    def render(self, row: Row, cell: Cell) -> CellSpec:
+    def render(self, row: Row, cell: Cell, user: LoggedInUser) -> CellSpec:
         return "", HTML.without_escaping(
             escaping.escape_attribute(row["event_text"]).replace("\x01", "<br>")
         )
@@ -521,7 +521,7 @@ class PainterEventMatchGroups(Painter):
     def columns(self) -> Sequence[ColumnName]:
         return ["event_match_groups"]
 
-    def render(self, row: Row, cell: Cell) -> CellSpec:
+    def render(self, row: Row, cell: Cell, user: LoggedInUser) -> CellSpec:
         groups = row["event_match_groups"]
         if groups:
             code = HTML.empty()
@@ -550,7 +550,7 @@ class PainterEventFirst(Painter):
     def painter_options(self):
         return ["ts_format", "ts_date"]
 
-    def render(self, row: Row, cell: Cell) -> CellSpec:
+    def render(self, row: Row, cell: Cell, user: LoggedInUser) -> CellSpec:
         return paint_age(
             row["event_first"],
             True,
@@ -579,7 +579,7 @@ class PainterEventLast(Painter):
     def painter_options(self):
         return ["ts_format", "ts_date"]
 
-    def render(self, row: Row, cell: Cell) -> CellSpec:
+    def render(self, row: Row, cell: Cell, user: LoggedInUser) -> CellSpec:
         return paint_age(
             row["event_last"],
             True,
@@ -604,7 +604,7 @@ class PainterEventComment(Painter):
     def columns(self) -> Sequence[ColumnName]:
         return ["event_comment"]
 
-    def render(self, row: Row, cell: Cell) -> CellSpec:
+    def render(self, row: Row, cell: Cell, user: LoggedInUser) -> CellSpec:
         return ("", row["event_comment"])
 
 
@@ -623,7 +623,7 @@ class PainterEventSl(Painter):
     def columns(self) -> Sequence[ColumnName]:
         return ["event_sl"]
 
-    def render(self, row: Row, cell: Cell) -> CellSpec:
+    def render(self, row: Row, cell: Cell, user: LoggedInUser) -> CellSpec:
         sl_txt = dict(self.config.mkeventd_service_levels).get(
             row["event_sl"], str(row["event_sl"])
         )
@@ -649,8 +649,9 @@ class PainterEventHost(Painter):
     def use_painter_link(self) -> bool:
         return False
 
-    def render(self, row: Row, cell: "Cell") -> CellSpec:
-        host_name = row.get("event_host", row["host_name"])
+    def render(self, row: Row, cell: "Cell", user: LoggedInUser) -> CellSpec:
+        host_name: HostName = row["host_name"]
+        host_name = row.get("event_host", host_name)
 
         return "", html.render_a(
             host_name, _get_event_host_link(host_name, row, cell, request=self.request)
@@ -699,7 +700,7 @@ class PainterEventIpaddress(Painter):
     def columns(self) -> Sequence[ColumnName]:
         return ["event_ipaddress"]
 
-    def render(self, row: Row, cell: Cell) -> CellSpec:
+    def render(self, row: Row, cell: Cell, user: LoggedInUser) -> CellSpec:
         return ("", row["event_ipaddress"])
 
 
@@ -718,7 +719,7 @@ class PainterEventHostInDowntime(Painter):
     def columns(self) -> Sequence[ColumnName]:
         return ["event_host_in_downtime"]
 
-    def render(self, row: Row, cell: Cell) -> CellSpec:
+    def render(self, row: Row, cell: Cell, user: LoggedInUser) -> CellSpec:
         return paint_nagiosflag(row, "event_host_in_downtime", True)
 
 
@@ -737,7 +738,7 @@ class PainterEventOwner(Painter):
     def columns(self) -> Sequence[ColumnName]:
         return ["event_owner"]
 
-    def render(self, row: Row, cell: Cell) -> CellSpec:
+    def render(self, row: Row, cell: Cell, user: LoggedInUser) -> CellSpec:
         return ("", row["event_owner"])
 
 
@@ -756,7 +757,7 @@ class PainterEventContact(Painter):
     def columns(self) -> Sequence[ColumnName]:
         return ["event_contact"]
 
-    def render(self, row: Row, cell: Cell) -> CellSpec:
+    def render(self, row: Row, cell: Cell, user: LoggedInUser) -> CellSpec:
         return ("", row["event_contact"])
 
 
@@ -775,7 +776,7 @@ class PainterEventApplication(Painter):
     def columns(self) -> Sequence[ColumnName]:
         return ["event_application"]
 
-    def render(self, row: Row, cell: Cell) -> CellSpec:
+    def render(self, row: Row, cell: Cell, user: LoggedInUser) -> CellSpec:
         return ("", row["event_application"])
 
 
@@ -794,7 +795,7 @@ class PainterEventPid(Painter):
     def columns(self) -> Sequence[ColumnName]:
         return ["event_pid"]
 
-    def render(self, row: Row, cell: Cell) -> CellSpec:
+    def render(self, row: Row, cell: Cell, user: LoggedInUser) -> CellSpec:
         return ("", "%s" % row["event_pid"])
 
 
@@ -821,7 +822,7 @@ class PainterEventPriority(Painter):
     def columns(self) -> Sequence[ColumnName]:
         return ["event_priority"]
 
-    def render(self, row: Row, cell: Cell) -> CellSpec:
+    def render(self, row: Row, cell: Cell, user: LoggedInUser) -> CellSpec:
         return ("", dict(_deref(syslog_priorities))[row["event_priority"]])
 
 
@@ -840,7 +841,7 @@ class PainterEventFacility(Painter):
     def columns(self) -> Sequence[ColumnName]:
         return ["event_facility"]
 
-    def render(self, row: Row, cell: Cell) -> CellSpec:
+    def render(self, row: Row, cell: Cell, user: LoggedInUser) -> CellSpec:
         return ("", dict(_deref(syslog_facilities))[row["event_facility"]])
 
 
@@ -859,9 +860,9 @@ class PainterEventRuleId(Painter):
     def columns(self) -> Sequence[ColumnName]:
         return ["event_rule_id"]
 
-    def render(self, row: Row, cell: Cell) -> CellSpec:
+    def render(self, row: Row, cell: Cell, user: LoggedInUser) -> CellSpec:
         rule_id = row["event_rule_id"]
-        if self.user.may("mkeventd.edit"):
+        if user.may("mkeventd.edit"):
             urlvars = urlencode_vars([("mode", "mkeventd_edit_rule"), ("rule_id", rule_id)])
             return "", HTMLWriter.render_a(rule_id, "wato.py?%s" % urlvars)
         return "", rule_id
@@ -882,7 +883,7 @@ class PainterEventState(Painter):
     def columns(self) -> Sequence[ColumnName]:
         return ["event_state"]
 
-    def render(self, row: Row, cell: Cell) -> CellSpec:
+    def render(self, row: Row, cell: Cell, user: LoggedInUser) -> CellSpec:
         state = row["event_state"]
         name = short_service_state_name(state, "")
         return "state svcstate state%s" % state, HTMLWriter.render_span(
@@ -905,7 +906,7 @@ class PainterEventPhase(Painter):
     def columns(self) -> Sequence[ColumnName]:
         return ["event_phase"]
 
-    def render(self, row: Row, cell: Cell) -> CellSpec:
+    def render(self, row: Row, cell: Cell, user: LoggedInUser) -> CellSpec:
         return ("", phase_names.get(row["event_phase"], ""))
 
 
@@ -1034,7 +1035,7 @@ class PainterEventIcons(Painter):
     def printable(self):
         return False
 
-    def render(self, row: Row, cell: Cell) -> CellSpec:
+    def render(self, row: Row, cell: Cell, user: LoggedInUser) -> CellSpec:
         return paint_event_icons(row, request=self.request, theme=self.theme)
 
 
@@ -1057,7 +1058,7 @@ class PainterEventHistoryIcons(Painter):
     def printable(self):
         return False
 
-    def render(self, row: Row, cell: Cell) -> CellSpec:
+    def render(self, row: Row, cell: Cell, user: LoggedInUser) -> CellSpec:
         return paint_event_icons(row, history=True, request=self.request, theme=self.theme)
 
 
@@ -1076,7 +1077,7 @@ class PainterEventContactGroups(Painter):
     def columns(self) -> Sequence[ColumnName]:
         return ["event_contact_groups"]
 
-    def render(self, row: Row, cell: Cell) -> CellSpec:
+    def render(self, row: Row, cell: Cell, user: LoggedInUser) -> CellSpec:
         cgs = row.get("event_contact_groups")
         if cgs is None:
             return "", ""
@@ -1104,7 +1105,7 @@ class PainterEventEffectiveContactGroups(Painter):
             "host_contact_groups",
         ]
 
-    def render(self, row: Row, cell: Cell) -> CellSpec:
+    def render(self, row: Row, cell: Cell, user: LoggedInUser) -> CellSpec:
         if row["event_contact_groups_precedence"] == "host":
             cgs = row["host_contact_groups"]
         else:
@@ -1135,7 +1136,7 @@ class PainterHistoryLine(Painter):
     def columns(self) -> Sequence[ColumnName]:
         return ["history_line"]
 
-    def render(self, row: Row, cell: Cell) -> CellSpec:
+    def render(self, row: Row, cell: Cell, user: LoggedInUser) -> CellSpec:
         return ("number", "%s" % row["history_line"])
 
 
@@ -1158,7 +1159,7 @@ class PainterHistoryTime(Painter):
     def painter_options(self):
         return ["ts_format", "ts_date"]
 
-    def render(self, row: Row, cell: Cell) -> CellSpec:
+    def render(self, row: Row, cell: Cell, user: LoggedInUser) -> CellSpec:
         return paint_age(
             row["history_time"],
             True,
@@ -1183,7 +1184,7 @@ class PainterHistoryWhat(Painter):
     def columns(self) -> Sequence[ColumnName]:
         return ["history_what"]
 
-    def render(self, row: Row, cell: Cell) -> CellSpec:
+    def render(self, row: Row, cell: Cell, user: LoggedInUser) -> CellSpec:
         what = row["history_what"]
         return "", HTMLWriter.render_span(what, title=str(action_whats[what]))
 
@@ -1200,7 +1201,7 @@ class PainterHistoryWhatExplained(Painter):
     def columns(self) -> Sequence[ColumnName]:
         return ["history_what"]
 
-    def render(self, row: Row, cell: Cell) -> CellSpec:
+    def render(self, row: Row, cell: Cell, user: LoggedInUser) -> CellSpec:
         return ("", str(action_whats[row["history_what"]]))
 
 
@@ -1219,7 +1220,7 @@ class PainterHistoryWho(Painter):
     def columns(self) -> Sequence[ColumnName]:
         return ["history_who"]
 
-    def render(self, row: Row, cell: Cell) -> CellSpec:
+    def render(self, row: Row, cell: Cell, user: LoggedInUser) -> CellSpec:
         return ("", row["history_who"])
 
 
@@ -1238,7 +1239,7 @@ class PainterHistoryAddinfo(Painter):
     def columns(self) -> Sequence[ColumnName]:
         return ["history_addinfo"]
 
-    def render(self, row: Row, cell: Cell) -> CellSpec:
+    def render(self, row: Row, cell: Cell, user: LoggedInUser) -> CellSpec:
         return ("", row["history_addinfo"])
 
 
@@ -1253,7 +1254,7 @@ class PainterHistoryAddinfo(Painter):
 #   '----------------------------------------------------------------------'
 
 PermissionECUpdateEvent = Permission(
-    section=PermissionSectionEventConsole,
+    section=PERMISSION_SECTION_EVENT_CONSOLE,
     name="update",
     title=_l("Update an event"),
     description=_l("Needed for acknowledging and changing the comment and contact of an event"),
@@ -1262,7 +1263,7 @@ PermissionECUpdateEvent = Permission(
 
 # Sub-Permissions for Changing Comment, Contact and Acknowledgement
 PermissionECUpdateComment = Permission(
-    section=PermissionSectionEventConsole,
+    section=PERMISSION_SECTION_EVENT_CONSOLE,
     name="update_comment",
     title=_l("Update an event: change comment"),
     description=_l("Needed for changing a comment when updating an event"),
@@ -1271,7 +1272,7 @@ PermissionECUpdateComment = Permission(
 
 # Sub-Permissions for Changing Comment, Contact and Acknowledgement
 PermissionECUpdateContact = Permission(
-    section=PermissionSectionEventConsole,
+    section=PERMISSION_SECTION_EVENT_CONSOLE,
     name="update_contact",
     title=_l("Update an event: change contact"),
     description=_l("Needed for changing a contact when updating an event"),
@@ -1382,7 +1383,7 @@ CommandECUpdateEvent = ECCommand(
 )
 
 PermissionECChangeEventState = Permission(
-    section=PermissionSectionEventConsole,
+    section=PERMISSION_SECTION_EVENT_CONSOLE,
     name="changestate",
     title=_l("Change event state"),
     description=_l(
@@ -1455,7 +1456,7 @@ CommandECChangeState = ECCommand(
 )
 
 PermissionECCustomActions = Permission(
-    section=PermissionSectionEventConsole,
+    section=PERMISSION_SECTION_EVENT_CONSOLE,
     name="actions",
     title=_l("Perform custom action"),
     description=_l(
@@ -1509,7 +1510,7 @@ CommandECCustomAction = ECCommand(
 )
 
 PermissionECArchiveEvent = Permission(
-    section=PermissionSectionEventConsole,
+    section=PERMISSION_SECTION_EVENT_CONSOLE,
     name="delete",
     title=_l("Archive an event"),
     description=_l("Finally archive an event without any further action"),
@@ -1552,7 +1553,7 @@ CommandECArchiveEvent = ECCommand(
 )
 
 PermissionECArchiveEventsOfHost = Permission(
-    section=PermissionSectionEventConsole,
+    section=PERMISSION_SECTION_EVENT_CONSOLE,
     name="archive_events_of_hosts",
     title=_l("Archive events of hosts"),
     description=_l("Archive all open events of all hosts shown in host views"),
@@ -1684,7 +1685,7 @@ def mkeventd_view(d):
         "user_sortable": "on",
         "link_from": {},
         "add_context_to_title": True,
-        "megamenu_search_terms": [],
+        "main_menu_search_terms": [],
     }
     x.update(d)
     return x
@@ -2202,7 +2203,7 @@ EC_EVENT_MOBILE: ViewSpec = {
     "sort_index": 99,
     "is_show_more": False,
     "packaged": False,
-    "megamenu_search_terms": [],
+    "main_menu_search_terms": [],
 }
 
 EC_EVENTS_MOBILE: ViewSpec = {
@@ -2290,5 +2291,5 @@ EC_EVENTS_MOBILE: ViewSpec = {
     "sort_index": 99,
     "is_show_more": False,
     "packaged": False,
-    "megamenu_search_terms": [],
+    "main_menu_search_terms": [],
 }

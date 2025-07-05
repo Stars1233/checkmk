@@ -31,6 +31,7 @@ from cmk.gui.userdb import (
     LDAPUserConnectionConfig,
     NAV_HIDE_ICONS_TITLE,
     OPEN_LDAP,
+    RoleSpec,
     SHOW_MODE,
     START_URL,
     SyncAttribute,
@@ -227,7 +228,10 @@ class ConnectionConfig:
                 )
             else:
                 store: APIBindStore = config["bind_credentials"]
-                bind_credentials = (store["bind_dn"], ("store", store["password_store_id"]))
+                bind_credentials = (
+                    store["bind_dn"],
+                    ("store", store["password_store_id"]),
+                )
         else:
             bind_credentials = None
 
@@ -415,7 +419,7 @@ class Users:
                 if config["user_id_attribute"]["state"] == "enabled"
                 else None
             ),
-            lower_user_ids=True if config["user_id_case"] == "convert_to_lowercase" else None,
+            lower_user_ids=(True if config["user_id_case"] == "convert_to_lowercase" else None),
             create_only_on_login=True if config["create_users"] == "on_login" else None,
         )
 
@@ -439,7 +443,7 @@ class Users:
             "umlauts_in_user_ids": (
                 "keep_umlauts" if self.user_id_umlauts == "keep" else "replace_umlauts"
             ),
-            "create_users": "on_sync" if self.create_only_on_login is None else "on_login",
+            "create_users": ("on_sync" if self.create_only_on_login is None else "on_login"),
         }
         return r
 
@@ -537,7 +541,7 @@ class APICustomTimeRange(APICheckboxEnabled):
 
 API_GROUP_ATTRIBUTE_NAME = Literal[
     "disable_notifications",
-    "mega_menu_icons",
+    "main_menu_icons",
     "navigation_bar_icons",
     "show_mode",
     "ui_sidebar_position",
@@ -559,9 +563,9 @@ class APIDisableNotifications(TypedDict):
     value: APIDisableNotificationsValue
 
 
-class APIMegaMenuIcons(TypedDict):
+class APIMainMenuIcons(TypedDict):
     group_cn: str
-    attribute_to_set: Literal["mega_menu_icons"]
+    attribute_to_set: Literal["main_menu_icons"]
     value: Literal["per_topic", "per_entry"]
 
 
@@ -597,7 +601,7 @@ class APIUISideBarPosition(TypedDict):
 class APIUIStartUrl(TypedDict):
     group_cn: str
     attribute_to_set: Literal["start_url"]
-    value: Literal["default_start_url"] | str
+    value: Literal["default_start_url"] | Literal["welcome_page"] | str
 
 
 class APITempUnit(TypedDict):
@@ -637,7 +641,7 @@ class APICustom(TypedDict):
 
 GROUPS_TO_SYNC_VALUE = (
     APIDisableNotifications
-    | APIMegaMenuIcons
+    | APIMainMenuIcons
     | APINavBarIcons
     | APIShowMore
     | APIUISideBarPosition
@@ -673,7 +677,7 @@ class APISyncPlugins(TypedDict, total=False):
     authentication_expiration: SYNC_ATTRIBUTE
     disable_notifications: SYNC_ATTRIBUTE
     email_address: SYNC_ATTRIBUTE
-    mega_menu_icons: SYNC_ATTRIBUTE
+    main_menu_icons: SYNC_ATTRIBUTE
     navigation_bar_icons: SYNC_ATTRIBUTE
     pager: SYNC_ATTRIBUTE
     show_mode: SYNC_ATTRIBUTE
@@ -721,7 +725,7 @@ def groups_to_attributes_internal_to_api(
                 api_groups.append(
                     {
                         "group_cn": group["cn"],
-                        "attribute_to_set": "mega_menu_icons",
+                        "attribute_to_set": "main_menu_icons",
                         "value": "per_entry" if ii[1] == "entry" else "per_topic",
                     }
                 )
@@ -732,7 +736,7 @@ def groups_to_attributes_internal_to_api(
                     {
                         "group_cn": group["cn"],
                         "attribute_to_set": "navigation_bar_icons",
-                        "value": "do_not_show_title" if nh[1] == "hide" else "show_title",
+                        "value": ("do_not_show_title" if nh[1] == "hide" else "show_title"),
                     }
                 )
 
@@ -758,11 +762,19 @@ def groups_to_attributes_internal_to_api(
 
             case "start_url":
                 su = cast(START_URL, group["attribute"])
+                match su[1]:
+                    case "welcome.py":
+                        value = "welcome_page"
+                    case str():
+                        value = su[1]
+                    case _:
+                        value = "default_start_url"
+
                 api_groups.append(
                     {
                         "group_cn": group["cn"],
                         "attribute_to_set": su[0],
-                        "value": "default_start_url" if su[1] is None else su[1],
+                        "value": value,
                     }
                 )
 
@@ -793,7 +805,7 @@ def groups_to_attributes_internal_to_api(
                     {
                         "group_cn": group["cn"],
                         "attribute_to_set": "visibility_of_hosts_or_services",
-                        "value": "show_all" if fa[1] is None else "show_for_user_contacts_only",
+                        "value": ("show_all" if fa[1] is None else "show_for_user_contacts_only"),
                     }
                 )
 
@@ -809,7 +821,9 @@ def groups_to_attributes_internal_to_api(
     return api_groups
 
 
-def sync_attribute_to_internal(api_field: SYNC_ATTRIBUTE | None) -> None | SyncAttribute:
+def sync_attribute_to_internal(
+    api_field: SYNC_ATTRIBUTE | None,
+) -> None | SyncAttribute:
     if api_field is None:
         return None
 
@@ -865,7 +879,10 @@ def groups_to_attributes_api_to_int(
                 timeranges: APICustomTimeRange = dn_value_api["custom_time_range"]
                 v_int["timerange"] = (timeranges["from_time"], timeranges["to_time"])
 
-            disable_notifications: DISABLE_NOTIFICATIONS = ("disable_notifications", v_int)
+            disable_notifications: DISABLE_NOTIFICATIONS = (
+                "disable_notifications",
+                v_int,
+            )
 
             groups_to_sync = {
                 "cn": group["group_cn"],
@@ -874,13 +891,13 @@ def groups_to_attributes_api_to_int(
 
         else:
             match group["attribute_to_set"]:
-                case "mega_menu_icons":
-                    megaicons = cast(APIMegaMenuIcons, group)
+                case "main_menu_icons":
+                    main_menu_icons = cast(APIMainMenuIcons, group)
                     groups_to_sync = {
-                        "cn": megaicons["group_cn"],
+                        "cn": main_menu_icons["group_cn"],
                         "attribute": (
                             "icons_per_item",
-                            None if megaicons["value"] == "per_topic" else "entry",
+                            None if main_menu_icons["value"] == "per_topic" else "entry",
                         ),
                     }
 
@@ -890,7 +907,7 @@ def groups_to_attributes_api_to_int(
                         "cn": navbaricons["group_cn"],
                         "attribute": (
                             "nav_hide_icons_title",
-                            "hide" if navbaricons["value"] == "do_not_show_title" else None,
+                            ("hide" if navbaricons["value"] == "do_not_show_title" else None),
                         ),
                     }
 
@@ -921,12 +938,18 @@ def groups_to_attributes_api_to_int(
 
                 case "start_url":
                     starturl = cast(APIUIStartUrl, group)
+                    value: str | None
+                    match start_url := starturl["value"]:
+                        case "welcome_page":
+                            value = "welcome.py"
+                        case "default_start_url":
+                            value = None
+                        case _:
+                            value = start_url
+
                     groups_to_sync = {
                         "cn": starturl["group_cn"],
-                        "attribute": (
-                            "start_url",
-                            None if starturl["value"] == "default_start_url" else starturl["value"],
-                        ),
+                        "attribute": ("start_url", value),
                     }
 
                 case "temperature_unit":
@@ -935,7 +958,11 @@ def groups_to_attributes_api_to_int(
                         "cn": tempunit["group_cn"],
                         "attribute": (
                             "temperature_unit",
-                            None if tempunit["value"] == "default_temp_unit" else tempunit["value"],
+                            (
+                                None
+                                if tempunit["value"] == "default_temp_unit"
+                                else tempunit["value"]
+                            ),
                         ),
                     }
 
@@ -990,7 +1017,7 @@ def groups_to_roles_req_to_int(
     groups_to_roles: GroupsToRoles = {}
 
     for role, groups in {k: v for k, v in data.items() if isinstance(v, list)}.items():
-        groups_to_roles[role] = [
+        groups_to_roles[role] = [  # type: ignore[literal-required]
             (
                 group["group_dn"],
                 None if group["search_in"] == "this_connection" else group["search_in"],
@@ -1023,7 +1050,7 @@ class SyncPlugins:
             config.pop("disable_notifications", None)
         )
         ap["email"] = sync_attribute_to_internal(config.pop("email_address", None))
-        ap["icons_per_item"] = sync_attribute_to_internal(config.pop("mega_menu_icons", None))
+        ap["icons_per_item"] = sync_attribute_to_internal(config.pop("main_menu_icons", None))
         ap["nav_hide_icons_title"] = sync_attribute_to_internal(
             config.pop("navigation_bar_icons", None)
         )
@@ -1067,7 +1094,7 @@ class SyncPlugins:
             "authentication_expiration": checkbox_state("auth_expire"),
             "disable_notifications": checkbox_state("disable_notifications"),
             "email_address": checkbox_state("email"),
-            "mega_menu_icons": checkbox_state("icons_per_item"),
+            "main_menu_icons": checkbox_state("icons_per_item"),
             "navigation_bar_icons": checkbox_state("nav_hide_icons_title"),
             "pager": checkbox_state("pager"),
             "show_mode": checkbox_state("show_mode"),
@@ -1106,16 +1133,18 @@ class SyncPlugins:
         if internal_groups_to_roles := self.active_plugins.get("groups_to_roles"):
             groups_to_roles: APIGroupsToRoles = {"state": "enabled"}
             for k, v in internal_groups_to_roles.items():
-                if v is True:
-                    groups_to_roles["handle_nested"] = True
+                if k == "nested":
+                    if v is True:
+                        groups_to_roles["handle_nested"] = True
                     continue
 
+                rolespec_collection = cast(list[RoleSpec], v)
                 groups_to_roles[k] = [  # type: ignore[literal-required]
                     {
                         "group_dn": groupdn,
-                        "search_in": search_in if search_in is not None else "this_connection",
+                        "search_in": (search_in if search_in is not None else "this_connection"),
                     }
-                    for groupdn, search_in in v
+                    for groupdn, search_in in rolespec_collection
                 ]
 
             r["groups_to_roles"] = groups_to_roles
@@ -1274,26 +1303,28 @@ def update_suffixes(cfg: list[ConfigurableUserConnectionSpec]) -> None:
             LDAPUserConnector(connection)
 
 
-def request_to_delete_ldap_connection(ldap_id: str) -> None:
+def request_to_delete_ldap_connection(ldap_id: str, pprint_value: bool) -> None:
     config_file = UserConnectionConfigFile()
     all_connections = UserConnectionConfigFile().load_for_modification()
     updated_connections = [c for c in all_connections if c["id"] != ldap_id]
     update_suffixes(updated_connections)
-    config_file.save(updated_connections)
+    config_file.save(updated_connections, pprint_value)
 
 
-def request_to_create_ldap_connection(ldap_data: APIConnection) -> LDAPConnectionInterface:
+def request_to_create_ldap_connection(
+    ldap_data: APIConnection, pprint_value: bool
+) -> LDAPConnectionInterface:
     connection = LDAPConnectionInterface.from_api_request(ldap_data)
     config_file = UserConnectionConfigFile()
     all_connections = config_file.load_for_modification()
     all_connections.append(connection.to_mk_format())
     update_suffixes(all_connections)
-    config_file.save(all_connections)
+    config_file.save(all_connections, pprint_value)
     return connection
 
 
 def request_to_edit_ldap_connection(
-    ldap_id: str, ldap_data: APIConnection
+    ldap_id: str, ldap_data: APIConnection, pprint_value: bool
 ) -> LDAPConnectionInterface:
     if ldap_data["ldap_connection"]["connection_suffix"]["state"] == "enabled":
         for ldap_connection in [
@@ -1313,5 +1344,5 @@ def request_to_edit_ldap_connection(
     modified_connections = [c for c in all_connections if c["id"] != ldap_id]
     modified_connections.append(connection.to_mk_format())
     update_suffixes(modified_connections)
-    config_file.save(modified_connections)
+    config_file.save(modified_connections, pprint_value)
     return connection

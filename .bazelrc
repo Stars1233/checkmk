@@ -6,18 +6,33 @@ try-import %workspace%/user.bazelrc
 # common --remote_cache=grpcs://${USER}:${PASSWORD}@{URL}
 try-import %workspace%/remote.bazelrc
 
+# Use local registry to add local download mirrors
+common:linux --registry="file://%workspace%/bazel/registry"
+common:windows --registry="file:///%workspace%/bazel/registry"
+common --registry=https://bcr.bazel.build
+
+# reading WORKSPACE is disabled by default for Bazel 8
+common --enable_workspace
+
+# with rules_proto_grpc (5.0.1) we run into
+# >>> Error in resolve_tools: Pass an executable or tools argument to ctx.actions.run
+# without
+common --noincompatible_disallow_ctx_resolve_tools
+
 # default/common bazel args for all commands supporting it
 common --experimental_ui_max_stdouterr_bytes=10000000
-common --experimental_remote_cache_async
+common --remote_cache_async
 common --remote_cache_compression
+# send pings after this time of no read operations on the connection, but only if there is at least one pending gRPC call
+# only with this flag "grpc_keepalive_timeout" is enabled, defaults to 20s
+common --grpc_keepalive_time=10s
 # minimum blob size required to compress/decompress with zstd (1MB)
 common --experimental_remote_cache_compression_threshold=1048576
 common --remote_local_fallback
 common --cycles
 common --local_resources=cpu=HOST_CPUS-2
 common --local_resources=memory=HOST_RAM*.5
-# We standardized on Ubuntu, a Debian-based distro, so LSB
-common --@//:filesystem_layout=lsb
+common --@//bazel/cmk/distro="ubuntu-24.04"
 # Enable Bzlmod for every Bazel command
 common --enable_bzlmod
 # Do not upload artifacts other than from CI, see below, CMK-18656
@@ -28,8 +43,9 @@ common --test_summary=detailed
 ## For specific commands
 # Always require debug info.
 # build --copt="-g"
-build --flag_alias=cmk_version=//:cmk_version
-build --flag_alias=cmk_edition=//:cmk_edition
+build --flag_alias=cmk_version=//bazel/cmk/version
+build --flag_alias=cmk_edition=//bazel/cmk/edition
+build --flag_alias=cmk_distro=//bazel/cmk/distro
 
 # For some obscure reason, the re2 project made itself valgrind-dirty by default:
 # https://github.com/google/re2/commit/ce6f2884c4b52509fd6c5d12b8f1c40587067784
@@ -50,15 +66,19 @@ common:ci --color=no
 common:ci --show_progress_rate_limit=0
 common:ci --show_timestamps
 common:ci --memory_profile=bazel-memory.profile
-common:ci --extra_toolchains="//bazel/toolchains/cc:ci"
+common:ci --//bazel/toolchains/cc/gcc/local:gcc_path=opt
 common:ci --local_resources=cpu=HOST_CPUS*.21
 common:ci --local_resources=memory=HOST_RAM*.67
 # the later flags will override the previous flags
 # upload artifacts only from CI, CMK-18656
 common:ci --remote_upload_local_results=true
 
-# No standard in the CI where we must explicitly differentiate between LSB and FHS.
-common:ci --@//:filesystem_layout=FILESYSTEM_LAYOUT_INVALID
+common:ci --@//bazel/cmk/distro=UNSET
+
+# For better performance - passes an argument `--skipLibCheck` to *every* spawn of tsc
+common --@aspect_rules_ts//ts:skipLibCheck=always
+# For more correct typechecks - honor the setting of `skipLibCheck` in the tsconfig.json file
+# common --@aspect_rules_ts//ts:skipLibCheck=honor_tsconfig
 
 ## For specific commands
 # build:ci ...
@@ -120,12 +140,6 @@ build:mypy --output_groups=mypy
 build:clippy --aspects=@rules_rust//rust:defs.bzl%rust_clippy_aspect
 build:clippy --output_groups=+clippy_checks
 build:clippy --@rules_rust//:clippy_flags=-Dwarnings
-
-################################################################################
-# Example: bazel build --config=rustfmt //packages/site/check-http:all
-################################################################################
-build:rustfmt --aspects=@rules_rust//rust:defs.bzl%rustfmt_aspect
-build:rustfmt --output_groups=+rustfmt_checks
 
 # Turn off automatic capturing of environmental stuff like PATH - those will be set explicitly
 # (see https://blog.aspect.build/bazelrc-flags)

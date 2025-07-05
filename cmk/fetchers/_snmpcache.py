@@ -4,13 +4,11 @@
 # conditions defined in the file COPYING, which is part of this source code package.
 """SNMP caching"""
 
-import os
 from pathlib import Path
 
+import cmk.ccc.cleanup
 from cmk.ccc import store
-
-import cmk.utils.cleanup
-from cmk.utils.hostaddress import HostAddress, HostName
+from cmk.ccc.hostaddress import HostAddress, HostName
 
 from cmk.snmplib import OID, SNMPDecodedString
 
@@ -43,11 +41,9 @@ def write_single_oid_cache(
 ) -> None:
     if not _g_single_oid_cache:
         return
-
-    if not os.path.exists(cache_dir):
-        os.makedirs(cache_dir)
-    cache_path = f"{cache_dir}/{host_name}.{ipaddress}"
-    store.save_object_to_file(cache_path, _g_single_oid_cache, pretty=False)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    cache_path = cache_dir / f"{host_name}.{ipaddress}"
+    store.save_object_to_file(cache_path, _g_single_oid_cache, pprint_value=False)
 
 
 def _load_single_oid_cache(
@@ -66,7 +62,7 @@ def cleanup_host_caches() -> None:
     _clear_other_hosts_oid_cache(None)
 
 
-cmk.utils.cleanup.register_cleanup(cleanup_host_caches)
+cmk.ccc.cleanup.register_cleanup(cleanup_host_caches)
 
 
 def _clear_other_hosts_oid_cache(hostname: HostName | None) -> None:

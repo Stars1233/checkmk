@@ -6,10 +6,11 @@
 import json
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal, TypedDict
 
 from cmk.agent_based.v1 import check_levels as check_levels_v1
 from cmk.agent_based.v2 import (
+    check_levels,
     CheckResult,
     DiscoveryResult,
     HostLabel,
@@ -30,7 +31,7 @@ AWSSectionMetrics = Mapping[str, Mapping[str, Any]]
 
 # Some limit values have dynamic names, eg.
 # 'Rules of VPC security group %s' % SECURITY_GROUP
-# At the moment we exclude them in the performance data.  If it's
+# At the moment we exclude them in the performance data. If it's
 # a limit for a piggyback host, we do NOT exclude, eg. 'load_balancer_listeners'
 # and 'load_balancer_registered_instances' per load balancer piggyback host
 exclude_aws_limits_perf_vars = [
@@ -59,6 +60,16 @@ class AWSMetric:
     levels_upper: tuple[float, float] | None = None
     name: str | None = None
     label: str | None = None
+
+
+class AWSLimitPercentage(TypedDict):
+    warn: float | None
+    crit: float | None
+
+
+class AWSLimits(TypedDict):
+    absolute: tuple[Literal["aws_default_limit", "aws_limit_value"], int | None]
+    percentage: AWSLimitPercentage
 
 
 LambdaSummarySection = Mapping[str, LambdaFunctionConfiguration]
@@ -126,8 +137,82 @@ def is_valid_aws_limits_perf_data(perfvar: str) -> bool:
 
 
 def check_aws_limits(
+    aws_service: str,
+    params: Mapping[
+        str, tuple[Literal["no_levels"], None] | tuple[Literal["set_levels"], AWSLimits]
+    ],
+    parsed_region_data: list[list],
+) -> CheckResult:
+    """
+    Check AWS limits with FormSpecs for setting levels of the underlying check.
+    """
+    for resource_key, resource_title, limit, amount, human_readable_func in parsed_region_data:
+        parameter = params.get(resource_key, None)
+        warn, crit = (None, None)
+        if (
+            isinstance(parameter, tuple)
+            and len(parameter) == 2
+            and parameter[0] == "set_levels"
+            and isinstance(parameter[1], dict)
+        ):
+            _, param_absolute_limit = parameter[1].get("absolute", (None, None))
+            percentage = parameter[1].get("percentage", {"warn": None, "crit": None})
+            assert isinstance(percentage, dict)
+            warn = percentage.get("warn", None)
+            crit = percentage.get("crit", None)
+
+        if is_valid_aws_limits_perf_data(resource_key):
+            yield Metric(name=f"aws_{aws_service}_{resource_key}", value=amount)
+
+        if param_absolute_limit is not None:
+            limit = param_absolute_limit
+
+        if not limit:
+            continue
+
+        upper_levels: (
+            tuple[Literal["fixed"], tuple[float, float]] | tuple[Literal["no_levels"], None]
+        ) = ("no_levels", None)
+        if (
+            warn is not None
+            and crit is not None
+            and isinstance(warn, float)
+            and isinstance(crit, float)
+        ):
+            upper_levels = ("fixed", (warn, crit))
+
+        result: Result | None = None
+        # normal check_levels does not show the absolute limit, therefore we need to rewrite the notice
+        result = next(
+            (
+                res
+                for res in check_levels(
+                    value=100.0 * amount / limit,
+                    levels_upper=upper_levels,
+                    render_func=render.percent,
+                )
+                if isinstance(res, Result)
+            ),
+            None,
+        )
+
+        if isinstance(result, Result):
+            yield Result(
+                state=result.state,
+                notice=f"{resource_title}: {human_readable_func(amount)} (of max. {human_readable_func(limit)}), {result.summary}",
+            )
+        else:
+            raise TypeError(
+                f"Invalid result from cmk.agent_based.v2.check_levels: {result}. Expected Result."
+            )
+
+
+def check_aws_limits_legacy(
     aws_service: str, params: Mapping[str, Any], parsed_region_data: list[list]
 ) -> CheckResult:
+    """
+    Deprecated check_aws_limits function as this is based upon Valuespecs for setting levels of the underlying check.
+    """
     for resource_key, resource_title, limit, amount, human_readable_func in parsed_region_data:
         try:
             p_limit, warn, crit = params[resource_key]
@@ -180,6 +265,25 @@ def check_aws_metrics(metric_infos: Sequence[AWSMetric]) -> CheckResult:
         )
 
 
+def is_expected_metric(row_id: str, expected_metric_name: str) -> bool:
+    expected_metric_name_lower = expected_metric_name.lower()
+    return (
+        row_id.startswith(expected_metric_name_lower)
+        or row_id.endswith(expected_metric_name_lower)
+        or expected_metric_name == row_id.split("_", 2)[-1]
+    )
+
+
+def extract_metric_value(row_values: list, convert_sum_stats_to_rate: bool) -> Any | None:
+    try:
+        value, time_period = row_values[0]
+        if convert_sum_stats_to_rate and time_period is not None:
+            return value / time_period
+        return value
+    except (IndexError, ValueError):
+        return None
+
+
 def extract_aws_metrics_by_labels(
     expected_metric_names: Iterable[str],
     section: GenericAWSSection,
@@ -188,37 +292,29 @@ def extract_aws_metrics_by_labels(
 ) -> Mapping[str, dict[str, Any]]:
     if extra_keys is None:
         extra_keys = []
+
     values_by_labels: dict[str, dict[str, Any]] = {}
+
     for row in section:
-        row_id = row["Id"].lower()
+        if (row_id := row.get("Id")) is None:
+            continue
+
         row_label = row["Label"]
         row_values = row["Values"]
+
         for expected_metric_name in expected_metric_names:
-            expected_metric_name_lower = expected_metric_name.lower()
-            if not row_id.startswith(expected_metric_name_lower) and not row_id.endswith(
-                expected_metric_name_lower
-            ):
+            if not is_expected_metric(row_id, expected_metric_name):
                 continue
 
-            try:
-                # AWSSectionCloudwatch in agent_aws.py yields both the actual values of the metrics
-                # as returned by Cloudwatch and the time period over which they were collected (for
-                # example 600 s). However, only for metrics based on the "Sum" statistics, the
-                # period is not None, because these metrics need to be divided by the period to
-                # convert the metric value to a rate. For all other metrics, the time period is
-                # None.
-                value, time_period = row_values[0]
-                if convert_sum_stats_to_rate and time_period is not None:
-                    value /= time_period
-            except IndexError:
-                continue
-            else:
-                values_by_labels.setdefault(row_label, {}).setdefault(expected_metric_name, value)
+            value = extract_metric_value(row_values, convert_sum_stats_to_rate)
+            if value is not None:
+                values_by_labels.setdefault(row_label, {})[expected_metric_name] = value
+
         for extra_key in extra_keys:
             extra_value = row.get(extra_key)
-            if extra_value is None:
-                continue
-            values_by_labels.setdefault(row_label, {}).setdefault(extra_key, extra_value)
+            if extra_value is not None:
+                values_by_labels.setdefault(row_label, {})[extra_key] = extra_value
+
     return values_by_labels
 
 
@@ -327,8 +423,8 @@ def get_region_from_item(item: str) -> str:
 class LambdaCloudwatchMetrics:
     Duration: float
     Errors: float
-    Invocations: float
     Throttles: float
+    Invocations: float | None = None
     ConcurrentExecutions: float | None = None
     DeadLetterErrors: float | None = None
     DestinationDeliveryFailures: float | None = None

@@ -6,7 +6,6 @@
 import os
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Final
 
 from pytest import MonkeyPatch
 
@@ -20,54 +19,8 @@ _NON_STD_PREFIX: Mapping[str, str] = {
     "rrd_single_dir": "/opt%s",
 }
 
-_STR_PATHS: Final = {
-    "default_config_dir",
-    "main_config_file",
-    "final_config_file",
-    "local_config_file",
-    "check_mk_config_dir",
-    "modules_dir",
-    "var_dir",
-    "log_dir",
-    "precompiled_checks_dir",
-    "base_autochecks_dir",
-    "autochecks_dir",
-    "precompiled_hostchecks_dir",
-    "snmpwalks_dir",
-    "counters_dir",
-    "tcp_cache_dir",
-    "data_source_cache_dir",
-    "snmp_scan_cache_dir",
-    "include_cache_dir",
-    "logwatch_dir",
-    "nagios_objects_file",
-    "nagios_command_pipe_path",
-    "check_result_path",
-    "nagios_status_file",
-    "nagios_conf_dir",
-    "nagios_config_file",
-    "nagios_startscript",
-    "nagios_binary",
-    "apache_config_dir",
-    "htpasswd_file",
-    "livestatus_unix_socket",
-    "livebackendsdir",
-    "inventory_output_dir",
-    "inventory_archive_dir",
-    "inventory_delta_cache_dir",
-    "status_data_dir",
-    "share_dir",
-    "checks_dir",
-    "inventory_dir",
-    "legacy_check_manpages_dir",
-    "agents_dir",
-    "web_dir",
-    "lib_dir",
-    "autoinventory_dir",
-}
 
-
-_IGNORED_VARS = {"Path", "os", "sys", "Union"}
+_IGNORED_VARS = {"Path", "os", "cse_config_dir", "sys", "Union", "LOCAL_SEGMENT"}
 
 
 def _ignore(varname: str) -> bool:
@@ -77,14 +30,6 @@ def _ignore(varname: str) -> bool:
 def _check_paths(root: str, namespace_dict: Mapping[str, object]) -> None:
     for var, value in namespace_dict.items():
         if _ignore(var):
-            continue
-
-        if var in _STR_PATHS:
-            assert isinstance(value, str)
-            assert value.startswith(root)
-            continue
-
-        if var == "cse_config_dir":
             continue
 
         assert isinstance(value, Path)

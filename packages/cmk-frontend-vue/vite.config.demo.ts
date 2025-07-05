@@ -14,10 +14,14 @@ export default defineConfig(() => {
     plugins: [vue()],
     clearScreen: false,
     root: './src/components/_demo/',
+    build: {
+      minify: false
+    },
     server: {
+      port: 5174,
       strictPort: true,
       fs: {
-        allow: ['.', '../../../../cmk-frontend/']
+        strict: false
       },
       proxy: {
         '/site-api': {

@@ -5,11 +5,11 @@
 
 # This file initializes the pytest environment
 
-
 import logging
 import os
 import subprocess
 from collections.abc import Generator, Iterator
+from enum import StrEnum
 from pathlib import Path
 
 import pytest
@@ -32,6 +32,11 @@ from tests.testlib.utils import (  # noqa: E402
     run,
     verbose_called_process_error,
 )
+from tests.testlib.version import (  # noqa: E402
+    CMKEdition,
+    edition_from_env,
+    TypeCMKEdition,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -43,12 +48,30 @@ pytest_plugins = ("tests.gui_e2e.testlib.playwright.plugin",)
 PYTEST_RAISE = os.getenv("_PYTEST_RAISE", "0") != "0"
 
 
+class EditionMarker(StrEnum):
+    skip_if = "skip_if_edition"
+    skip_if_not = "skip_if_not_edition"
+
+
+class ContainerizedMarker(StrEnum):
+    skip_if = "skip_if_containerized"
+    skip_if_not = "skip_if_not_containerized"
+
+
+def get_test_type(test_path: Path) -> str:
+    testdir_path = Path(__file__).parent.resolve()
+    test_path_relative = test_path.resolve().relative_to(testdir_path)
+    return test_path_relative.parts[0]
+
+
 @pytest.fixture(scope="session", autouse=True)
-def _session_timeout(pytestconfig: pytest.Config) -> Iterator[None]:
+def _session_timeout(request: pytest.FixtureRequest, pytestconfig: pytest.Config) -> Iterator[None]:
     session_timeout_cli = "--session-timeout"
-    timeout_duration = pytestconfig.getoption(session_timeout_cli)
-    if "gui" in pytestconfig.getoption("-T") and timeout_duration > 0:
-        pytest.exit(f"'UI-tests' do not support usage of '{session_timeout_cli}'!")
+    timeout_duration = (
+        _session_timeout_option
+        if isinstance(_session_timeout_option := pytestconfig.getoption(session_timeout_cli), int)
+        else 0
+    )
     with MonitorTimeout(timeout=timeout_duration):
         yield
 
@@ -75,11 +98,10 @@ def pytest_exception_interact(
     if not (excinfo := call.excinfo):
         return
 
-    testsuite_type = node.config.getoption("-T")
     sudo_run_in_container = is_containerized()
 
     excp_ = excinfo.value
-    if testsuite_type in ("composition"):
+    if get_test_type(node.path) in ("composition"):
         excp_.add_note("-" * 80)
         excp_.add_note(
             _render_command_output(
@@ -186,48 +208,14 @@ collect_ignore: list[str] = []
 # See also https://github.com/joke2k/faker/issues/753
 logging.getLogger("faker").setLevel(logging.ERROR)
 
-#
-# Each test is of one of the following types.
-#
-# The tests are marked using the marker pytest.marker.type("TYPE")
-# which is added to the test automatically according to their location.
-#
-# With each call to pytest one type of tests needs to be selected using
-# the "-T TYPE" option. Only these tests will then be executed. Tests of
-# the other type will be skipped.
-#
-
-test_types = [
-    "unit",
-    "pylint",
-    "docker",
-    "agent-integration",
-    "agent_plugin_integration",
-    "agent-plugin-unit",
-    "integration",
-    "integration_redfish",
-    "gui_crawl",
-    "gui_e2e",
-    "packaging",
-    "composition",
-    "code_quality",
-    "update",
-    "schemathesis_openapi",
-    "plugins_integration",
-    "plugins_siteless",
-    "extension_compatibility",
-    "testlib",
-]
-
 
 def pytest_addoption(parser):
-    """Register the -T option to pytest"""
+    """Register options to pytest"""
     parser.addoption(
-        "-T",
-        action="store",
-        metavar="TYPE",
-        default="unit",
-        help="Run tests of the given TYPE. Available types are: %s" % ", ".join(test_types),
+        "--ignore-running-procs",
+        action="store_true",
+        default=False,
+        help="Ignore running processes after site shutdown.",
     )
     parser.addoption(
         "--fail-on-log-exception",
@@ -256,9 +244,15 @@ def pytest_addoption(parser):
         type=int,
         help="Terminate testsuite run cleanly after TIMEOUT seconds. By default, 0 (disabled).",
     )
+    parser.addoption(
+        "--dry-run",
+        action="store_true",
+        default=False,
+        help="Simulate test execution. XFail all tests that would be executed.",
+    )
 
 
-def pytest_configure(config):
+def pytest_configure(config: pytest.Config) -> None:
     """Add important environment variables to the report and register custom pytest markers"""
     env_vars = {
         "BRANCH": current_base_branch_name(),
@@ -274,48 +268,63 @@ def pytest_configure(config):
         "<ul><li>\n" + ("</li><li>\n".join(env_lines)) + "</li></ul>"
     )
 
+    # Exclude schemathesis_openapi tests from global collection
+    global collect_ignore
+    collect_ignore = ["schemathesis_openapi"]
+
     config.addinivalue_line(
-        "markers", "type(TYPE): Mark TYPE of test. Available: %s" % ", ".join(test_types)
+        "markers",
+        f"{EditionMarker.skip_if}(edition): skips the tests for the given edition(s)",
+    )
+    config.addinivalue_line(
+        "markers",
+        f"{EditionMarker.skip_if_not}(edition): "
+        "skips the tests for anything but the given edition(s)",
+    )
+    config.addinivalue_line(
+        "markers",
+        f"{ContainerizedMarker.skip_if}: skips the tests for containerized runs",
+    )
+    config.addinivalue_line(
+        "markers",
+        f"{ContainerizedMarker.skip_if_not}: skips the tests for uncontainerized runs",
     )
 
-    if not config.getoption("-T") == "schemathesis_openapi":
-        # Exclude schemathesis_openapi tests from global collection
-        global collect_ignore
-        collect_ignore = ["schemathesis_openapi"]
 
-
-def pytest_collection_modifyitems(items: list[pytest.Item], config: pytest.Config) -> None:
+def pytest_collection_modifyitems(items: list[pytest.Function], config: pytest.Config) -> None:
     """Mark collected test types based on their location"""
     items[:] = items[0 : config.getoption("--limit")]
     for item in items:
-        type_marker = item.get_closest_marker("type")
-        if type_marker and type_marker.args:
-            continue  # Do not modify manually set marks
-        repo_rel_path = item.path.relative_to(Path(__file__).parent.parent)
-        ty = repo_rel_path.parts[1]
-        if ty not in test_types:
-            if not isinstance(item, pytest.DoctestItem):
-                raise Exception(f"Test in {repo_rel_path} not TYPE marked: {item!r} ({ty!r})")
-
-        item.add_marker(pytest.mark.type.with_args(ty))
-
         if config.getoption("--no-skip"):
             item.own_markers = [_ for _ in item.own_markers if _.name not in ("skip", "skipif")]
 
 
+def _editions_from_markers(item: pytest.Item, marker_name: EditionMarker) -> list[TypeCMKEdition]:
+    editions: list[TypeCMKEdition] = []
+    for mark in item.iter_markers(name=marker_name):
+        editions += [CMKEdition.edition_from_text(edition_arg) for edition_arg in mark.args]
+    return editions
+
+
 def pytest_runtest_setup(item: pytest.Item) -> None:
-    """Skip tests of unwanted types"""
-    _skip_unwanted_test_types(item)
+    """Skip tests for specific editions or environments"""
+    current_edition = edition_from_env()
 
+    skip_editions = _editions_from_markers(item, EditionMarker.skip_if)
+    if skip_editions and current_edition in skip_editions:
+        pytest.skip(f'{item.nodeid}: Edition "{current_edition.long}" is skipped explicitly!')
 
-def _skip_unwanted_test_types(item: pytest.Item) -> None:
-    test_type = item.get_closest_marker("type")
-    if test_type is None:
-        raise Exception("Test is not TYPE marked: %s" % item)
+    unskip_editions = _editions_from_markers(item, EditionMarker.skip_if_not)
+    if unskip_editions and current_edition not in unskip_editions:
+        pytest.skip(f'{item.nodeid}: Edition "{current_edition.long}" is skipped implicitly!')
 
-    if not item.config.getoption("-T"):
-        raise SystemExit("Please specify type of tests to be executed (py.test -T TYPE)")
+    skip_containerized = next(item.iter_markers(name=ContainerizedMarker.skip_if), None)
+    if skip_containerized and is_containerized():
+        pytest.skip(f"{item.nodeid}: Containerized run excluded!")
 
-    test_type_name = test_type.args[0]
-    if test_type_name != item.config.getoption("-T"):
-        pytest.skip("Not testing type %r" % test_type_name)
+    skip_not_containerized = next(item.iter_markers(name=ContainerizedMarker.skip_if_not), None)
+    if skip_not_containerized and not is_containerized():
+        pytest.skip(f"{item.nodeid}: Containerized run required!")
+
+    if item.config.getoption("--dry-run"):
+        pytest.xfail("*** DRY-RUN ***")

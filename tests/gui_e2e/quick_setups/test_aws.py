@@ -21,6 +21,7 @@ from tests.gui_e2e.testlib.playwright.pom.setup.dcd import DCD
 from tests.gui_e2e.testlib.playwright.pom.setup.hosts import SetupHost
 from tests.gui_e2e.testlib.playwright.pom.setup.passwords import Passwords
 from tests.gui_e2e.testlib.playwright.pom.setup.ruleset import Ruleset
+from tests.gui_e2e.testlib.playwright.timeouts import ANIMATION_TIMEOUT
 from tests.testlib.site import Site
 from tests.testlib.utils import run
 
@@ -35,7 +36,7 @@ def fixture_fake_aws_dump(test_site: Site) -> Iterator[None]:
     Faking the AWS agent bypasses such validations, which are 'out-of-scope' of UI tests.
     """
     fake_agent_aws = Path(__file__).parent / "fake_agent_aws.py"
-    aws_agent = test_site.root / "lib" / "check_mk" / "special_agents" / "agent_aws.py"
+    aws_agent = test_site.path("lib/python3/cmk/plugins/aws/special_agents/agent_aws.py")
     backup_agent = str(aws_agent).replace(".py", ".py.bck")
     run(["cp", str(aws_agent), backup_agent], sudo=True)
     run(["cp", str(fake_agent_aws), str(aws_agent)], sudo=True)
@@ -79,7 +80,7 @@ def fixture_aws_qs_config_page(
         list_hosts_page.activate_changes(test_site)
 
 
-@pytest.mark.xfail(reason="CMK-22883; Investigation ongoing ...")
+@pytest.mark.xfail(reason="CMK-23545; All quick-setup: CSP tests are failing.")
 def test_minimal_configuration(aws_qs_config_page: AWSAddNewConfiguration, test_site: Site) -> None:
     """Validate setup of an AWS configuration using 'Quick setup: AWS'"""
     config_name = aws_qs_config_page.configuration_name
@@ -92,7 +93,8 @@ def test_minimal_configuration(aws_qs_config_page: AWSAddNewConfiguration, test_
         access_password="my_aws_access_password",
     )
     aws_qs_config_page.button_proceed_from_stage_one.click()
-    aws_qs_config_page.page.wait_for_timeout(750)  # wait for stage transition animation
+    # wait for stage transition animation
+    aws_qs_config_page.page.wait_for_timeout(ANIMATION_TIMEOUT)
     expect(
         aws_qs_config_page.button_proceed_from_stage_two,
         message="Expected stage 2 button to be enabled after proceeding to stage 2!",
@@ -108,7 +110,8 @@ def test_minimal_configuration(aws_qs_config_page: AWSAddNewConfiguration, test_
         site_name=test_site.id,
     )
     aws_qs_config_page.button_proceed_from_stage_two.click()
-    aws_qs_config_page.page.wait_for_timeout(750)  # wait for stage transition animation
+    # wait for stage transition animation
+    aws_qs_config_page.page.wait_for_timeout(ANIMATION_TIMEOUT)
     expect(
         aws_qs_config_page.button_proceed_from_stage_three,
         message="Expected stage 3 button to be enabled after proceeding to stage 3!",
@@ -123,7 +126,8 @@ def test_minimal_configuration(aws_qs_config_page: AWSAddNewConfiguration, test_
         global_services=QuickSetupMultiChoice(["Costs and usage"], []),
     )
     aws_qs_config_page.button_proceed_from_stage_three.click()
-    aws_qs_config_page.page.wait_for_timeout(750)  # wait for stage transition animation
+    # wait for stage transition animation
+    aws_qs_config_page.page.wait_for_timeout(ANIMATION_TIMEOUT)
     expect(
         aws_qs_config_page.button_proceed_from_stage_four,
         message="Expected stage 4 button to be enabled after proceeding to stage 4!",
@@ -139,7 +143,8 @@ def test_minimal_configuration(aws_qs_config_page: AWSAddNewConfiguration, test_
         aws_qs_config_page.main_area.locator().get_by_text("AWS services found!"),
         message="Expected AWS services to be found after the connection test!",
     ).to_be_visible()
-    aws_qs_config_page.page.wait_for_timeout(750)  # wait for stage transition animation
+    # wait for stage transition animation
+    aws_qs_config_page.page.wait_for_timeout(ANIMATION_TIMEOUT)
     aws_qs_config_page.save_quick_setup()
 
     logger.info("Validate AWS configuration is listed.")

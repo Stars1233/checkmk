@@ -2,7 +2,7 @@ ARG DISTRO_IMAGE_BASE
 
 # hadolint ignore=DL3006
 # Create base image
-FROM ${DISTRO_IMAGE_BASE} as base
+FROM ${DISTRO_IMAGE_BASE} AS base
 
 SHELL ["/bin/bash", "-c"]
 ENV \
@@ -10,6 +10,9 @@ ENV \
     LC_ALL=C.UTF-8 \
     LANG=C.UTF-8 \
     PATH="/opt/bin:${PATH}"
+
+# Fix for CMK-23806, using our internal apt mirror
+RUN sed -i "s|http://.*.ubuntu.com/ubuntu|http://apt.lan.checkmk.net/ubuntu|g" /etc/apt/sources.list.d/ubuntu.sources
 
 RUN apt-get update
 
@@ -91,7 +94,7 @@ RUN rm /etc/cron.daily/apt-compat
 # - cmake is needed for e.g. building re2
 # - openssl is needed by Python 3.7+
 # - python is needed by our build / test chain
-FROM base as builder
+FROM base AS builder
 ARG NEXUS_ARCHIVES_URL
 ARG NEXUS_USERNAME
 ARG NEXUS_PASSWORD
@@ -188,7 +191,7 @@ ENV RUSTUP_HOME=/opt/rust/rustup
 
 COPY ci.bazelrc /etc/
 RUN <<EOF cat >> /etc/ci.bazelrc
-common:ci --@//:filesystem_layout=lsb
+common:ci --@//bazel/cmk/distro="ubuntu-24.04"
 common:ci --action_env=DISTRO=${DISTRO}
 common:ci --action_env=BRANCH_VERSION=${BRANCH_VERSION}
 common:ci --action_env=RUSTUP_HOME=${RUSTUP_HOME}

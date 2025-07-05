@@ -16,24 +16,24 @@ from typing import Literal, NamedTuple, override, TypeGuard
 
 from cmk.ccc import store
 from cmk.ccc.exceptions import MKGeneralException
+from cmk.ccc.hostaddress import HostAddress, HostName
+from cmk.ccc.user import UserId
 
-from cmk.utils.hostaddress import HostAddress, HostName
 from cmk.utils.paths import configuration_lockfile
 from cmk.utils.translations import translate_hostname, TranslationOptions
-from cmk.utils.user import UserId
 
 from cmk.gui import userdb
+from cmk.gui.config import Config
 from cmk.gui.cron import CronJob, CronJobRegistry
 from cmk.gui.http import request
 from cmk.gui.i18n import _
 from cmk.gui.log import logger
 from cmk.gui.session import UserContext
-from cmk.gui.site_config import get_site_config, is_wato_slave_site, site_is_local
+from cmk.gui.site_config import is_wato_slave_site, site_is_local
 
-from ..config import active_config
 from . import bakery, builtin_attributes
 from .automation_commands import AutomationCommand, AutomationCommandRegistry
-from .automations import do_remote_automation
+from .automations import do_remote_automation, RemoteAutomationConfig
 from .host_attributes import (
     ExcludeIPRange,
     HostAttributeRegistry,
@@ -50,7 +50,7 @@ class NetworkScanRequest(NamedTuple):
     folder_path: str
 
 
-def execute_network_scan_job() -> None:
+def execute_network_scan_job(config: Config) -> None:
     """Executed by the multisite cron job once a minute. Is only executed in the
     central site. Finds the next folder to scan and starts it via WATO
     automation. The result is written to the folder in the master site."""
@@ -82,13 +82,14 @@ def execute_network_scan_job() -> None:
         _save_network_scan_result(folder, result)
 
         try:
-            if site_is_local(active_config, folder.site_id()):
+            if site_is_local(site_config := config.sites[folder.site_id()]):
                 found = _do_network_scan(folder)
             else:
                 raw_response = do_remote_automation(
-                    get_site_config(active_config, folder.site_id()),
+                    RemoteAutomationConfig.from_site_config(site_config),
                     "network-scan",
                     [("folder", folder.path())],
+                    debug=config.debug,
                 )
                 assert isinstance(raw_response, list)
                 found = raw_response
@@ -96,7 +97,13 @@ def execute_network_scan_job() -> None:
             if not isinstance(found, list):
                 raise MKGeneralException(_("Received an invalid network scan result: %r") % found)
 
-            _add_scanned_hosts_to_folder(folder, found, run_as)
+            _add_scanned_hosts_to_folder(
+                folder,
+                found,
+                run_as,
+                pprint_value=config.wato_pprint_config,
+                debug=config.debug,
+            )
 
             result.update(
                 {
@@ -132,7 +139,12 @@ def _find_folder_to_scan() -> Folder | None:
 
 
 def _add_scanned_hosts_to_folder(
-    folder: Folder, found: NetworkScanFoundHosts, username: UserId
+    folder: Folder,
+    found: NetworkScanFoundHosts,
+    username: UserId,
+    *,
+    pprint_value: bool,
+    debug: bool,
 ) -> None:
     if (network_scan_properties := folder.attributes.get("network_scan")) is None:
         return
@@ -166,11 +178,11 @@ def _add_scanned_hosts_to_folder(
             entries.append((host_name, attrs, None))
 
     with store.lock_checkmk_configuration(configuration_lockfile):
-        folder.create_hosts(entries)
+        folder.create_hosts(entries, pprint_value=pprint_value)
         folder.save_folder_attributes()
         folder_tree().invalidate_caches()
 
-    bakery.try_bake_agents_for_hosts(tuple(e[0] for e in entries))
+    bakery.try_bake_agents_for_hosts(tuple(e[0] for e in entries), debug=debug)
 
 
 def _save_network_scan_result(folder: Folder, result: NetworkScanResult) -> None:

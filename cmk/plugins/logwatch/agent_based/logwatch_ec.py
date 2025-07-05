@@ -24,9 +24,9 @@ from typing import Any, Literal, Protocol
 from urllib.parse import quote as url_quote
 
 import cmk.ccc.debug  # pylint: disable=cmk-module-layer-violation
+from cmk.ccc.hostaddress import HostName  # pylint: disable=cmk-module-layer-violation
 
 import cmk.utils.paths  # pylint: disable=cmk-module-layer-violation
-from cmk.utils.hostaddress import HostName  # pylint: disable=cmk-module-layer-violation
 
 import cmk.ec.export as ec  # pylint: disable=cmk-module-layer-violation
 from cmk.ec.event import (  # pylint: disable=cmk-module-layer-violation
@@ -47,6 +47,8 @@ from cmk.agent_based.v2 import (
 from . import commons as logwatch
 
 _MAX_SPOOL_SIZE = 1024**2
+
+_EC_CONNECTION_TIMEOUT = 5  # seconds
 
 
 CHECK_DEFAULT_PARAMETERS: logwatch.PreDictLogwatchEc = {
@@ -505,7 +507,10 @@ class MessageForwarder:
         path: Path,
         events: Sequence[ec.SyslogMessage],
     ) -> LogwatchForwardedResult:
-        ec.forward_to_unix_socket(events, path)
+        try:
+            ec.forward_to_unix_socket(events, path, _EC_CONNECTION_TIMEOUT)
+        except Exception as exc:
+            return LogwatchForwardedResult(exception=exc)
         return LogwatchForwardedResult(num_forwarded=len(events))
 
     # Spool the log messages to given spool directory.
@@ -628,6 +633,7 @@ class MessageForwarder:
         else:
             raise NotImplementedError()
 
+        sock.settimeout(_EC_CONNECTION_TIMEOUT)
         sock.connect((method_params["address"], method_params["port"]))
 
         try:
@@ -769,7 +775,5 @@ class MessageForwarder:
 
     @staticmethod
     def _get_spool_path(hostname: str, item: str | None) -> Path:
-        result = Path(cmk.utils.paths.var_dir, "logwatch_spool", hostname)
-        if item is not None:
-            result = result / "item_{}".format(url_quote(item, safe=""))
-        return result
+        result = cmk.utils.paths.var_dir / "logwatch_spool" / hostname
+        return result if item is None else (result / f"item_{url_quote(item, safe='')}")

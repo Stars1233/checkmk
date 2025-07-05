@@ -9,16 +9,16 @@ from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from functools import partial
-from typing import Any, Literal, NamedTuple, NoReturn, overload, Protocol, TypeVar
+from typing import Any, Literal, NamedTuple, NoReturn, overload, Protocol, TypedDict, TypeVar
 
 from marshmallow import Schema as marshmallow_Schema
 
-from livestatus import LivestatusOutputFormat, LivestatusResponse
+from livestatus import LivestatusResponse, Query
 
 from cmk.ccc import plugin_registry
+from cmk.ccc.hostaddress import HostName
 from cmk.ccc.site import SiteId
 
-from cmk.utils.hostaddress import HostName
 from cmk.utils.macros import MacroMapping, replace_macros_in_str
 from cmk.utils.rulesets.ruleset_matcher import TagCondition
 from cmk.utils.servicename import ServiceName
@@ -84,9 +84,8 @@ class NodeResultBundle(NamedTuple):
 class QueryCallback(Protocol):
     def __call__(
         self,
-        query: str,
+        query: Query,
         only_sites: list[SiteId] | None = None,
-        output_format: LivestatusOutputFormat = LivestatusOutputFormat.PYTHON,
         fetch_full_data: bool = False,
     ) -> LivestatusResponse: ...
 
@@ -684,8 +683,12 @@ AggregationKind = Literal[
 ]
 
 
+class AggregationFunctionConfig(TypedDict):
+    type: AggregationKind
+
+
 class ABCBIAggregationFunction(ABC):
-    def __init__(self, aggr_function_config: dict[str, Any]) -> None:
+    def __init__(self, aggr_function_config: AggregationFunctionConfig) -> None:
         super().__init__()
 
     @classmethod
@@ -703,7 +706,7 @@ class ABCBIAggregationFunction(ABC):
         raise NotImplementedError()
 
     @abstractmethod
-    def serialize(self) -> dict[str, Any]:
+    def serialize(self) -> AggregationFunctionConfig:
         raise NotImplementedError()
 
 
@@ -711,7 +714,7 @@ class BIAggregationFunctionRegistry(plugin_registry.Registry[type[ABCBIAggregati
     def plugin_name(self, instance: type[ABCBIAggregationFunction]) -> str:
         return instance.kind()
 
-    def instantiate(self, aggr_func_config: dict[str, Any]) -> ABCBIAggregationFunction:
+    def instantiate(self, aggr_func_config: AggregationFunctionConfig) -> ABCBIAggregationFunction:
         return self._entries[aggr_func_config["type"]](aggr_func_config)
 
 

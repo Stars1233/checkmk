@@ -17,9 +17,9 @@ from pathlib import Path
 from typing import Final
 
 from cmk.ccc import store
+from cmk.ccc.hostaddress import HostName
 
 import cmk.utils.paths
-from cmk.utils.hostaddress import HostName
 from cmk.utils.log import logger
 
 type _PluginName = str
@@ -201,7 +201,7 @@ class ValueStoreManager:
 
     """
 
-    STORAGE_PATH = Path(cmk.utils.paths.counters_dir)
+    STORAGE_PATH = cmk.utils.paths.counters_dir
 
     def __init__(self, host_name: HostName, all_stores_store: AllValueStoresStore) -> None:
         self._store: Final = all_stores_store

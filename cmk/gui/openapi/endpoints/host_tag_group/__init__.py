@@ -19,6 +19,7 @@ from typing import Any
 from cmk.utils.regex import REGEX_ID
 from cmk.utils.tags import BuiltinTagConfig, TagGroup, TagGroupID, TagGroupSpec
 
+from cmk.gui.config import active_config
 from cmk.gui.http import Response
 from cmk.gui.logged_in import user
 from cmk.gui.openapi.endpoints.host_tag_group.request_schemas import (
@@ -104,7 +105,10 @@ def create_host_tag_group(params: Mapping[str, Any]) -> Response:
     """Create a host tag group"""
     user.need_permission("wato.edit")
     host_tag_group_details = params["body"]
-    save_tag_group(TagGroup.from_config(host_tag_group_details))
+    save_tag_group(
+        TagGroup.from_config(host_tag_group_details),
+        pprint_value=active_config.wato_pprint_config,
+    )
     return _serve_host_tag_group(_retrieve_group(host_tag_group_details["id"]).get_dict_format())
 
 
@@ -180,7 +184,13 @@ def update_host_tag_group(params: Mapping[str, Any]) -> Response:
     # This is an incremental update of the TagGroupSpec
     group_details.update(updated_details)  # type: ignore[typeddict-item]
     try:
-        edit_tag_group(ident, TagGroup.from_config(group_details), allow_repair=body["repair"])
+        edit_tag_group(
+            ident,
+            TagGroup.from_config(group_details),
+            allow_repair=body["repair"],
+            pprint_value=active_config.wato_pprint_config,
+            debug=active_config.debug,
+        )
     except RepairError:
         return problem(
             status=401,
@@ -221,7 +231,12 @@ def delete_host_tag_group(params: Mapping[str, Any]) -> Response:
             detail=f"The built-in host tag group {ident} cannot be deleted",
         )
 
-    affected = change_host_tags(OperationRemoveTagGroup(ident), TagCleanupMode.CHECK)
+    affected = change_host_tags(
+        OperationRemoveTagGroup(ident),
+        TagCleanupMode.CHECK,
+        pprint_value=active_config.wato_pprint_config,
+        debug=active_config.debug,
+    )
     if any(affected):
         mode = TagCleanupMode(params["mode"] or ("delete" if params["repair"] else "abort"))
         if mode == TagCleanupMode.ABORT:
@@ -249,11 +264,16 @@ def delete_host_tag_group(params: Mapping[str, Any]) -> Response:
                     "authorize Checkmk to update the relevant instances using the repair or mode parameters"
                 ),
             )
-        _ = change_host_tags(OperationRemoveTagGroup(ident), mode)
+        _ = change_host_tags(
+            OperationRemoveTagGroup(ident),
+            mode,
+            pprint_value=active_config.wato_pprint_config,
+            debug=active_config.debug,
+        )
 
     tag_config = load_tag_config()
     tag_config.remove_tag_group(ident)
-    update_tag_config(tag_config)
+    update_tag_config(tag_config, pprint_value=active_config.wato_pprint_config)
     return Response(status=204)
 
 
@@ -297,9 +317,9 @@ def serialize_host_tag_group(details: TagGroupSpec) -> DomainObject:
     )
 
 
-def register(endpoint_registry: EndpointRegistry) -> None:
-    endpoint_registry.register(create_host_tag_group)
-    endpoint_registry.register(show_host_tag_group)
-    endpoint_registry.register(list_host_tag_groups)
-    endpoint_registry.register(update_host_tag_group)
-    endpoint_registry.register(delete_host_tag_group)
+def register(endpoint_registry: EndpointRegistry, *, ignore_duplicates: bool) -> None:
+    endpoint_registry.register(create_host_tag_group, ignore_duplicates=ignore_duplicates)
+    endpoint_registry.register(show_host_tag_group, ignore_duplicates=ignore_duplicates)
+    endpoint_registry.register(list_host_tag_groups, ignore_duplicates=ignore_duplicates)
+    endpoint_registry.register(update_host_tag_group, ignore_duplicates=ignore_duplicates)
+    endpoint_registry.register(delete_host_tag_group, ignore_duplicates=ignore_duplicates)

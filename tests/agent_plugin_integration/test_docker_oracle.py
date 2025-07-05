@@ -8,6 +8,7 @@ import logging
 import os
 from collections.abc import Iterator
 from pathlib import Path
+from random import randint
 from typing import Final, Literal
 
 import docker.client  # type: ignore[import-untyped]
@@ -25,7 +26,6 @@ from tests.testlib.docker import (
     get_container_ip,
     resolve_image_alias,
 )
-from tests.testlib.pytest_helpers.marks import skip_if_not_enterprise_edition
 
 logger = logging.getLogger()
 
@@ -463,13 +463,15 @@ def _oracle(
     with OracleDatabase(
         client,
         checkmk,
-        name="oracle",
+        name=f"oracle_for_{checkmk.name}"
+        if checkmk is not None and checkmk.name
+        else f"oracle_{randint(10000000, 99999999)}",
         temp_dir=tmp_path_session,
     ) as oracle_db:
         yield oracle_db
 
 
-@skip_if_not_enterprise_edition
+@pytest.mark.skip_if_not_edition("enterprise")
 @pytest.mark.parametrize("auth_mode", ["wallet", "credential"])
 def test_docker_oracle(
     checkmk: CheckmkApp,
@@ -578,7 +580,7 @@ def test_docker_oracle(
     ]
 
     actual_services = [
-        _.get("extensions")
+        _["extensions"]
         for _ in checkmk.openapi.services.get_host_services(
             oracle.name, columns=["state", "description"]
         )
@@ -587,7 +589,7 @@ def test_docker_oracle(
     ]
 
     missing_services = [
-        service.get("description")
+        service["description"]
         for service in expected_services
         if service.get("description") not in [_.get("description") for _ in actual_services]
     ]

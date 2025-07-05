@@ -5,19 +5,18 @@
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from pathlib import Path
 from typing import cast, Literal, TypeAlias
 
 from livestatus import SiteConfigurations
 
 from cmk.ccc.plugin_registry import Registry
 from cmk.ccc.site import SiteId
+from cmk.ccc.user import UserId
 from cmk.ccc.version import Edition, edition
 
 from cmk.utils import paths
 from cmk.utils.log.security_event import log_security_event
 from cmk.utils.object_diff import make_diff_text
-from cmk.utils.user import UserId
 
 from cmk.gui import hooks, site_config, userdb
 from cmk.gui.config import active_config
@@ -99,14 +98,18 @@ def delete_users(users_to_delete: Sequence[UserId], sites: _UserAssociatedSitesF
     if deleted_users:
         for user_id in deleted_users:
             log_audit(
-                "edit-user",
-                "Deleted user: %s" % user_id,
+                action="edit-user",
+                message="Deleted user: %s" % user_id,
+                user_id=user.id,
+                use_git=active_config.wato_use_git,
                 object_ref=make_user_object_ref(user_id),
             )
         add_change(
-            "edit-users",
-            _l("Deleted user: %s") % ", ".join(deleted_users),
+            action_name="edit-users",
+            text=_l("Deleted user: %s") % ", ".join(deleted_users),
+            user_id=user.id,
             sites=None if affected_sites == "all" else list(affected_sites),
+            use_git=active_config.wato_use_git,
         )
         userdb.save_users(all_users, datetime.now())
 
@@ -138,6 +141,8 @@ def edit_users(changed_users: UserObject, sites: _UserAssociatedSitesFn) -> None
             message=(
                 "Created new user: %s" % user_id if is_new_user else "Modified user: %s" % user_id
             ),
+            user_id=user.id,
+            use_git=active_config.wato_use_git,
             diff_text=make_diff_text(old_object, make_user_audit_log_object(user_attrs)),
             object_ref=make_user_object_ref(user_id),
         )
@@ -158,15 +163,19 @@ def edit_users(changed_users: UserObject, sites: _UserAssociatedSitesFn) -> None
 
     if new_users_info:
         add_change(
-            "edit-users",
-            _l("Created new users: %s") % ", ".join(new_users_info),
+            action_name="edit-users",
+            text=_l("Created new users: %s") % ", ".join(new_users_info),
+            user_id=user.id,
             sites=None if affected_sites == "all" else list(affected_sites),
+            use_git=active_config.wato_use_git,
         )
     if modified_users_info:
         add_change(
-            "edit-users",
-            _l("Modified users: %s") % ", ".join(modified_users_info),
+            action_name="edit-users",
+            text=_l("Modified users: %s") % ", ".join(modified_users_info),
+            user_id=user.id,
             sites=None if affected_sites == "all" else list(affected_sites),
+            use_git=active_config.wato_use_git,
         )
         hooks.call("users-changed", modified_users_info)
 
@@ -361,7 +370,7 @@ class UsersConfigFile(WatoSingleConfigFile[Users]):
 
     def __init__(self) -> None:
         super().__init__(
-            config_file_path=Path(multisite_dir()) / "users.mk",
+            config_file_path=multisite_dir() / "users.mk",
             config_variable="multisite_users",
             spec_class=Users,
         )
@@ -372,7 +381,7 @@ class ContactsConfigFile(WatoSingleConfigFile[dict[AnnotatedUserId, UserContactD
 
     def __init__(self) -> None:
         super().__init__(
-            config_file_path=Path(wato_root_dir()) / "contacts.mk",
+            config_file_path=wato_root_dir() / "contacts.mk",
             config_variable="contacts",
             spec_class=dict[AnnotatedUserId, UserContactDetails],
         )

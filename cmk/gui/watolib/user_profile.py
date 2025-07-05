@@ -5,18 +5,16 @@
 
 import ast
 import time
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import datetime
+from logging import Logger
 from multiprocessing import TimeoutError as mp_TimeoutError
 from multiprocessing.pool import ThreadPool
 from typing import Any, cast, Literal, NamedTuple
 
-from livestatus import SiteConfiguration
-
 from cmk.ccc.exceptions import MKGeneralException
 from cmk.ccc.site import SiteId
-
-from cmk.utils.user import UserId
+from cmk.ccc.user import UserId
 
 from cmk.gui import sites, userdb
 from cmk.gui.config import active_config
@@ -26,17 +24,17 @@ from cmk.gui.i18n import _, _l
 from cmk.gui.logged_in import save_user_file
 from cmk.gui.site_config import (
     get_login_slave_sites,
-    get_site_config,
-    is_replication_enabled,
     is_wato_slave_site,
 )
+from cmk.gui.sites import SiteStatus
 from cmk.gui.type_defs import UserSpec, VisualTypeName
 from cmk.gui.utils.request_context import copy_request_context
-from cmk.gui.utils.urls import urlencode_vars
 from cmk.gui.watolib.automation_commands import AutomationCommand
-from cmk.gui.watolib.automations import do_remote_automation, get_url, MKAutomationException
+from cmk.gui.watolib.automations import (
+    do_remote_automation,
+    RemoteAutomationConfig,
+)
 from cmk.gui.watolib.changes import add_change
-from cmk.gui.watolib.utils import mk_eval, mk_repr
 
 # In case the sync is done on the master of a distributed setup the auth serial
 # is increased on the master, but not on the slaves. The user can not access the
@@ -68,13 +66,13 @@ class SynchronizationResult:
         self.succeeded = succeeded
 
 
-def _synchronize_profiles_to_sites(logger, profiles_to_synchronize):
+def _synchronize_profiles_to_sites(
+    logger: Logger, profiles_to_synchronize: dict[UserId, UserSpec], debug: bool
+) -> None:
     if not profiles_to_synchronize:
         return
 
-    remote_sites = [
-        (site_id, get_site_config(active_config, site_id)) for site_id in get_login_slave_sites()
-    ]
+    remote_sites = [(site_id, active_config.sites[site_id]) for site_id in get_login_slave_sites()]
 
     logger.info(
         "Credentials changed for %s. Trying to sync to %d sites"
@@ -84,14 +82,18 @@ def _synchronize_profiles_to_sites(logger, profiles_to_synchronize):
     states = sites.states()
 
     pool = ThreadPool()
-    jobs = []
-    for site_id, site in remote_sites:
-        jobs.append(
-            pool.apply_async(
-                copy_request_context(_sychronize_profile_worker),
-                (states, site_id, site, profiles_to_synchronize),
-            )
+    jobs = [
+        pool.apply_async(
+            copy_request_context(_sychronize_profile_worker),
+            (
+                states.get(site_id, {}),
+                RemoteAutomationConfig.from_site_config(site_config),
+                profiles_to_synchronize,
+                debug,
+            ),
         )
+        for site_id, site_config in remote_sites
+    ]
 
     results = []
     start_time = time.time()
@@ -119,11 +121,12 @@ def _synchronize_profiles_to_sites(logger, profiles_to_synchronize):
             logger.info(f"  FAILED [{result.site_id}]: {result.error_text}")
             if active_config.wato_enabled:
                 add_change(
-                    "edit-users",
-                    _l("Password changed (sync failed: %s)") % result.error_text,
-                    add_user=False,
+                    action_name="edit-users",
+                    text=_l("Password changed (sync failed: %s)") % result.error_text,
+                    user_id=None,
                     sites=[result.site_id],
                     need_restart=False,
+                    use_git=active_config.wato_use_git,
                 )
 
     pool.terminate()
@@ -138,104 +141,69 @@ def _synchronize_profiles_to_sites(logger, profiles_to_synchronize):
 
 
 def _sychronize_profile_worker(
-    states: sites.SiteStates,
-    site_id: SiteId,
-    site: SiteConfiguration,
-    profiles_to_synchronize: dict[UserId, Any],
+    site_status: SiteStatus,
+    automation_config: RemoteAutomationConfig,
+    profiles_to_synchronize: dict[UserId, UserSpec],
+    debug: bool,
 ) -> SynchronizationResult:
-    if not is_replication_enabled(site):
-        return SynchronizationResult(site_id, disabled=True)
-
-    if site.get("disabled"):
-        return SynchronizationResult(site_id, disabled=True)
-
-    status = states.get(site_id, {}).get("state", "unknown")
-    if status == "dead":
+    if site_status.get("state", "unknown") == "dead":
         return SynchronizationResult(
-            site_id, error_text=_("Site %s is dead") % site_id, failed=True
+            automation_config.site_id,
+            error_text=_("Site %s is dead") % automation_config.site_id,
+            failed=True,
         )
 
     try:
-        result = push_user_profiles_to_site_transitional_wrapper(site, profiles_to_synchronize)
+        result = push_user_profiles_to_site_transitional_wrapper(
+            automation_config,
+            profiles_to_synchronize,
+            None,
+            debug=debug,
+        )
         if result is not True:
-            return SynchronizationResult(site_id, error_text=result, failed=True)
-        return SynchronizationResult(site_id, succeeded=True)
+            return SynchronizationResult(automation_config.site_id, error_text=result, failed=True)
+        return SynchronizationResult(automation_config.site_id, succeeded=True)
     except RequestTimeout:
         # This function is currently only used by the background job
         # which does not have any request timeout set, just in case...
         raise
     except Exception as e:
-        return SynchronizationResult(site_id, error_text="%s" % e, failed=True)
+        return SynchronizationResult(automation_config.site_id, error_text="%s" % e, failed=True)
 
 
 # TODO: Why is the logger handed over here? The sync job could simply gather it's own
-def handle_ldap_sync_finished(logger, profiles_to_synchronize, changes):
-    _synchronize_profiles_to_sites(logger, profiles_to_synchronize)
+def handle_ldap_sync_finished(
+    logger: Logger,
+    profiles_to_synchronize: dict[UserId, UserSpec],
+    changes: Sequence[str],
+    debug: bool,
+) -> None:
+    _synchronize_profiles_to_sites(logger, profiles_to_synchronize, debug=debug)
 
     if changes and active_config.wato_enabled and not is_wato_slave_site():
-        add_change("edit-users", "<br>".join(changes), add_user=False)
+        add_change(
+            action_name="edit-users",
+            text="<br>".join(changes),
+            user_id=None,
+            use_git=active_config.wato_use_git,
+        )
 
 
 def push_user_profiles_to_site_transitional_wrapper(
-    site: SiteConfiguration,
+    automation_config: RemoteAutomationConfig,
     user_profiles: Mapping[UserId, UserSpec],
-    visuals: Mapping[UserId, Mapping[VisualTypeName, Any]] | None = None,
+    visuals: Mapping[UserId, Mapping[VisualTypeName, Any]] | None,
+    *,
+    debug: bool,
 ) -> Literal[True] | str:
-    try:
-        return push_user_profiles_to_site(site, user_profiles, visuals)
-    except MKAutomationException as e:
-        if "Invalid automation command: push-profiles" in "%s" % e:
-            failed_info = []
-            for user_id, user in user_profiles.items():
-                result = _legacy_push_user_profile_to_site(site, user_id, user)
-                if result is not True:
-                    failed_info.append(result)
-
-            if failed_info:
-                return "\n".join(failed_info)
-            return True
-        raise
+    return _push_user_profiles_to_site(automation_config, user_profiles, visuals, debug=debug)
 
 
-def _legacy_push_user_profile_to_site(site, user_id, profile):
-    url = (
-        site["multisiteurl"]
-        + "automation.py?"
-        + urlencode_vars(
-            [
-                ("command", "push-profile"),
-                ("secret", site["secret"]),
-                ("siteid", site["id"]),
-                ("debug", active_config.debug and "1" or ""),
-            ]
-        )
-    )
-
-    response = get_url(
-        url,
-        site.get("insecure", False),
-        data={
-            "user_id": user_id,
-            "profile": mk_repr(profile).decode("ascii"),
-        },
-        timeout=60,
-    )
-
-    if not response:
-        raise MKAutomationException(_("Empty output from remote site."))
-
-    try:
-        response = mk_eval(response)
-    except Exception:
-        # The remote site will send non-Python data in case of an error.
-        raise MKAutomationException("{}: <pre>{}</pre>".format(_("Got invalid data"), response))
-    return response
-
-
-def push_user_profiles_to_site(
-    site: SiteConfiguration,
+def _push_user_profiles_to_site(
+    automation_config: RemoteAutomationConfig,
     user_profiles: Mapping[UserId, UserSpec],
-    visuals: Mapping[UserId, Mapping[VisualTypeName, Any]] | None = None,
+    visuals: Mapping[UserId, Mapping[VisualTypeName, Any]] | None,
+    debug: bool,
 ) -> Literal[True]:
     def _serialize(user_profiles: Mapping[UserId, UserSpec]) -> Mapping[UserId, UserSpec]:
         """Do not synchronize user session information"""
@@ -245,10 +213,11 @@ def push_user_profiles_to_site(
         }
 
     do_remote_automation(
-        site,
+        automation_config,
         "push-profiles",
         [("profiles", repr(_serialize(user_profiles))), ("visuals", repr(visuals))],
         timeout=60,
+        debug=debug,
     )
     return True
 

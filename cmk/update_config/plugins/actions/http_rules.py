@@ -5,7 +5,7 @@
 from logging import Logger
 from typing import override
 
-from cmk.utils import tty
+from cmk.ccc import tty
 
 from cmk.gui.site_config import is_wato_slave_site
 from cmk.gui.watolib.rulesets import AllRulesets
@@ -29,8 +29,9 @@ class CheckHTTPRules(UpdateAction):
                         "monitoring plug-in in the next version(s) of Checkmk.\n"
                         "Rules must therefore be migrated to the new ruleset which is used by the httpv2 plugin.\n"
                         f"Rule migration can be done manually or by calling {tty.yellow}cmk-migrate-http "
-                        f"{tty.normal}as site user. See cmk-migrate-http --help "
-                        "for more information on this helper script.\n"
+                        f"{tty.normal}as site user.\n"
+                        "See our blog post for more information on this helper script:\n"
+                        "https://checkmk.com/blog/migrating-new-http-active-check\n"
                         "For additional information on the deprecation of the HTTP plug-in see the werk #17665."
                     )
                 )

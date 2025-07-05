@@ -7,7 +7,7 @@ package lib
 
 hashfile_extension = ".hash";
 downloads_path = "/var/downloads/checkmk/";
-tstbuilds_path = "/tstbuilds/";
+smb_base_path = "/smb-share-customer/checkmk/"
 versioning = load("${checkout_dir}/buildscripts/scripts/utils/versioning.groovy");
 
 /* groovylint-disable ParameterCount */
@@ -44,6 +44,7 @@ def download_version_dir(DOWNLOAD_SOURCE,
         || INFO =            |${INFO}|
         ||==========================================================================================
         """.stripMargin());
+
     stage("Download from shared storage (${INFO})") {
         withCredentials([
             sshUserPrivateKey(
@@ -75,6 +76,7 @@ def upload_version_dir(SOURCE_PATH, UPLOAD_DEST, PORT, EXCLUDE_PATTERN="", ADDIT
         || ADDITONAL_ARGS   = |${ADDITONAL_ARGS}|
         ||==========================================================================================
         """.stripMargin());
+
     withCredentials([file(credentialsId: 'Release_Key', variable: 'RELEASE_KEY')]) {    // groovylint-disable DuplicateMapLiteral
         sh("""
             rsync -av \
@@ -145,22 +147,12 @@ def execute_cmd_on_archive_server(cmd) {
     }
 }
 
-def execute_cmd_on_tst_server(cmd) {
-    // INTERNAL_DEPLOY_DEST configured as "deploy@tstbuilds-artifacts.lan.tribe29.com:/tstbuilds/"
-    def internal_deploy_server = INTERNAL_DEPLOY_DEST.split(":")[0];
-    withCredentials([file(credentialsId: 'Release_Key', variable: 'RELEASE_KEY')]) {    // groovylint-disable DuplicateMapLiteral
-        sh("""
-           ssh -o StrictHostKeyChecking=no -i ${RELEASE_KEY} -p ${INTERNAL_DEPLOY_PORT} ${internal_deploy_server} "${cmd}"
-        """);
-    }
-}
-
 def deploy_to_website(CMK_VERS) {
     stage("Deploy to Website") {
         // CMK_VERS can contain a rc information like v2.1.0p6-rc1.
         // On the website, we only want to have official releases.
         def TARGET_VERSION = versioning.strip_rc_number_from_version(CMK_VERS);
-        def SYMLINK_PATH = "/smb-share-customer/checkmk/" + TARGET_VERSION;
+        def SYMLINK_PATH = smb_base_path + TARGET_VERSION;
 
         // We also do not want to keep rc versions on the archive.
         // So rename the folder in case we have a rc
@@ -169,6 +161,55 @@ def deploy_to_website(CMK_VERS) {
         }
         execute_cmd_on_archive_server("ln -sf --no-dereference ${downloads_path}${TARGET_VERSION} ${SYMLINK_PATH};");
     }
+}
+
+def update_bom_symlinks(CMK_VERS, branch_latest=false, latest=false) {
+    def TARGET_VERSION = versioning.strip_rc_number_from_version(CMK_VERS);
+
+    inside_container(set_docker_group_id: true,
+        mount_credentials: true,
+        privileged: true,
+    ) {
+        dir("${checkout_dir}") {
+            if (branch_latest) {
+                def bom_mapping_branch_latest = readJSON(
+                    text: sh(script: """
+                        scripts/run-uvenv \
+                            buildscripts/scripts/assert_build_artifacts.py \
+                            --editions_file "${checkout_dir}/editions.yml" \
+                            dump_meta_artifacts_mapping \
+                            --version ${TARGET_VERSION} \
+                        """,
+                        returnStdout: true)
+                );
+                bom_mapping_branch_latest.each { symlink, target ->
+                    execute_cmd_on_archive_server(
+                        "ln -sf --no-dereference ${downloads_path}${TARGET_VERSION}/${target} ${smb_base_path}${symlink};"
+                    );
+                }
+            }
+
+            if (latest) {
+                def mapping_latest = readJSON(
+                    text: sh(script: """
+                        scripts/run-uvenv \
+                            buildscripts/scripts/assert_build_artifacts.py \
+                            --editions_file "${checkout_dir}/editions.yml" \
+                            dump_meta_artifacts_mapping \
+                            --version_agnostic \
+                            --version ${TARGET_VERSION} \
+                        """,
+                        returnStdout: true)
+                );
+                mapping_latest.each { symlink, target ->
+                    execute_cmd_on_archive_server(
+                        "ln -sf --no-dereference ${downloads_path}${TARGET_VERSION}/${target} ${smb_base_path}${symlink};"
+                    );
+                }
+            }
+        }
+    }
+
 }
 
 def cleanup_rc_candidates_of_version(CMK_VERS) {

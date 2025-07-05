@@ -8,7 +8,6 @@ from dataclasses import dataclass
 
 import pytest
 
-from tests.testlib.pytest_helpers.calls import abort_if_not_containerized
 from tests.testlib.site import Site
 
 
@@ -107,41 +106,26 @@ MONITORING_PLUGINS: Sequence[Plugin] = (
     MonitoringPlugin("urlize"),
     MonitoringPlugin("check_mysql"),
     MonitoringPlugin("check_mysql_query"),
-    CheckmkActiveCheck("check_httpv2", usage_text="Usage"),
-    CheckmkActiveCheck("check_always_crit"),
-    CheckmkActiveCheck("check_sftp"),
-    CheckmkActiveCheck(
-        "check_mail",
-        path="lib/check_mk/plugins/emailchecks/libexec",
-    ),
-    CheckmkActiveCheck(
-        "check_mailboxes",
-        path="lib/check_mk/plugins/emailchecks/libexec",
-    ),
-    CheckmkActiveCheck(
-        "check_mail_loop",
-        path="lib/check_mk/plugins/emailchecks/libexec",
-    ),
-    CheckmkActiveCheck("check_form_submit"),
-    MonitoringPlugin(
-        "check_mkevents",
-        cmd_line_option="",
-        expected="OK - no events for ",
-    ),
-    MonitoringPlugin(
-        "check_nrpe",
-        expected="Version: 3.2.1",
-    ),
-    CheckmkActiveCheck("check_sql"),
+    MonitoringPlugin("check_mkevents", cmd_line_option="", expected="OK - no events for "),
+    MonitoringPlugin("check_nrpe", expected="Version: 3.2.1"),
     MonitoringPlugin("check_snmp"),
-    CheckmkActiveCheck("check_notify_count"),
-    CheckmkActiveCheck("check_traceroute"),
+    CheckmkActiveCheck("check_always_crit"),
+    CheckmkActiveCheck("check_bi_aggr", path="lib/python3/cmk/plugins/checkmk/libexec"),
+    CheckmkActiveCheck("check_disk_smb", path="lib/python3/cmk/plugins/smb/libexec"),
     CheckmkActiveCheck(
-        "check_disk_smb",
-        path="lib/check_mk/plugins/smb/libexec",
+        "check_elasticsearch_query",
+        path="lib/python3/cmk/plugins/elasticsearch/libexec",
     ),
-    CheckmkActiveCheck("check_uniserv"),
-    CheckmkActiveCheck("check_bi_aggr"),
+    CheckmkActiveCheck("check_form_submit", path="lib/python3/cmk/plugins/form_submit/libexec"),
+    CheckmkActiveCheck("check_httpv2", usage_text="Usage"),
+    CheckmkActiveCheck("check_mailboxes", path="lib/python3/cmk/plugins/emailchecks/libexec"),
+    CheckmkActiveCheck("check_mail_loop", path="lib/python3/cmk/plugins/emailchecks/libexec"),
+    CheckmkActiveCheck("check_mail", path="lib/python3/cmk/plugins/emailchecks/libexec"),
+    CheckmkActiveCheck("check_notify_count", path="lib/python3/cmk/plugins/checkmk/libexec"),
+    CheckmkActiveCheck("check_sftp", path="lib/python3/cmk/plugins/sftp/libexec"),
+    CheckmkActiveCheck("check_sql", path="lib/python3/cmk/plugins/sql/libexec"),
+    CheckmkActiveCheck("check_traceroute", path="lib/python3/cmk/plugins/traceroute/libexec"),
+    CheckmkActiveCheck("check_uniserv", path="lib/python3/cmk/plugins/uniserv/libexec"),
 )
 
 
@@ -151,9 +135,6 @@ MONITORING_PLUGINS: Sequence[Plugin] = (
 )
 def test_monitoring_plugins_can_be_executed(plugin: Plugin, site: Site) -> None:
     """Validate the plugin's presence and version in the site."""
-    abort_if_not_containerized(
-        plugin.binary_name == "check_mysql"
-    )  # What? Why? Is printing the version dangerous?
 
     cmd_line = [(site.root / plugin.path / plugin.binary_name).as_posix(), plugin.cmd_line_option]
     # check=False; '<plugin-name> -V' returns in exit-code 3 for most plugins!
@@ -216,3 +197,11 @@ def test_navicli(site: Site) -> None:
     help_text = process.stdout if process.stdout else "<EXPECTED OUTPUT; OBSERVED NO OUTPUT>"
     # TODO: Sync this with a global version for navicli (like we do it for python)
     assert f"Revision {version}" in help_text, f"Expected '{tool}' to have version: {version}!"
+
+
+def test_nrpe(site: Site) -> None:
+    version = "3.2.1"
+    process = site.run([tool := "lib/nagios/plugins/check_nrpe", "-V"], check=False)
+    help_text = process.stdout if process.stdout else "<EXPECTED OUTPUT; OBSERVED NO OUTPUT>"
+    # TODO: Sync this with a global version for navicli (like we do it for python)
+    assert f"Version: {version}" in help_text, f"Expected '{tool}' to have version: {version}!"

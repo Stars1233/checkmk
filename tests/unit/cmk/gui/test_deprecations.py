@@ -9,11 +9,13 @@ from pathlib import Path
 import pytest
 
 from cmk.ccc.site import SiteId
-
-from cmk.utils.user import UserId
+from cmk.ccc.user import UserId
 
 from cmk.gui.deprecations import (
     _ACTestResultProblem,
+    _ACTestResultProblemFile,
+    _ACTestResultProblemMKP,
+    _ACTestResultProblemUnsorted,
     _filter_non_ok_ac_test_results,
     _find_ac_test_result_problems,
     _find_problems_to_send,
@@ -196,9 +198,8 @@ def test__filter_non_ok_ac_test_results(
             },
             {},
             [
-                _ACTestResultProblem(
+                _ACTestResultProblemUnsorted(
                     ident="text",
-                    type="unsorted",
                     notification_category=_NotificationCategory.log,
                     _ac_test_results={
                         SiteId("site_id_1"): [
@@ -277,9 +278,8 @@ def test__filter_non_ok_ac_test_results(
             },
             {},
             [
-                _ACTestResultProblem(
+                _ACTestResultProblemFile(
                     ident="local/share/check_mk/web/plugins/metrics/file.py",
-                    type="file",
                     notification_category=_NotificationCategory.manage_mkps,
                     _ac_test_results={
                         SiteId("site_id_1"): [
@@ -312,9 +312,8 @@ def test__filter_non_ok_ac_test_results(
                         ],
                     },
                 ),
-                _ACTestResultProblem(
+                _ACTestResultProblemFile(
                     ident="local/share/check_mk/web/plugins/metrics/file3.py",
-                    type="file",
                     notification_category=_NotificationCategory.manage_mkps,
                     _ac_test_results={
                         SiteId("site_id_3"): [
@@ -408,9 +407,8 @@ def test__filter_non_ok_ac_test_results(
                 ),
             },
             [
-                _ACTestResultProblem(
+                _ACTestResultProblemMKP(
                     ident="asd",
-                    type="mkp",
                     notification_category=_NotificationCategory.manage_mkps,
                     _ac_test_results={
                         SiteId("site_id_1"): [
@@ -443,9 +441,8 @@ def test__filter_non_ok_ac_test_results(
                         ],
                     },
                 ),
-                _ACTestResultProblem(
+                _ACTestResultProblemMKP(
                     ident="asd3",
-                    type="mkp",
                     notification_category=_NotificationCategory.manage_mkps,
                     _ac_test_results={
                         SiteId("site_id_3"): [
@@ -481,9 +478,8 @@ def test__find_ac_test_result_problems(
     "problem, title, box",
     [
         pytest.param(
-            _ACTestResultProblem(
+            _ACTestResultProblemUnsorted(
                 ident="A text",
-                type="unsorted",
                 notification_category=_NotificationCategory.manage_mkps,
                 _ac_test_results={
                     SiteId("site_id"): [
@@ -505,9 +501,8 @@ def test__find_ac_test_result_problems(
             id="unsorted-warn",
         ),
         pytest.param(
-            _ACTestResultProblem(
+            _ACTestResultProblemUnsorted(
                 ident="A text",
-                type="unsorted",
                 notification_category=_NotificationCategory.manage_mkps,
                 _ac_test_results={
                     SiteId("site_id"): [
@@ -529,9 +524,8 @@ def test__find_ac_test_result_problems(
             id="unsorted-crit",
         ),
         pytest.param(
-            _ACTestResultProblem(
+            _ACTestResultProblemFile(
                 ident="ident",
-                type="file",
                 notification_category=_NotificationCategory.manage_mkps,
                 _ac_test_results={
                     SiteId("site_id"): [
@@ -555,9 +549,8 @@ def test__find_ac_test_result_problems(
             id="file-warn",
         ),
         pytest.param(
-            _ACTestResultProblem(
+            _ACTestResultProblemFile(
                 ident="ident",
-                type="file",
                 notification_category=_NotificationCategory.manage_mkps,
                 _ac_test_results={
                     SiteId("site_id"): [
@@ -581,9 +574,8 @@ def test__find_ac_test_result_problems(
             id="file-crit",
         ),
         pytest.param(
-            _ACTestResultProblem(
+            _ACTestResultProblemMKP(
                 ident="ident",
-                type="mkp",
                 notification_category=_NotificationCategory.manage_mkps,
                 _ac_test_results={
                     SiteId("site_id"): [
@@ -607,9 +599,8 @@ def test__find_ac_test_result_problems(
             id="mkp-warn",
         ),
         pytest.param(
-            _ACTestResultProblem(
+            _ACTestResultProblemMKP(
                 ident="ident",
-                type="mkp",
                 notification_category=_NotificationCategory.manage_mkps,
                 _ac_test_results={
                     SiteId("site_id"): [
@@ -657,9 +648,8 @@ def test_render_problem(problem: _ACTestResultProblem, title: str, box: str) -> 
         ),
         pytest.param(
             [
-                _ACTestResultProblem(
+                _ACTestResultProblemUnsorted(
                     ident="A text",
-                    type="unsorted",
                     notification_category=_NotificationCategory.manage_mkps,
                     _ac_test_results={
                         SiteId("site_id"): [
@@ -705,16 +695,15 @@ def test_render_problem(problem: _ACTestResultProblem, title: str, box: str) -> 
         ),
         pytest.param(
             [
-                _ACTestResultProblem(
+                _ACTestResultProblemUnsorted(
                     ident="A text",
-                    type="unsorted",
                     notification_category=_NotificationCategory.rule_sets,
                     _ac_test_results={
                         SiteId("site_id"): [
                             ACTestResult(
                                 ACResultState.WARN,
                                 "A text",
-                                "test_id",
+                                "",
                                 "deprecations",
                                 "Title",
                                 "Help",
@@ -749,13 +738,69 @@ def test_render_problem(problem: _ACTestResultProblem, title: str, box: str) -> 
                     content='<h2>A text</h2><div class="error">This may partially work in Checkmk 2.3.0 but will stop working from the next major version onwards.</div><p>We highly recommend solving this issue already in your installation.</p><p>Affected sites: site_id</p><p>Details:</p><table class="data table"><tr class="even0"><td>A text</td><td class="state svcstate"><b class="stmark state1">WARN</b></td></tr></table>',
                 ),
             ],
+            id="unsorted",
+        ),
+        pytest.param(
+            [
+                _ACTestResultProblemUnsorted(
+                    ident="A text",
+                    notification_category=_NotificationCategory.rule_sets,
+                    _ac_test_results={
+                        SiteId("site_id"): [
+                            ACTestResult(
+                                ACResultState.WARN,
+                                "A text",
+                                "ACTestUnknownCheckParameterRuleSets",
+                                "deprecations",
+                                "Title",
+                                "Help",
+                                SiteId("site_id"),
+                                None,
+                            ),
+                        ],
+                    },
+                ),
+            ],
+            [
+                _NotifiableUser(
+                    UserId("user-id-1"),
+                    [_NotificationCategory.manage_mkps],
+                    [],
+                ),
+                _NotifiableUser(
+                    UserId("user-id-2"),
+                    [_NotificationCategory.rule_sets],
+                    [],
+                ),
+            ],
+            [
+                _ProblemToSend(
+                    users=[
+                        _NotifiableUser(
+                            user_id=UserId("user-id-2"),
+                            notification_categories=[_NotificationCategory.rule_sets],
+                            sent_messages=[],
+                        ),
+                    ],
+                    content="<h2>A text</h2><p>This configuration has no effect in the "
+                    "current installation. It may be associated with an older "
+                    "version of Checkmk or an unused extension package, in which "
+                    "case it can be safely removed. Alternatively, it might belong "
+                    "to a temporarily disabled extension package, so you may want "
+                    "to retain it for now. You can use the <a "
+                    'href="wato.py?mode=unknown_rulesets">unknown rulesets</a> '
+                    "page in case you want to remove the rule.</p><p>Affected "
+                    'sites: site_id</p><p>Details:</p><table class="data '
+                    'table"><tr class="even0"><td>A text</td><td class="state '
+                    'svcstate"><b class="stmark state1">WARN</b></td></tr></table>',
+                ),
+            ],
             id="rule-sets",
         ),
         pytest.param(
             [
-                _ACTestResultProblem(
+                _ACTestResultProblemUnsorted(
                     ident="A text",
-                    type="unsorted",
                     notification_category=_NotificationCategory.log,
                     _ac_test_results={
                         SiteId("site_id"): [
@@ -790,8 +835,8 @@ def test_render_problem(problem: _ACTestResultProblem, title: str, box: str) -> 
         ),
     ],
 )
-def test__find_problems_to_send(
-    problems: Sequence[_ACTestResultProblem],
+def test__find_unsorted_problems_to_send(
+    problems: Sequence[_ACTestResultProblemUnsorted],
     users: Sequence[_NotifiableUser],
     result: Sequence[_ProblemToSend | str],
 ) -> None:

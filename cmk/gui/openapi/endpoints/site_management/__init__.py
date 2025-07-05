@@ -26,6 +26,7 @@ from livestatus import SiteConfiguration, SiteConfigurations
 
 from cmk.ccc.site import SiteId
 
+from cmk.gui.config import active_config
 from cmk.gui.exceptions import MKUserError
 from cmk.gui.http import Response
 from cmk.gui.logged_in import user
@@ -66,7 +67,7 @@ LOGIN_PERMISSIONS = permissions.AllPerm(
 
 def _problem_from_user_error(e: MKUserError) -> Response:
     return problem(
-        status=404,
+        status=400,
         title="User Error",
         detail=str(e),
     )
@@ -164,7 +165,11 @@ def delete_site(params: Mapping[str, Any]) -> Response:
     """Delete a site connection"""
     user.need_permission("wato.sites")
     try:
-        SitesApiMgr().delete_a_site(SiteId(params["site_id"]))
+        SitesApiMgr().delete_a_site(
+            SiteId(params["site_id"]),
+            pprint_value=active_config.wato_pprint_config,
+            use_git=active_config.wato_use_git,
+        )
     except MKUserError as exc:
         return _problem_from_user_error(exc)
     except SiteDoesNotExistException:
@@ -192,6 +197,8 @@ def site_login(params: Mapping[str, Any]) -> Response:
             site_id=SiteId(params["site_id"]),
             username=body["username"],
             password=body["password"],
+            pprint_value=active_config.wato_pprint_config,
+            debug=active_config.debug,
         )
     except LoginException as exc:
         return problem(
@@ -214,7 +221,10 @@ def site_login(params: Mapping[str, Any]) -> Response:
 def site_logout(params: Mapping[str, Any]) -> Response:
     """Logout from a remote site"""
     user.need_permission("wato.sites")
-    SitesApiMgr().logout_of_site(params["site_id"])
+    SitesApiMgr().logout_of_site(
+        params["site_id"],
+        pprint_value=active_config.wato_pprint_config,
+    )
     return Response(status=204)
 
 
@@ -256,7 +266,11 @@ def _convert_validate_and_save_site_data(
             current_site_config=internal_config,
             old_site_config=old_site_config,
         )
-        SitesApiMgr().validate_and_save_site(site_id, internal_config)
+        SitesApiMgr().validate_and_save_site(
+            site_id,
+            internal_config,
+            pprint_value=active_config.wato_pprint_config,
+        )
     except MKUserError as exc:
         return _problem_from_user_error(exc)
 
@@ -270,11 +284,11 @@ def _convert_validate_and_save_site_data(
     return serve_json(data=_serialize_site(site_obj), status=200)
 
 
-def register(endpoint_registry: EndpointRegistry) -> None:
-    endpoint_registry.register(show_site)
-    endpoint_registry.register(show_sites)
-    endpoint_registry.register(post_site)
-    endpoint_registry.register(put_site)
-    endpoint_registry.register(delete_site)
-    endpoint_registry.register(site_login)
-    endpoint_registry.register(site_logout)
+def register(endpoint_registry: EndpointRegistry, *, ignore_duplicates: bool) -> None:
+    endpoint_registry.register(show_site, ignore_duplicates=ignore_duplicates)
+    endpoint_registry.register(show_sites, ignore_duplicates=ignore_duplicates)
+    endpoint_registry.register(post_site, ignore_duplicates=ignore_duplicates)
+    endpoint_registry.register(put_site, ignore_duplicates=ignore_duplicates)
+    endpoint_registry.register(delete_site, ignore_duplicates=ignore_duplicates)
+    endpoint_registry.register(site_login, ignore_duplicates=ignore_duplicates)
+    endpoint_registry.register(site_logout, ignore_duplicates=ignore_duplicates)

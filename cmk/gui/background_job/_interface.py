@@ -9,9 +9,10 @@ import importlib
 import threading
 import time
 from collections.abc import Callable, Sequence
+from contextlib import AbstractContextManager as ContextManager
 from logging import Logger
 from pathlib import Path
-from typing import ContextManager, IO, NamedTuple
+from typing import IO, NamedTuple
 
 from pydantic import BaseModel, field_serializer, field_validator
 
@@ -88,7 +89,7 @@ class JobTarget[Args](BaseModel, frozen=True):
     def validate_callable(cls, value: object) -> Callable[[BackgroundProcessInterface, Args], None]:
         if callable(value):
             return value
-        if not isinstance(value, (tuple, list)) or not len(value) == 2:
+        if not isinstance(value, tuple | list) or not len(value) == 2:
             raise ValueError("The callable must be a tuple with two elements")
         func = getattr(importlib.import_module(value[0]), value[1])
         if not callable(func):

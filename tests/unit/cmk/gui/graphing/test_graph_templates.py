@@ -788,11 +788,28 @@ def test_evaluate_title_missing_scalar() -> None:
 
 
 @pytest.mark.parametrize(
-    ("perf_data_string", "registered_metrics", "result"),
+    ("perf_data_string", "registered_metrics", "metric_expressions", "result"),
     [
         pytest.param(
             "one=5;;;; power=5;;;; output=5;;;;",
             {},
+            [
+                MetricExpression(
+                    WarningOf(Metric("one")),
+                    line_type="line",
+                    title="Warning",
+                ),
+                MetricExpression(
+                    CriticalOf(Metric("power")),
+                    line_type="line",
+                    title="Critical power",
+                ),
+                MetricExpression(
+                    Product([WarningOf(Metric("output")), Constant(-1)]),
+                    line_type="line",
+                    title="Warning output",
+                ),
+            ],
             [],
             id="Unknown thresholds from check",
         ),
@@ -809,6 +826,23 @@ def test_evaluate_title_missing_scalar() -> None:
                     color="",
                 ),
             },
+            [
+                MetricExpression(
+                    WarningOf(Metric("one")),
+                    line_type="line",
+                    title="Warning",
+                ),
+                MetricExpression(
+                    CriticalOf(Metric("power")),
+                    line_type="line",
+                    title="Critical power",
+                ),
+                MetricExpression(
+                    Product([WarningOf(Metric("output")), Constant(-1)]),
+                    line_type="line",
+                    title="Warning output",
+                ),
+            ],
             [
                 HorizontalRule(
                     value=7.0,
@@ -831,11 +865,53 @@ def test_evaluate_title_missing_scalar() -> None:
             ],
             id="Thresholds present",
         ),
+        pytest.param(
+            "throuput=1;2;3;;",
+            {
+                "throuput": RegisteredMetric(
+                    name="throuput",
+                    title_localizer=lambda _localizer: "Throughput",
+                    unit_spec=ConvertibleUnitSpecification(
+                        notation=DecimalNotation(symbol="T"),
+                        precision=AutoPrecision(digits=3),
+                    ),
+                    color="",
+                ),
+            },
+            [
+                MetricExpression(
+                    WarningOf(Metric("throuput")),
+                    line_type="-line",
+                    title="Warning throuput",
+                ),
+                MetricExpression(
+                    CriticalOf(Metric("throuput")),
+                    line_type="-line",
+                    title="Critical throuput",
+                ),
+            ],
+            [
+                HorizontalRule(
+                    value=-2.0,
+                    rendered_value="2 T",
+                    color="#ffd000",
+                    title="Warning throuput",
+                ),
+                HorizontalRule(
+                    value=-3.0,
+                    rendered_value="3 T",
+                    color="#ff3232",
+                    title="Critical throuput",
+                ),
+            ],
+            id="Mirrored thresholds",
+        ),
     ],
 )
 def test_horizontal_rules_from_thresholds(
     perf_data_string: str,
     registered_metrics: Mapping[str, RegisteredMetric],
+    metric_expressions: Sequence[MetricExpression],
     result: Sequence[HorizontalRule],
 ) -> None:
     perf_data, check_command = parse_perf_data(perf_data_string, None, config=active_config)
@@ -846,23 +922,7 @@ def test_horizontal_rules_from_thresholds(
     )
     assert (
         _evaluate_scalars(
-            [
-                MetricExpression(
-                    WarningOf(Metric("one")),
-                    line_type="line",
-                    title="Warning",
-                ),
-                MetricExpression(
-                    CriticalOf(Metric("power")),
-                    line_type="line",
-                    title="Critical power",
-                ),
-                MetricExpression(
-                    Product([WarningOf(Metric("output")), Constant(-1)]),
-                    line_type="line",
-                    title="Warning output",
-                ),
-            ],
+            metric_expressions,
             translated_metrics,
         )
         == result

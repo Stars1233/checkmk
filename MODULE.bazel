@@ -6,11 +6,15 @@ new_local_repository = use_repo_rule("@bazel_tools//tools/build_defs/repo:local.
 
 repo_license = use_repo_rule("//bazel/rules:repo_license.bzl", "detect_repo_license")
 
-bazel_dep(name = "aspect_bazel_lib", version = "2.14.0")
-bazel_dep(name = "aspect_rules_lint", version = "1.2.0")
-bazel_dep(name = "aspect_rules_py", version = "0.7.4")
+bazel_dep(name = "aspect_bazel_lib", version = "2.17.1")
+bazel_dep(name = "aspect_rules_js", version = "2.3.7")
+bazel_dep(name = "aspect_rules_lint", version = "1.4.4")
+bazel_dep(name = "aspect_rules_py", version = "1.5.2")
+bazel_dep(name = "aspect_rules_ts", version = "3.6.0")
+bazel_dep(name = "aspect_rules_webpack", version = "0.17.0")
 bazel_dep(name = "bazel_skylib", version = "1.7.1")
 bazel_dep(name = "gazelle", version = "0.42.0")
+bazel_dep(name = "googletest", version = "1.17.0", repo_name = "gtest")
 bazel_dep(
     # Transitive dependency for protobuf.
     # Req anything with a version equal or greater than 1.64.0.
@@ -19,21 +23,25 @@ bazel_dep(
 )
 bazel_dep(name = "platforms", version = "0.0.11")
 bazel_dep(name = "protobuf", version = "29.3", repo_name = "com_google_protobuf")
-bazel_dep(name = "rules_cc", version = "0.1.1")
+bazel_dep(name = "rules_cc", version = "0.1.2")
 bazel_dep(name = "rules_foreign_cc", version = "0.14.0")
 bazel_dep(name = "rules_go", version = "0.50.1")
-bazel_dep(name = "rules_multitool", version = "0.4.0")
+bazel_dep(name = "rules_multirun", version = "0.12.0")
+bazel_dep(name = "rules_multitool", version = "1.5.0")
 bazel_dep(name = "rules_mypy", version = "0.29.0")
+bazel_dep(name = "rules_nodejs", version = "6.3.5")
 bazel_dep(name = "rules_pkg", version = "1.1.0")
+bazel_dep(name = "rules_proto", version = "7.1.0")
 bazel_dep(name = "rules_proto_grpc", version = "5.0.1")
-bazel_dep(name = "rules_python", version = "1.1.0")
-bazel_dep(name = "rules_rust", version = "0.54.1")
+bazel_dep(name = "rules_python", version = "1.4.1")
+bazel_dep(name = "rules_rust", version = "0.61.0")
+bazel_dep(name = "rules_uv", version = "0.71.0")
 bazel_dep(
     # LLVM for clang-tidy, clang-format, and IWYU.
     name = "toolchains_llvm",
-    version = "1.3.0",
+    version = "1.4.0",
 )
-bazel_dep(name = "rules_uv", version = "0.44.0")
+bazel_dep(name = "toolchains_musl", version = "0.1.20")
 bazel_dep(
     # Transitive dep required because a dependency in the protobuf-python chain
     # expects `@rules_proto//proto/private/rules:proto_toolchain_rule.bzl`.
@@ -50,17 +58,16 @@ bazel_dep(
     dev_dependency = True,
 )
 bazel_dep(
+    name = "cpp-httplib",
+    version = "0.16.3.bzl.1",
+    dev_dependency = True,
+    repo_name = "httplib",
+)
+bazel_dep(
     # Hedron's Compile Commands Extractor for Bazel
     # https://github.com/hedronvision/bazel-compile-commands-extractor
     name = "hedron_compile_commands",
     dev_dependency = True,
-)
-
-# TODO (TBC): Switch back to upstream as soon as https://github.com/aspect-build/rules_py/pull/428 is merged
-git_override(
-    module_name = "aspect_rules_py",
-    commit = "6a3242d016798c6892a848939e36cc7bff99d6c8",
-    remote = "https://github.com/TimotheusBachinger/rules_py",
 )
 
 git_override(
@@ -88,6 +95,37 @@ git_override(
     remote = "https://github.com/hedronvision/bazel-compile-commands-extractor.git",
 )
 
+git_override(
+    module_name = "rules_rust",
+    # Fork because patching fails.
+    commit = "05e32ba3c9b8f3a8e4d1d55df82369670fd42b7f",
+    patch_strip = 1,
+    patches = [
+        # Possibly related: https://github.com/bazelbuild/rules_rust/issues/2677
+        "//bazel/patches:rules_rust-ignore_incomplete_workspace_env.patch",
+    ],
+    remote = "https://github.com/Synss/rules_rust",
+)
+
+single_version_override(
+    module_name = "aspect_rules_py",
+    patch_strip = 1,
+    patches = [
+        # https://github.com/aspect-build/rules_py/pull/577
+        "//bazel/patches:rules_py-no_mypy_for_py_pytest_main.patch",
+    ],
+    version = "1.5.2",
+)
+
+single_version_override(
+    module_name = "aspect_rules_lint",
+    patch_strip = 1,
+    patches = [
+        # https://github.com/aspect-build/rules_lint/pull/576
+        "//bazel/patches:rules_lint-feat_format_toml.patch",
+    ],
+)
+
 single_version_override(
     module_name = "toolchains_llvm",
     patch_strip = 1,
@@ -104,6 +142,7 @@ single_version_override(
     module_name = "rules_cc",
     patch_strip = 1,
     patches = [
+        "//bazel/patches:rules_cc-publicize_unix_cc_toolchain_config.patch",
         "//bazel/patches:rules_cc-add_static_link_cpp_runtimes.patch",
     ],
 )
@@ -118,7 +157,6 @@ single_version_override(
     module_name = "rules_python",
     patch_strip = 1,
     patches = [
-        "//bazel/patches:rules_python-py_wheel-package_pyi_files.patch",
         "//bazel/patches:rules_python-py_wheel-filter_out_virtual_imports.patch",
     ],
 )
@@ -146,6 +184,25 @@ new_local_repository(
     path = "/usr",
 )
 
+#TODO: This should be removed by using proper toolchain definitions: CMK-24205
+new_local_repository(
+    name = "cpp_libs",
+    build_file_content = """
+filegroup(
+    name = "cpp_libs",
+    srcs = glob([
+        "gcc-13.2.0/lib64/libgcc_s.so",
+        "gcc-13.2.0/lib64/libgcc_s.so.1",
+        "gcc-13.2.0/lib64/libstdc++.so",
+        "gcc-13.2.0/lib64/libstdc++.so.6",
+        "gcc-13.2.0/lib64/libstdc++.so.6.0.32",
+    ]),
+    visibility = ["//visibility:public"],
+)
+    """,
+    path = "/opt",
+)
+
 # TODO: Duplicate from bazel_variables.bzl. won't be needed anymore when all omd packages are loaded via MODULE.bazel
 UPSTREAM_MIRROR_URL = "https://artifacts.lan.tribe29.com/repository/upstream-archives/"
 
@@ -168,16 +225,16 @@ http_file(
 
 http_file(
     name = "taplo.gz",
-    sha256 = "0cf7e0fbeb299e62cecd5b648d820a103decf2ed2d42a3aac4d6f6c930e88125",
+    integrity = "sha256-j+GWuJTM+QcvmNThAToYAwbhfSRIMLA5hu5ejqvrYVY=",
     urls = [
-        "https://github.com/tamasfe/taplo/releases/download/0.9.3/taplo-full-linux-x86.gz",
-        UPSTREAM_MIRROR_URL + "/taplo-full-linux-x86-0.9.3.gz",
+        "https://github.com/tamasfe/taplo/releases/download/0.10.0/taplo-linux-x86_64.gz",
+        UPSTREAM_MIRROR_URL + "/taplo-linux-x86_64-0.10.0.gz",
     ],
 )
 
 http_archive(
     name = "gcc-linux-x86_64",
-    build_file = "//bazel/toolchains/cc:BUILD.gcc.bazel",
+    build_file = "//bazel/toolchains/cc/gcc/bootlin:BUILD.bootlin.bazel",
     integrity = "sha256-kygjypo+Bn5+KimBCmZtIMnMW7VQ3pR/aHnjis4aqVU=",
     patch_cmds = [
         # The tools used by foreign_cc search the tools under their standard,
@@ -220,8 +277,328 @@ http_archive(
     sha256 = "8cf86e00ad3aaa6d26aca30640e86b0e3e1f395ed99f189b06d4c9f74bc58a4e",
     strip_prefix = "patch-2.7.6",
     urls = [
-        "https://ftp.gnu.org/gnu/patch/patch-patch-2.7.6.tar.gz",
+        "https://ftp.gnu.org/gnu/patch/patch-2.7.6.tar.gz",
         UPSTREAM_MIRROR_URL + "patch-2.7.6.tar.gz",
+    ],
+)
+
+http_archive(
+    name = "oci-basic-light-win-x64",
+    build_file_content = """
+filegroup(
+    name = "srcs",
+    srcs = glob(["instantclient_21_18/*.dll"]),
+    visibility = ["//visibility:public"],
+)
+""",
+    sha256 = "fddc4c0eb1bf3c7dc3b29f2d4570aed07d707cec6917ab5f09635fc67cb02708",
+    urls = [
+        "https://download.oracle.com/otn_software/nt/instantclient/2118000/instantclient-basiclite-windows.x64-21.18.0.0.0dbru.zip",
+        UPSTREAM_MIRROR_URL + "/instantclient-basiclite-windows.x64-21.18.0.0.0dbru.zip",
+    ],
+)
+
+http_archive(
+    name = "oci-basic-light-lin-x64",
+    build_file_content = """
+filegroup(
+    name = "srcs",
+    srcs = glob([
+        "**/libclntshcore.so.21.1",
+        "**/libclntsh.so.21.1",
+        "**/libnnz21.so",
+        "**/libocci_gcc53.so.21.1",
+        "**/libocci.so.21.1",
+        "**/libociicus.so",
+        "**/libocijdbc21.so",
+        "**/liboramysql.so",
+        ]),
+    visibility = ["//visibility:public"],
+)
+""",
+    sha256 = "87208c83f23b7e6c934ca7047c00044aa1b0adc8d0dd60cb0ee16042593b4af5",
+    urls = [
+        "https://download.oracle.com/otn_software/linux/instantclient/2118000/instantclient-basiclite-linux.x64-21.18.0.0.0dbru.zip",
+        UPSTREAM_MIRROR_URL + "/instantclient-basiclite-linux.x64-21.18.0.0.0dbru.zip",
+    ],
+)
+
+http_archive(
+    name = "openssl",
+    build_file = "//omd/packages/openssl:BUILD.openssl.bazel",
+    sha256 = "57e03c50feab5d31b152af2b764f10379aecd8ee92f16c985983ce4a99f7ef86",
+    strip_prefix = "openssl-3.0.16",
+    urls = [
+        "https://github.com/openssl/openssl/releases/download/openssl-3.0.16/openssl-3.0.16.tar.gz",
+        UPSTREAM_MIRROR_URL + "openssl-3.0.16.tar.gz",
+    ],
+)
+
+http_archive(
+    name = "redis",
+    build_file = "//omd/packages/redis:BUILD.redis.bazel",
+    sha256 = "5b2b8b7a50111ef395bf1c1d5be11e6e167ac018125055daa8b5c2317ae131ab",
+    strip_prefix = "redis-6.2.6",
+    urls = [
+        "https://download.redis.io/releases/redis-6.2.6.tar.gz",
+        UPSTREAM_MIRROR_URL + "redis-6.2.6.tar.gz",
+    ],
+)
+
+http_archive(
+    name = "erlang",
+    build_file = "//omd/packages/erlang:BUILD.erlang.bazel",
+    sha256 = "a02efb423a7ecdee661b3c3ad2661521d9c00c2dd866c004d95a87d486a03bab",
+    strip_prefix = "otp_src_26.2.5.13",
+    urls = [
+        UPSTREAM_MIRROR_URL + "otp_src_26.2.5.13.tar.gz",
+        "https://github.com/erlang/otp/releases/download/OTP-26.2.5.13/otp_src_26.2.5.13.tar.gz",
+    ],
+)
+
+http_file(
+    name = "jaeger",
+    sha256 = "7120929235daf1a0a79c7ffb0c2835d119ec83c5f8b3df99c8a57ccdd25b0184",
+    urls = [
+        "https://github.com/jaegertracing/jaeger/releases/download/v1.66.0/jaeger-2.3.0-linux-amd64.tar.gz",
+        UPSTREAM_MIRROR_URL + "jaeger-2.3.0-linux-amd64.tar.gz",
+    ],
+)
+
+http_archive(
+    name = "nrpe",
+    build_file = "//omd/packages/nrpe:BUILD.nrpe.bazel",
+    sha256 = "8ad2d1846ab9011fdd2942b8fc0c99dfad9a97e57f4a3e6e394a4ead99c0f1f0",
+    strip_prefix = "nrpe-3.2.1",
+    urls = [
+        "https://github.com/NagiosEnterprises/nrpe/releases/download/nrpe-3.2.1/nrpe-3.2.1.tar.gz",
+        UPSTREAM_MIRROR_URL + "nrpe-3.2.1.tar.gz",
+    ],
+)
+
+http_archive(
+    name = "snap7",
+    build_file = "//omd/packages/snap7:BUILD.snap7.bazel",
+    sha256 = "fe137737b432d95553ebe5d5f956f0574c6a80c0aeab7a5262fb36b535df3cf4",
+    strip_prefix = "snap7-1.4.2",
+    urls = [
+        # since version 1.4.2 only 7z will be released. To get a tar.gz
+        # use the snap7 repackage target
+        # "https://sourceforge.net/projects/snap7/files/" + version_str + "snap7-full-" + version_str + ".7z",
+        UPSTREAM_MIRROR_URL + "snap7-1.4.2.tar.gz",
+    ],
+)
+
+http_archive(
+    name = "xmlsec1",
+    build_file = "//omd/packages/xmlsec1:BUILD.xmlsec1.bazel",
+    sha256 = "df3ad2548288411fc3d44c20879e4c4e90684a1a4fb76a06ae444f957171c9a6",
+    strip_prefix = "xmlsec1-1.3.0",
+    urls = [
+        "https://github.com/lsh123/xmlsec/releases/download/xmlsec_1_3_0/xmlsec1-1.3.0.tar.gz",
+        UPSTREAM_MIRROR_URL + "xmlsec1-1.3.0.tar.gz",
+    ],
+)
+
+http_archive(
+    name = "heirloom-mailx",
+    build_file = "//omd/packages/heirloom-mailx:BUILD.heirloom-mailx.bazel",
+    patch_args = ["-p1"],
+    patch_tool = "patch",
+    patches = [
+        "//omd/packages/heirloom-mailx/patches:0001-nail-11.25-config.dif",
+        "//omd/packages/heirloom-mailx/patches:0002-mailx-12.3-pager.dif",
+        "//omd/packages/heirloom-mailx/patches:0003-mailx-12.5-lzw.dif",
+        "//omd/packages/heirloom-mailx/patches:0004-mailx-12.5-fname-null.dif",
+        "//omd/packages/heirloom-mailx/patches:0005-mailx-12.5-collect.dif",
+        "//omd/packages/heirloom-mailx/patches:0006-mailx-12.5-usage.dif",
+        "//omd/packages/heirloom-mailx/patches:0007-mailx-12.5-man-page-fixes.dif",
+        "//omd/packages/heirloom-mailx/patches:0008-mailx-12.5-outof-Introduce-expandaddr-flag.dif",
+        "//omd/packages/heirloom-mailx/patches:0009-mailx-12.5-fio.c-Unconditionally-require-wordexp-support.dif",
+        "//omd/packages/heirloom-mailx/patches:0010-mailx-12.5-globname-Invoke-wordexp-with-WRDE_NOCMD-CVE-2004-277.dif",
+        "//omd/packages/heirloom-mailx/patches:0011-mailx-12.5-unpack-Disable-option-processing-for-email-addresses.dif",
+        "//omd/packages/heirloom-mailx/patches:0012-mailx-12.5-empty-from.dif",
+        "//omd/packages/heirloom-mailx/patches:0013-mailx-12.5-nss-hostname-matching.dif",
+        "//omd/packages/heirloom-mailx/patches:0014-mailx-12.5-encsplit.dif",
+        "//omd/packages/heirloom-mailx/patches:0015-mailx-12.5-openssl.dif",
+        "//omd/packages/heirloom-mailx/patches:0016-mailx-12.5-no-SSLv3.dif",
+        "//omd/packages/heirloom-mailx/patches:0017-disable-ssl-and-kerberos.dif",
+        "//omd/packages/heirloom-mailx/patches:0018-dont-install-etc-files.dif",
+    ],
+    sha256 = "015ba4209135867f37a0245d22235a392b8bbed956913286b887c2e2a9a421ad",
+    strip_prefix = "heirloom-mailx-12.5",
+    urls = [
+        "https://ftp.nl.debian.org/debian-archive/debian/pool/main/h/heirloom-mailx/heirloom-mailx_12.5.orig.tar.gz",
+        UPSTREAM_MIRROR_URL + "heirloom-mailx_12.5.orig.tar.gz",
+    ],
+)
+
+http_archive(
+    name = "stunnel",
+    build_file = "//omd/packages/stunnel:BUILD.stunnel.bazel",
+    sha256 = "c74c4e15144a3ae34b8b890bb31c909207301490bd1e51bfaaa5ffeb0a994617",
+    strip_prefix = "stunnel-5.63",
+    urls = [
+        "https://ftp.nluug.nl/pub/networking/stunnel/archive/5.x/stunnel-5.63.tar.gz",
+        UPSTREAM_MIRROR_URL + "stunnel-5.63.tar.gz",
+    ],
+)
+
+http_archive(
+    name = "monitoring-plugins",
+    build_file = "//omd/packages/monitoring-plugins:BUILD.monitoring-plugins.bazel",
+    patch_args = ["-p1"],
+    patch_tool = "patch",
+    patches = [
+        "//omd/packages/monitoring-plugins:patches/0001-check-icmp-allows-pl-of-101.dif",
+        "//omd/packages/monitoring-plugins:patches/0003-cmk-password-store.dif",
+        "//omd/packages/monitoring-plugins:patches/0006-check_mysql-define-own-mysql-port.dif",
+        "//omd/packages/monitoring-plugins:patches/0009-check_dns-case-insensitive.dif",
+        "//omd/packages/monitoring-plugins:patches/0010-get_omd_root_in_checks.dif",
+        "//omd/packages/monitoring-plugins:patches/0011-check_http-sanitise-http-response-body.dif",
+        "//omd/packages/monitoring-plugins:patches/0012-fixup-ssl-linking.diff",
+        "//omd/packages/monitoring-plugins:patches/0013-link-root-plugins-statically.diff",
+    ],
+    sha256 = "e5dfd4ad8fde0a40da50aab3aff6d9a27020b8f283e332bc4da6ef9914f4028c",
+    strip_prefix = "monitoring-plugins-2.4.0",
+    urls = [
+        "https://www.monitoring-plugins.org/download/monitoring-plugins-2.4.0.tar.gz",
+        UPSTREAM_MIRROR_URL + "monitoring-plugins-2.4.0.tar.gz",
+    ],
+)
+
+http_archive(
+    name = "freetds",
+    build_file = "//omd/packages/freetds:BUILD.freetds.bazel",
+    sha256 = "6acb9086350425f5178e544bbe2d54a001097e8e20277a2b766ad0799a2e7d87",
+    strip_prefix = "freetds-1.4.22",
+    urls = [
+        "https://www.freetds.org/files/stable/freetds-1.4.22.tar.gz",
+        UPSTREAM_MIRROR_URL + "freetds-1.4.22.tar.gz",
+    ],
+)
+
+http_archive(
+    name = "heirloom-pkgtools",
+    build_file = "//omd/packages/heirloom-pkgtools:BUILD.heirloom-pkgtools.bazel",
+    patch_args = ["-p1"],
+    patch_tool = "patch",
+    patches = [
+        "//omd/packages/heirloom-pkgtools/patches:0000-set-linux-paths.dif",
+        "//omd/packages/heirloom-pkgtools/patches:0001-fix-invalid-open-call.dif",
+        "//omd/packages/heirloom-pkgtools/patches:0002-scriptvfy.l.dif",
+        "//omd/packages/heirloom-pkgtools/patches:0003-binpath.dif",
+        "//omd/packages/heirloom-pkgtools/patches:0004-compute_checksum-64bit.dif",
+        "//omd/packages/heirloom-pkgtools/patches:0005-compute_checksum-64bit.dif",
+        "//omd/packages/heirloom-pkgtools/patches:0006-sbinpath.dif",
+        "//omd/packages/heirloom-pkgtools/patches:0007-stropts.dif",
+        "//omd/packages/heirloom-pkgtools/patches:0008-fix-comilation-with-openssl-1.1.0.dif",
+        "//omd/packages/heirloom-pkgtools/patches:0008-libfl.dif",
+        "//omd/packages/heirloom-pkgtools/patches:0010-fix-missing-makedev.dif",
+        "//omd/packages/heirloom-pkgtools/patches:0011-add-fcommon.dif",
+    ],
+    sha256 = "aa94d33550847d57c62138cabd0f742d4af2f14aa2bfb9e9d4a9427bf498e6cc",
+    strip_prefix = "heirloom-pkgtools-070227",
+    urls = [
+        UPSTREAM_MIRROR_URL + "heirloom-pkgtools-070227.tar.bz2",
+        "https://sourceforge.net/projects/heirloom/files/heirloom-pkgtools/070227/heirloom-pkgtools-070227.tar.bz2",
+    ],
+)
+
+http_archive(
+    name = "rabbitmq",
+    build_file = "//omd/packages/rabbitmq:BUILD.rabbitmq.bazel",
+    sha256 = "7bfc742e3d227e8a2b1ea2a0b5ef3ba4b6a7987d5e220e0fbf0919d29b6ed43c",
+    strip_prefix = "rabbitmq_server-3.13.6",
+    urls = [
+        "https://github.com/rabbitmq/rabbitmq-server/releases/download/v3.13.6/rabbitmq-server-generic-unix-3.13.6.tar.xz",
+        UPSTREAM_MIRROR_URL + "rabbitmq-server-generic-unix-3.13.6.tar.xz",
+    ],
+)
+
+http_archive(
+    name = "robotmk",
+    build_file = "//omd/packages/robotmk:BUILD.robotmk.bazel",
+    sha256 = "7b7315cfaf69ae2fa12d7f2da4893c1c486a77393ecf71a76ccb04edf31cac9f",
+    urls = [
+        "https://github.com/elabit/robotmk/releases/download/v4.0.0-alpha-5/all_executables.zip",
+    ],
+)
+
+http_archive(
+    name = "python",
+    build_file = "//omd/packages/Python:BUILD.Python.bazel",
+    sha256 = "c30bb24b7f1e9a19b11b55a546434f74e739bb4c271a3e3a80ff4380d49f7adb",
+    strip_prefix = "Python-3.12.11",
+    urls = [
+        "https://www.python.org/ftp/python/3.12.11/Python-3.12.11.tar.xz",
+        # UPSTREAM_MIRROR_URL + "Python-3.12.11.tar.xz",
+    ],
+)
+
+http_archive(
+    name = "lcab",
+    build_file = "//omd/packages/lcab:BUILD.lcab.bazel",
+    sha256 = "065f2c1793b65f28471c0f71b7cf120a7064f28d1c44b07cabf49ec0e97f1fc8",
+    strip_prefix = "lcab-1.0b12",
+    urls = [
+        "http://archlinux.c3sl.ufpr.br/other/lcab/lcab-1.0b12.tar.gz",
+        UPSTREAM_MIRROR_URL + "lcab-1.0b12.tar.gz",
+    ],
+)
+
+http_archive(
+    name = "xinetd",
+    build_file = "//omd/packages/xinetd:BUILD.xinetd.bazel",
+    sha256 = "2baa581010bc70361abdfa37f121e92aeb9c5ce67f9a71913cebd69359cc9654",
+    strip_prefix = "xinetd-2.3.15.4",
+    urls = [
+        "https://github.com/openSUSE/xinetd/releases/download/2.3.15.4/xinetd-2.3.15.4.tar.xz",
+        UPSTREAM_MIRROR_URL + "xinetd-2.3.15.4.tar.xz",
+    ],
+)
+
+http_archive(
+    name = "libgsf",
+    build_file = "//omd/packages/libgsf:BUILD.libgsf.bazel",
+    sha256 = "68bede10037164764992970b4cb57cd6add6986a846d04657af9d5fac774ffde",
+    strip_prefix = "libgsf-1.14.44",
+    urls = [
+        "https://ftp.osuosl.org/pub/blfs/conglomeration/libgsf/libgsf-1.14.44.tar.xz",
+        UPSTREAM_MIRROR_URL + "libgsf-1.14.44.tar.xz",
+    ],
+)
+
+http_archive(
+    name = "net-snmp",
+    build_file = "//omd/packages/net-snmp:BUILD.net-snmp.bazel",
+    patch_args = ["-p1"],
+    patch_tool = "patch",
+    patches = [
+        "//omd/packages/net-snmp/patches:0001-remove-distutils.dif",
+        "//omd/packages/net-snmp/patches:0002-We-use-a-C-extension-so-we-are-better-not-zip_safe.dif",
+        "//omd/packages/net-snmp/patches:0003-Added-handling-of-opaque-floats.dif",
+        "//omd/packages/net-snmp/patches:0004-Fixed-copy-n-paste-error-regarding-the-context-engine-.dif",
+        "//omd/packages/net-snmp/patches:0005-Fixed-__snprint_value-s-return-value.dif",
+        "//omd/packages/net-snmp/patches:0006-Added-missing-initialization-of-Version-attribute.dif",
+        "//omd/packages/net-snmp/patches:0007-Fixed-reference-counting-for-netsnmp-module.dif",
+        "//omd/packages/net-snmp/patches:0008-Fixed-segfaults-in-netsnmp_-walk-getbulk-when-a-varbin.dif",
+        "//omd/packages/net-snmp/patches:0009-Added-workaround-for-duplicate-engine-IDs.dif",
+        "//omd/packages/net-snmp/patches:0010-Emulate-Cc-behavior-in-netsnmp_walk.dif",
+        "//omd/packages/net-snmp/patches:0011-Handle-responses-with-invalid-variables-differently.dif",
+        "//omd/packages/net-snmp/patches:0012-Ensure-correct-openssl-version.dif",
+        "//omd/packages/net-snmp/patches:0013-fix-possible-TypeError-AttributeError-in-__del__.dif",
+        "//omd/packages/net-snmp/patches:0014-fix-curses-detection.dif",
+        "//omd/packages/net-snmp/patches:0015-python3-api.dif",
+        "//omd/packages/net-snmp/patches:0016-Python-Fix-snmpwalk-with-UseNumeric-1.dif",
+        "//omd/packages/net-snmp/patches:0017-no-fallthrough.dif",
+        "//omd/packages/net-snmp/patches:0018-update-user-information-for-python.dif",
+    ],
+    sha256 = "75b59d67e871aaaa31c8cef89ba7d06972782b97736b7e8c3399f36b50a8816f",
+    strip_prefix = "net-snmp-5.9.1",
+    urls = [
+        UPSTREAM_MIRROR_URL + "net-snmp-5.9.1.zip",
+        "https://deac-riga.dl.sourceforge.net/project/net-snmp/net-snmp/5.9.1/net-snmp-5.9.1.zip",
     ],
 )
 
@@ -240,100 +617,94 @@ exports_files([
     ],
 )
 
+http_archive(
+    name = "nagvis",
+    build_file = "//omd/packages/nagvis:BUILD.nagvis.bazel",
+    patch_args = ["-p1"],
+    patch_tool = "patch",
+    patches = [
+        "//omd/packages/nagvis/patches:0001-global.php.dif",
+        "//omd/packages/nagvis/patches:0002-cmkadmin.dif",
+    ],
+    sha256 = "69ca223cf3a14ba77d6b168b242c3c2bd3b059c44142a618ed9968d24d5700ba",
+    strip_prefix = "nagvis-1.9.47",
+    urls = [
+        UPSTREAM_MIRROR_URL + "nagvis-1.9.47.tar.gz",
+        "https://www.nagvis.org/share/nagvis-1.9.47.tar.gz",
+    ],
+)
+
 repo_license(name = "repo_license")
 
-register_toolchains("//bazel/toolchains/cc:linux_gcc13")
-
 llvm = use_extension("@toolchains_llvm//toolchain/extensions:llvm.bzl", "llvm")
-llvm.toolchain(
-    llvm_version = "19.1.7",
-    sha256 = {"linux-x86_64": "4a5ec53951a584ed36f80240f6fbf8fdd46b4cf6c7ee87cc2d5018dc37caf679"},
-    strip_prefix = {
-        "linux-x86_64": "LLVM-19.1.7-Linux-X64",
-    },
-    urls = {
-        "linux-x86_64": [
-            "https://artifacts.lan.tribe29.com/repository/upstream-archives/LLVM-19.1.7-Linux-X64.tar.xz",
-            "https://github.com/llvm/llvm-project/releases/download/llvmorg-19.1.7/LLVM-19.1.7-Linux-X64.tar.xz",
-        ],
-    },
-)
+llvm.toolchain(llvm_version = "19.1.7")
 use_repo(llvm, "llvm_toolchain", "llvm_toolchain_llvm")
 
 multitool = use_extension("@rules_multitool//multitool:extension.bzl", "multitool")
 use_repo(multitool, "multitool")
 
 python = use_extension("@rules_python//python/extensions:python.bzl", "python")
-python.toolchain(
-    is_default = True,
-    # We can specify the exact version.
-    python_version = "3.12.3",
-)
-
-pip = use_extension("@rules_python//python/extensions:pip.bzl", "pip")
-pip.parse(
-    environment = {
-        # Hack for building extensions from source.
-        # See also:  https://github.com/bazelbuild/rules_python/issues/1463
-        "CC": "gcc-13",
-    },
-    hub_name = "cmk_requirements",
-    python_version = "3.12.3",
-    requirements_by_platform = {
-        "@//:requirements.txt": "linux_*",
-    },
-)
-use_repo(pip, "cmk_requirements")
-
-types = use_extension("@rules_mypy//mypy:types.bzl", "types")
-types.requirements(
-    name = "cmk_types",
-    pip_requirements = "@cmk_requirements//:requirements.bzl",
-    requirements_txt = "//:requirements.txt",
-)
-use_repo(types, "cmk_types")
-
-go_sdk = use_extension("@rules_go//go:extensions.bzl", "go_sdk")
-go_sdk.download(version = "1.22.10")
-
-go_deps = use_extension("@gazelle//:extensions.bzl", "go_deps")
-go_deps.from_file(go_mod = "//:go.mod")
-use_repo(
-    go_deps,
-    "com_github_open_telemetry_opentelemetry_collector_contrib_exporter_fileexporter",
-    "com_github_open_telemetry_opentelemetry_collector_contrib_extension_basicauthextension",
-    "com_github_open_telemetry_opentelemetry_collector_contrib_processor_transformprocessor",
-    "com_github_open_telemetry_opentelemetry_collector_contrib_receiver_prometheusreceiver",
-    "io_opentelemetry_go_collector_component",
-    "io_opentelemetry_go_collector_confmap",
-    "io_opentelemetry_go_collector_confmap_provider_envprovider",
-    "io_opentelemetry_go_collector_confmap_provider_fileprovider",
-    "io_opentelemetry_go_collector_confmap_provider_httpprovider",
-    "io_opentelemetry_go_collector_confmap_provider_httpsprovider",
-    "io_opentelemetry_go_collector_confmap_provider_yamlprovider",
-    "io_opentelemetry_go_collector_connector",
-    "io_opentelemetry_go_collector_exporter",
-    "io_opentelemetry_go_collector_extension",
-    "io_opentelemetry_go_collector_otelcol",
-    "io_opentelemetry_go_collector_processor",
-    "io_opentelemetry_go_collector_processor_batchprocessor",
-    "io_opentelemetry_go_collector_receiver",
-    "io_opentelemetry_go_collector_receiver_otlpreceiver",
-)
-
-# The overrides are needed to avoid issues like:
-# no such package '@@gazelle~~go_deps~com_github_prometheus_prometheus//gogoproto': BUILD file not found in directory 'gogoproto' of external repository
-# See conversation here: https://github.com/bazel-contrib/bazel-gazelle/issues/1035
-# The mentioned solution 'build_file_proto_mode = "disable_global"' is deprecated and was moved to 'gazelle_override':
-# https://github.com/bazel-contrib/bazel-gazelle/blob/56b3f7867eff7bd43dd93777987af9f9668ae896/internal/bzlmod/go_deps.bzl#L206
-
-go_deps.gazelle_override(
-    directives = [
-        "gazelle:proto disable",
+python.single_version_platform_override(
+    platform = "x86_64-unknown-linux-gnu",
+    python_version = "3.12.11",
+    sha256 = "9cd19efa875ae61d358b5dfeebc72035dd6fd11870943869394d2d7534675e28",
+    urls = [
+        "https://github.com/astral-sh/python-build-standalone/releases/download/20250604/cpython-3.12.11+20250604-x86_64-unknown-linux-gnu-install_only.tar.gz",
     ],
-    path = "github.com/prometheus/prometheus",
 )
-go_deps.gazelle_override(
-    build_file_generation = "on",
-    path = "github.com/cncf/xds/go",
+python.defaults(python_version = "3.12.11")
+python.toolchain(python_version = "3.12.11")
+
+rust = use_extension("@rules_rust//rust:extensions.bzl", "rust")
+rust.toolchain(
+    edition = "2021",
+    versions = ["1.87.0"],
 )
+rust.repository_set(
+    name = "rust_linux_x86_64",
+    edition = "2021",
+    exec_triple = "x86_64-unknown-linux-gnu",
+    target_compatible_with = [
+        "//bazel/platforms:unknown",
+        "@platforms//cpu:x86_64",
+        "@platforms//os:linux",
+    ],
+    target_triple = "x86_64-unknown-linux-gnu",
+    versions = ["1.87.0"],
+)
+rust.repository_set(
+    name = "rust_linux_x86_64",
+    target_compatible_with = [
+        "//bazel/platforms:musl",
+        "@platforms//cpu:x86_64",
+        "@platforms//os:linux",
+    ],
+    target_triple = "x86_64-unknown-linux-musl",
+)
+use_repo(rust, "rust_toolchains")
+
+crate = use_extension("@rules_rust//crate_universe:extensions.bzl", "crate")
+
+inject_repo(crate, "openssl")
+
+toolchains_musl = use_extension("@toolchains_musl//:toolchains_musl.bzl", "toolchains_musl")
+toolchains_musl.config(
+    extra_target_compatible_with = ["//bazel/platforms:musl"],
+)
+use_repo(toolchains_musl, "musl_toolchains_hub")
+
+register_toolchains(
+    "@rust_toolchains//:all",
+    "@musl_toolchains_hub//:all",
+    "//bazel/toolchains/cc/gcc/local:linux_x86_64",
+)
+
+include("//bazel/module:py.MODULE.bazel")
+
+include("//bazel/module:rust/site.MODULE.bazel")
+
+include("//bazel/module:rust/host.MODULE.bazel")
+
+include("//bazel/module:gazelle/go.MODULE.bazel")
+
+include("//bazel/module:js.MODULE.bazel")

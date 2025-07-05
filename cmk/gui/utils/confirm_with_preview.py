@@ -109,12 +109,12 @@ def command_confirm_dialog(
         }
     )
     html.javascript(
-        "cmk.forms.confirm_dialog(%s, () => {const form = document.getElementById('form_confirm');form.submit()}, %s, %s)"
+        "cmk.forms.confirm_dialog(%s, function() {const form = document.getElementById('form_confirm');form.submit()}, %s, %s)"
         % (
             json.dumps(
                 {
                     "title": command_title,
-                    "html": command_html,
+                    "html": str(command_html),
                     "confirmButtonText": str(confirm_button),
                     "cancelButtonText": str(cancel_button),
                     "icon": icon_class,
@@ -125,7 +125,7 @@ def command_confirm_dialog(
                     **deny_button_config,
                 }
             ),
-            f"()=>{{location.href = {json.dumps(cancel_url)}}}",
+            f"function() {{location.href = {json.dumps(cancel_url)}}}",
             deny_js_function if deny_js_function is not None else "null",
         )
     )

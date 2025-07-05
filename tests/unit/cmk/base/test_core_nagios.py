@@ -10,7 +10,7 @@ import itertools
 import os
 import socket
 from collections import Counter
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, Literal
 
@@ -23,14 +23,28 @@ from tests.unit.cmk.base.emptyconfig import EMPTYCONFIG
 
 import cmk.ccc.debug
 import cmk.ccc.version as cmk_version
+from cmk.ccc.hostaddress import HostAddress, HostName
 
-from cmk.utils import paths
+from cmk.utils import ip_lookup, paths
 from cmk.utils.config_path import VersionedConfigPath
-from cmk.utils.hostaddress import HostAddress, HostName
+from cmk.utils.labels import ABCLabelConfig, LabelManager, Labels
+from cmk.utils.servicename import ServiceName
 
 from cmk.checkengine.plugins import AgentBasedPlugins, AutocheckEntry, CheckPlugin, CheckPluginName
 
-from cmk.base import config, core_nagios
+from cmk.base import config
+from cmk.base.core_nagios._create_config import (
+    _format_nagios_object,
+    create_nagios_config_commands,
+    create_nagios_host_spec,
+    create_nagios_servicedefs,
+    NagiosConfig,
+)
+from cmk.base.core_nagios._precompile_host_checks import (
+    dump_precompiled_hostcheck,
+    HostCheckStore,
+    PrecompileMode,
+)
 
 from cmk.discover_plugins import PluginLocation
 from cmk.server_side_calls.v1 import ActiveCheckCommand, ActiveCheckConfig
@@ -46,7 +60,8 @@ def ip_address_of_never_called(
 
 
 def ip_address_of_return_local(
-    _h: HostName, _f: Literal[socket.AddressFamily.AF_INET, socket.AddressFamily.AF_INET6]
+    host_name: HostName,
+    family: Literal[socket.AddressFamily.AF_INET, socket.AddressFamily.AF_INET6] | None = None,
 ) -> HostAddress:
     return HostAddress("127.0.0.1")
 
@@ -69,7 +84,7 @@ def test_format_nagios_object() -> None:
         "check_interval": "hüch",
         "_HÄÄÄÄ": "XXXXXX_YYYY",
     }
-    cfg = core_nagios.format_nagios_object("service", spec)
+    cfg = _format_nagios_object("service", spec)
     assert isinstance(cfg, str)
     assert (
         cfg
@@ -306,17 +321,21 @@ def test_create_nagios_host_spec(
 
     hostname = HostName(hostname_str)
     outfile = io.StringIO()
-    cfg = core_nagios.NagiosConfig(outfile, [hostname])
+    cfg = NagiosConfig(outfile, [hostname])
 
     config_cache = ts.apply(monkeypatch)
-    ip_address_of = config.ConfiguredIPLookup(
-        config_cache, error_handler=config.handle_ip_lookup_failure
+    ip_address_of = ip_lookup.ConfiguredIPLookup(
+        ip_lookup.make_lookup_ip_address(config_cache.ip_lookup_config()),
+        allow_empty=config_cache.hosts_config.clusters,
+        error_handler=config.handle_ip_lookup_failure,
     )
 
-    host_attrs = config_cache.get_host_attributes(hostname, ip_address_of)
+    host_attrs = config_cache.get_host_attributes(
+        hostname, socket.AddressFamily.AF_INET, ip_address_of
+    )
 
-    host_spec = core_nagios.create_nagios_host_spec(
-        cfg, config_cache, hostname, host_attrs, ip_address_of
+    host_spec = create_nagios_host_spec(
+        cfg, config_cache, hostname, socket.AddressFamily.AF_INET, host_attrs, ip_address_of
     )
     assert host_spec == result
 
@@ -339,56 +358,56 @@ def test_create_nagios_host_spec_service_period(monkeypatch: MonkeyPatch) -> Non
     )
 
     config_cache = ts.apply(monkeypatch)
-    ip_address_of = config.ConfiguredIPLookup(
-        config_cache, error_handler=config.handle_ip_lookup_failure
+
+    host_attrs = config_cache.get_host_attributes(
+        hostname, socket.AddressFamily.AF_INET, ip_address_of=lambda *a: HostAddress("")
     )
 
-    host_attrs = config_cache.get_host_attributes(hostname, ip_address_of)
-
-    cfg = core_nagios.NagiosConfig(io.StringIO(), [hostname])
-    host_spec = core_nagios.create_nagios_host_spec(
-        cfg, config_cache, hostname, host_attrs, ip_address_of
+    cfg = NagiosConfig(io.StringIO(), [hostname])
+    host_spec = create_nagios_host_spec(
+        cfg,
+        config_cache,
+        hostname,
+        socket.AddressFamily.AF_INET,
+        host_attrs,
+        ip_address_of=lambda *a: HostAddress(""),
     )
     assert host_spec["_SERVICE_PERIOD"] == "24X7"
     assert "service_period" not in host_spec
 
 
 @pytest.fixture(name="config_path")
-def fixture_config_path() -> VersionedConfigPath:
-    return VersionedConfigPath(42)
+def fixture_config_path() -> Path:
+    return Path(VersionedConfigPath(42))
 
 
 class TestHostCheckStore:
-    def test_host_check_file_path(self, config_path: VersionedConfigPath) -> None:
-        assert core_nagios.HostCheckStore.host_check_file_path(
-            config_path, HostName("abc")
-        ) == Path(
-            Path(config_path),
+    def test_host_check_file_path(self, config_path: Path) -> None:
+        assert HostCheckStore.host_check_file_path(config_path, HostName("abc")) == Path(
+            config_path,
             "host_checks",
             "abc",
         )
 
-    def test_host_check_source_file_path(self, config_path: VersionedConfigPath) -> None:
+    def test_host_check_source_file_path(self, config_path: Path) -> None:
         assert (
-            core_nagios.HostCheckStore.host_check_source_file_path(
+            HostCheckStore.host_check_source_file_path(
                 config_path,
                 HostName("abc"),
             )
-            == Path(config_path) / "host_checks" / "abc.py"
+            == config_path / "host_checks" / "abc.py"
         )
 
-    def test_write(self, config_path: VersionedConfigPath) -> None:
+    def test_write(self, config_path: Path) -> None:
         hostname = HostName("aaa")
-        store = core_nagios.HostCheckStore()
+        store = HostCheckStore()
 
         assert config.delay_precompile is False
 
         assert not store.host_check_source_file_path(config_path, hostname).exists()
         assert not store.host_check_file_path(config_path, hostname).exists()
 
-        store.write(
-            config_path, hostname, "xyz", precompile_mode=core_nagios.PrecompileMode.INSTANT
-        )
+        store.write(config_path, hostname, "xyz", precompile_mode=PrecompileMode.INSTANT)
 
         assert store.host_check_source_file_path(config_path, hostname).exists()
         assert store.host_check_file_path(config_path, hostname).exists()
@@ -429,9 +448,7 @@ def _make_plugins_for_test() -> AgentBasedPlugins:
     )
 
 
-def test_dump_precompiled_hostcheck(
-    monkeypatch: MonkeyPatch, config_path: VersionedConfigPath
-) -> None:
+def test_dump_precompiled_hostcheck(monkeypatch: MonkeyPatch, config_path: Path) -> None:
     hostname = HostName("localhost")
     ts = Scenario()
     ts.add_host(hostname)
@@ -441,16 +458,23 @@ def test_dump_precompiled_hostcheck(
     )
     config_cache = ts.apply(monkeypatch)
 
-    host_check = core_nagios.dump_precompiled_hostcheck(
+    host_check = dump_precompiled_hostcheck(
         config_cache,
         config_cache.make_passive_service_name_config(),
         config_path,
         hostname,
+        get_ip_stack_config=lambda *a: ip_lookup.IPStackConfig.IPv4,
         plugins=_make_plugins_for_test(),
-        precompile_mode=core_nagios.PrecompileMode.INSTANT,
+        precompile_mode=PrecompileMode.INSTANT,
+        ip_address_of=lambda *a: HostAddress("1.2.3.4"),
     )
     assert host_check is not None
     assert host_check.startswith("#!/usr/bin/env python3")
+
+    try:
+        exec(host_check)
+    except Exception as e:
+        assert False, f"Execution failed with error: {e}"
 
 
 MOCK_PLUGIN = ActiveCheckConfig(
@@ -465,8 +489,26 @@ MOCK_PLUGIN = ActiveCheckConfig(
 )
 
 
+class FakeLabelConfig(ABCLabelConfig):
+    def __init__(self, service_labels: Mapping[str, str]):
+        self._service_lables = service_labels
+
+    def host_labels(self, host_name: HostName, /) -> Labels:
+        """Returns the configured labels for a host"""
+        return {}
+
+    def service_labels(
+        self,
+        host_name: HostName,
+        service_name: ServiceName,
+        labels_of_host: Callable[[HostName], Labels],
+        /,
+    ) -> Labels:
+        return self._service_lables
+
+
 @pytest.mark.parametrize(
-    "active_checks, loaded_active_checks, host_attrs, expected_result",
+    "active_checks, loaded_active_checks, host_attrs, service_labels, expected_result",
     [
         pytest.param(
             [
@@ -480,10 +522,13 @@ MOCK_PLUGIN = ActiveCheckConfig(
                 "_ADDRESS_FAMILY": "4",
                 "display_name": "my_host",
             },
+            {"os": "aix"},  # service labels
             "\n"
             "\n"
             "# Active checks\n"
             "define service {\n"
+            "  __LABELSOURCE_6F73            616978\n"
+            "  __LABEL_6F73                  616978\n"
             "  active_checks_enabled         1\n"
             "  check_command                 check_mk_active-my_active_check!--arg1 arument1 --host_alias my_host_alias\n"
             "  check_interval                1.0\n"
@@ -506,10 +551,13 @@ MOCK_PLUGIN = ActiveCheckConfig(
                 "_ADDRESS_FAMILY": "4",
                 "display_name": "my_host",
             },
+            {"os": "aix"},  # service labels
             "\n"
             "\n"
             "# Active checks\n"
             "define service {\n"
+            "  __LABELSOURCE_6F73            616978\n"
+            "  __LABEL_6F73                  616978\n"
             "  active_checks_enabled         1\n"
             "  check_command                 check_mk_active-my_active_check!'Failed to lookup IP address and no explicit IP address configured'\n"
             "  check_interval                1.0\n"
@@ -533,6 +581,7 @@ MOCK_PLUGIN = ActiveCheckConfig(
                 "_ADDRESS_FAMILY": "4",
                 "display_name": "my_host",
             },
+            {},  # service labels
             "\n"
             "\n"
             "# Active checks\n"
@@ -553,6 +602,7 @@ def test_create_nagios_servicedefs_active_check(
     active_checks: tuple[str, Sequence[Mapping[str, str]]],
     loaded_active_checks: Mapping[PluginLocation, ActiveCheckConfig],
     host_attrs: dict[str, Any],
+    service_labels: Mapping[str, str],
     expected_result: str,
     monkeypatch: MonkeyPatch,
 ) -> None:
@@ -561,22 +611,26 @@ def test_create_nagios_servicedefs_active_check(
 
     hostname = HostName("my_host")
     config_cache = config._create_config_cache(EMPTYCONFIG)
+    config_cache.label_manager = LabelManager(FakeLabelConfig(service_labels), {}, {}, {})
     monkeypatch.setattr(config_cache, "alias", lambda hn: {hostname: host_attrs["alias"]}[hn])
     monkeypatch.setattr(config_cache, "active_checks", lambda *args, **kw: active_checks)
 
     outfile = io.StringIO()
-    cfg = core_nagios.NagiosConfig(outfile, [hostname])
+    cfg = NagiosConfig(outfile, [hostname])
     license_counter = Counter("services")
-    core_nagios.create_nagios_servicedefs(
+    create_nagios_servicedefs(
         cfg,
         config_cache,
         config_cache.make_passive_service_name_config(),
         {},
         hostname,
+        ip_lookup.IPStackConfig.IPv4,
+        socket.AddressFamily.AF_INET,
         host_attrs,
         {},
         license_counter,
         ip_address_of_return_local,
+        service_depends_on=lambda *a: (),
     )
 
     assert outfile.getvalue() == expected_result
@@ -602,20 +656,25 @@ def test_create_nagios_servicedefs_service_period(monkeypatch: MonkeyPatch) -> N
 
     config_cache = ts.apply(monkeypatch)
 
-    host_attrs = config_cache.get_host_attributes(hostname, ip_address_of_return_local)
+    host_attrs = config_cache.get_host_attributes(
+        hostname, socket.AddressFamily.AF_INET, ip_address_of_return_local
+    )
     outfile = io.StringIO()
-    cfg = core_nagios.NagiosConfig(outfile, [hostname])
+    cfg = NagiosConfig(outfile, [hostname])
     license_counter = Counter("services")
-    core_nagios.create_nagios_servicedefs(
+    create_nagios_servicedefs(
         cfg,
         config_cache,
         config_cache.make_passive_service_name_config(),
         {},
         hostname,
+        ip_lookup.IPStackConfig.IPv4,
+        socket.AddressFamily.AF_INET,
         host_attrs,
         {},
         license_counter,
         ip_address_of_return_local,
+        service_depends_on=lambda *a: (),
     )
 
     config_snippet = outfile.getvalue()
@@ -726,18 +785,21 @@ def test_create_nagios_servicedefs_with_warnings(
 
     hostname = HostName("my_host")
     outfile = io.StringIO()
-    cfg = core_nagios.NagiosConfig(outfile, [hostname])
+    cfg = NagiosConfig(outfile, [hostname])
     license_counter = Counter("services")
-    core_nagios.create_nagios_servicedefs(
+    create_nagios_servicedefs(
         cfg,
         config_cache,
         config_cache.make_passive_service_name_config(),
         {},
         HostName("my_host"),
+        ip_lookup.IPStackConfig.IPv4,
+        socket.AddressFamily.AF_INET,
         host_attrs,
         {},
         license_counter,
         ip_address_of_return_local,
+        service_depends_on=lambda *a: (),
     )
 
     assert outfile.getvalue() == expected_result
@@ -793,18 +855,21 @@ def test_create_nagios_servicedefs_omit_service(
 
     outfile = io.StringIO()
     hostname = HostName("my_host")
-    cfg = core_nagios.NagiosConfig(outfile, [hostname])
+    cfg = NagiosConfig(outfile, [hostname])
     license_counter = Counter("services")
-    core_nagios.create_nagios_servicedefs(
+    create_nagios_servicedefs(
         cfg,
         config_cache,
         config_cache.make_passive_service_name_config(),
         {},
         hostname,
+        ip_lookup.IPStackConfig.IPv4,
+        socket.AddressFamily.AF_INET,
         host_attrs,
         {},
         license_counter,
         ip_address_of_return_local,
+        service_depends_on=lambda *a: (),
     )
 
     assert outfile.getvalue() == expected_result
@@ -861,19 +926,22 @@ def test_create_nagios_servicedefs_invalid_args(
 
     hostname = HostName("my_host")
     outfile = io.StringIO()
-    cfg = core_nagios.NagiosConfig(outfile, [hostname])
+    cfg = NagiosConfig(outfile, [hostname])
     license_counter = Counter("services")
 
-    core_nagios.create_nagios_servicedefs(
+    create_nagios_servicedefs(
         cfg,
         config_cache,
         config_cache.make_passive_service_name_config(),
         {},
         hostname,
+        ip_lookup.IPStackConfig.IPv4,
+        socket.AddressFamily.AF_INET,
         host_attrs,
         {},
         license_counter,
         ip_address_of_return_local,
+        service_depends_on=lambda *a: (),
     )
 
     assert error_message == capsys.readouterr().err
@@ -945,26 +1013,25 @@ def test_create_nagios_config_commands(
     config_cache = config._create_config_cache(EMPTYCONFIG)
     monkeypatch.setattr(config_cache, "active_checks", lambda *args, **kw: active_checks)
 
-    ip_address_of = config.ConfiguredIPLookup(
-        config_cache, error_handler=config.handle_ip_lookup_failure
-    )
-
     hostname = HostName("my_host")
     outfile = io.StringIO()
-    cfg = core_nagios.NagiosConfig(outfile, [hostname])
+    cfg = NagiosConfig(outfile, [hostname])
     license_counter = Counter("services")
-    core_nagios.create_nagios_servicedefs(
+    create_nagios_servicedefs(
         cfg,
         config_cache,
         config_cache.make_passive_service_name_config(),
         {},
         hostname,
+        ip_lookup.IPStackConfig.IPv4,
+        socket.AddressFamily.AF_INET,
         host_attrs,
         {},
         license_counter,
-        ip_address_of,
+        ip_address_of=lambda *a: HostAddress("127.0.0.1"),
+        service_depends_on=lambda *a: (),
     )
-    core_nagios.create_nagios_config_commands(cfg)
+    create_nagios_config_commands(cfg)
 
     assert license_counter["services"] == 1
     assert outfile.getvalue() == expected_result

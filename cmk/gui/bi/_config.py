@@ -16,10 +16,9 @@ from cmk.ccc.site import omd_site
 from cmk.utils import paths
 from cmk.utils.rulesets.definition import RuleGroup
 
-import cmk.gui.watolib.changes as _changes
 from cmk.gui import forms
 from cmk.gui.breadcrumb import Breadcrumb
-from cmk.gui.config import active_config
+from cmk.gui.config import active_config, Config
 from cmk.gui.customer import customer_api
 from cmk.gui.default_name import unique_clone_increment_suggestion
 from cmk.gui.exceptions import MKAuthException, MKUserError
@@ -27,7 +26,6 @@ from cmk.gui.groups import GroupName
 from cmk.gui.htmllib.foldable_container import foldable_container
 from cmk.gui.htmllib.generator import HTMLWriter
 from cmk.gui.htmllib.html import html
-from cmk.gui.htmllib.type_defs import RequireConfirmation
 from cmk.gui.http import request
 from cmk.gui.i18n import _, _l, ungettext
 from cmk.gui.logged_in import user
@@ -43,7 +41,7 @@ from cmk.gui.page_menu import (
     PageMenuSearch,
     PageMenuTopic,
 )
-from cmk.gui.pages import AjaxPage, PageRegistry, PageResult
+from cmk.gui.pages import AjaxPage, PageEndpoint, PageRegistry, PageResult
 from cmk.gui.permissions import Permission, PermissionRegistry
 from cmk.gui.site_config import wato_slave_sites
 from cmk.gui.table import init_rowselect, table_element
@@ -84,7 +82,8 @@ from cmk.gui.valuespec import (
     ValueSpecText,
     ValueSpecValidateFunc,
 )
-from cmk.gui.wato import ContactGroupSelection, PermissionSectionWATO, TileMenuRenderer
+from cmk.gui.wato import ContactGroupSelection, PERMISSION_SECTION_WATO, TileMenuRenderer
+from cmk.gui.watolib import changes as changes_
 from cmk.gui.watolib.audit_log import LogMessage
 from cmk.gui.watolib.config_domains import ConfigDomainGUI
 from cmk.gui.watolib.groups_io import load_contact_group_information
@@ -125,8 +124,8 @@ def register(
     mode_registry: ModeRegistry,
     permission_registry: PermissionRegistry,
 ) -> None:
-    page_registry.register_page("ajax_bi_rule_preview")(AjaxBIRulePreview)
-    page_registry.register_page("ajax_bi_aggregation_preview")(AjaxBIAggregationPreview)
+    page_registry.register(PageEndpoint("ajax_bi_rule_preview", AjaxBIRulePreview))
+    page_registry.register(PageEndpoint("ajax_bi_aggregation_preview", AjaxBIAggregationPreview))
 
     main_module_topic_registry.register(MainModuleTopicBI)
     main_module_registry.register(MainModuleBI)
@@ -141,7 +140,7 @@ def register(
 
     permission_registry.register(
         Permission(
-            section=PermissionSectionWATO,
+            section=PERMISSION_SECTION_WATO,
             name="bi_rules",
             title=_l("Business Intelligence rules and aggregations"),
             description=_l(
@@ -154,7 +153,7 @@ def register(
 
     permission_registry.register(
         Permission(
-            section=PermissionSectionWATO,
+            section=PERMISSION_SECTION_WATO,
             name="bi_admin",
             title=_l("Business Intelligence administration"),
             description=_l(
@@ -256,7 +255,14 @@ class ABCBIMode(WatoMode):
 
     def _add_change(self, action_name: str, text: LogMessage) -> None:
         site_ids = list(wato_slave_sites().keys()) + [omd_site()]
-        _changes.add_change(action_name, text, domains=[ConfigDomainGUI()], sites=site_ids)
+        changes_.add_change(
+            action_name=action_name,
+            text=text,
+            user_id=user.id,
+            domains=[ConfigDomainGUI()],
+            sites=site_ids,
+            use_git=active_config.wato_use_git,
+        )
 
     def url_to_pack(self, addvars: HTTPVariables, bi_pack: BIAggregationPack) -> str:
         return makeuri_contextless(request, addvars + [("pack", bi_pack.id)])
@@ -1526,7 +1532,7 @@ class BIAggregationForm(Dictionary):
 
 
 class AjaxBIRulePreview(AjaxPage):
-    def page(self) -> PageResult:
+    def page(self, config: Config) -> PageResult:
         sites_callback = SitesCallback(all_sites_with_id_and_online, bi_livestatus_query, _)
         compiler = BICompiler(BIManager.bi_configuration_file(), sites_callback)
         compiler.prepare_for_compilation(compiler.compute_current_configstatus()["online_sites"])
@@ -1567,7 +1573,7 @@ class AjaxBIRulePreview(AjaxPage):
 
 
 class AjaxBIAggregationPreview(AjaxPage):
-    def page(self) -> PageResult:
+    def page(self, config: Config) -> PageResult:
         # Prepare compiler
         sites_callback = SitesCallback(all_sites_with_id_and_online, bi_livestatus_query, _)
         compiler = BICompiler(BIManager.bi_configuration_file(), sites_callback)
@@ -2202,9 +2208,6 @@ class BIModeAggregations(ABCBIMode):
         with html.form_context(
             "bulk_action_form",
             method="POST",
-            require_confirmation=RequireConfirmation(
-                html=_("Do you really want to move the selected aggregations?")
-            ),
         ):
             self._render_aggregations()
             html.hidden_field("selection_id", SelectionId.from_request(request))

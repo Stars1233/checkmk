@@ -2,54 +2,18 @@
 # Copyright (C) 2020 Checkmk GmbH - License: GNU General Public License v2
 # This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
 # conditions defined in the file COPYING, which is part of this source code package.
-"""Hosts
-
-A host is an object that is monitored by Checkmk, for example, a server or a network device.
-A host belongs to a certain folder, is usually connected to a data source (agent or SNMP) and
-provides one or more services.
-
-A cluster host is a special host type containing the nodes the cluster consists of and having
-the services assigned that are provided by the cluster.
-
-You can find an introduction to hosts in the
-[Checkmk guide](https://docs.checkmk.com/latest/en/wato_hosts.html).
-
-Please note that every host always resides in a folder. The folder is included twice
-in the host's links: Once based upon the canonical path and once based upon the folder's
-unique id. You can never remove a host from a folder, just move it to a different one.
-
-### Host and Folder attributes
-
-Every host and folder can have "attributes" set, which determine the behavior of Checkmk. Each
-host inherits all attributes of its folder and the folder's parent folders. So setting an SNMP
-community in a folder is equivalent to setting the same on all hosts in said folder.
-
-Some host endpoints allow one to view the "effective attributes", which is an aggregation of all
-attributes up to the root.
-
-### Relations
-
-A host_config object can have the following relations present in `links`:
-
- * `self` - The host itself.
- * `urn:com.checkmk:rels/folder_config` - The folder object this host resides in.
- * `urn:org.restfulobjects:rels/update` - The endpoint to update this host.
- * `urn:org.restfulobjects:rels/delete` - The endpoint to delete this host.
-
-"""
-
 import itertools
 import operator
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from typing import Any
 from urllib.parse import urlparse
 
+from cmk.ccc.hostaddress import HostName
 from cmk.ccc.site import SiteId
-
-from cmk.utils.hostaddress import HostName
 
 from cmk.gui import fields as gui_fields
 from cmk.gui.background_job import InitialStatusArgs, JobTarget
+from cmk.gui.config import active_config
 from cmk.gui.exceptions import MKAuthException, MKUserError
 from cmk.gui.fields.fields_filter import FieldsFilter, make_filter
 from cmk.gui.fields.utils import BaseSchema
@@ -77,6 +41,7 @@ from cmk.gui.openapi.restful_objects.api_error import ApiError
 from cmk.gui.openapi.restful_objects.parameters import HOST_NAME
 from cmk.gui.openapi.restful_objects.registry import EndpointRegistry
 from cmk.gui.openapi.restful_objects.type_defs import DomainObject, LinkType
+from cmk.gui.openapi.shared_endpoint_families.host_config import HOST_CONFIG_FAMILY
 from cmk.gui.openapi.utils import EXT, problem, serve_json
 from cmk.gui.utils import permission_verification as permissions
 from cmk.gui.wato.pages.host_rename import rename_hosts_job_entry_point, RenameHostsJobArgs
@@ -239,6 +204,7 @@ def _fields_filter_from_params(params: Mapping[str, Any], *, is_collection: bool
     response_schema=HostConfigSchema,
     query_params=[BAKE_AGENT_PARAM],
     permissions_required=PERMISSIONS,
+    family_name=HOST_CONFIG_FAMILY.name,
 )
 def create_host(params: Mapping[str, Any]) -> Response:
     """Create a host"""
@@ -249,10 +215,10 @@ def create_host(params: Mapping[str, Any]) -> Response:
 
     # is_cluster is defined as "cluster_hosts is not None"
     folder.create_hosts(
-        [(host_name, body["attributes"], None)],
+        [(host_name, body["attributes"], None)], pprint_value=active_config.wato_pprint_config
     )
     if params[BAKE_AGENT_PARAM_NAME]:
-        bakery.try_bake_agents_for_hosts([host_name])
+        bakery.try_bake_agents_for_hosts([host_name], debug=active_config.debug)
 
     host = Host.load_host(host_name)
     return _serve_host(
@@ -270,6 +236,7 @@ def create_host(params: Mapping[str, Any]) -> Response:
     response_schema=HostConfigSchema,
     permissions_required=with_access_check_permission(PERMISSIONS),
     query_params=[BAKE_AGENT_PARAM],
+    family_name=HOST_CONFIG_FAMILY.name,
 )
 def create_cluster_host(params: Mapping[str, Any]) -> Response:
     """Create a cluster host
@@ -283,9 +250,10 @@ def create_cluster_host(params: Mapping[str, Any]) -> Response:
 
     folder.create_hosts(
         [(host_name, body["attributes"], body["nodes"])],
+        pprint_value=active_config.wato_pprint_config,
     )
     if params[BAKE_AGENT_PARAM_NAME]:
-        bakery.try_bake_agents_for_hosts([host_name])
+        bakery.try_bake_agents_for_hosts([host_name], debug=active_config.debug)
 
     host = Host.load_host(host_name)
     return _serve_host(
@@ -336,6 +304,7 @@ class BulkHostActionWithFailedHosts(ApiError):
     },
     permissions_required=BULK_CREATE_PERMISSIONS,
     query_params=[BAKE_AGENT_PARAM],
+    family_name=HOST_CONFIG_FAMILY.name,
 )
 def bulk_create_hosts(params: Mapping[str, Any]) -> Response:
     """Bulk create hosts"""
@@ -362,11 +331,13 @@ def bulk_create_hosts(params: Mapping[str, Any]) -> Response:
             except (MKUserError, MKAuthException) as e:
                 failed_hosts[host_name] = f"Validation failed: {e}"
 
-        folder.create_validated_hosts(validated_entries)
+        folder.create_validated_hosts(
+            validated_entries, pprint_value=active_config.wato_pprint_config
+        )
         succeeded_hosts.extend(entry[0] for entry in validated_entries)
 
     if params[BAKE_AGENT_PARAM_NAME]:
-        bakery.try_bake_agents_for_hosts(succeeded_hosts)
+        bakery.try_bake_agents_for_hosts(succeeded_hosts, debug=active_config.debug)
 
     return _bulk_host_action_response(
         failed_hosts, [Host.load_host(host_name) for host_name in succeeded_hosts]
@@ -462,6 +433,7 @@ def _iter_hosts_with_permission(folder: Folder) -> Iterable[Host]:
             ),
         },
     ],
+    family_name=HOST_CONFIG_FAMILY.name,
 )
 def list_hosts(params: Mapping[str, Any]) -> Response:
     """Show all hosts"""
@@ -530,6 +502,7 @@ def _host_collection(
     request_schema=UpdateNodes,
     response_schema=response_schemas.ObjectProperty,
     permissions_required=UPDATE_PERMISSIONS,
+    family_name=HOST_CONFIG_FAMILY.name,
 )
 def update_nodes(params: Mapping[str, Any]) -> Response:
     """Update the nodes of a cluster host"""
@@ -540,7 +513,7 @@ def update_nodes(params: Mapping[str, Any]) -> Response:
     nodes = body["nodes"]
     host: Host = Host.load_host(host_name)
     _require_host_etag(host)
-    host.edit(host.attributes, nodes)
+    host.edit(host.attributes, nodes, pprint_value=active_config.wato_pprint_config)
 
     return serve_json(
         constructors.object_sub_property(
@@ -586,6 +559,7 @@ def _validate_host_attributes_for_quick_setup(host: Host, body: dict[str, Any]) 
     request_schema=UpdateHost,
     response_schema=HostConfigSchema,
     permissions_required=UPDATE_PERMISSIONS,
+    family_name=HOST_CONFIG_FAMILY.name,
 )
 def update_host(params: Mapping[str, Any]) -> Response:
     """Update a host"""
@@ -604,10 +578,12 @@ def update_host(params: Mapping[str, Any]) -> Response:
 
     if new_attributes := body.get("attributes"):
         new_attributes["meta_data"] = host.attributes.get("meta_data", {})
-        host.edit(new_attributes, host.cluster_nodes())
+        host.edit(
+            new_attributes, host.cluster_nodes(), pprint_value=active_config.wato_pprint_config
+        )
 
     if update_attributes := body.get("update_attributes"):
-        host.update_attributes(update_attributes)
+        host.update_attributes(update_attributes, pprint_value=active_config.wato_pprint_config)
 
     if remove_attributes := body.get("remove_attributes"):
         faulty_attributes = []
@@ -615,7 +591,9 @@ def update_host(params: Mapping[str, Any]) -> Response:
             if attribute not in host.attributes:
                 faulty_attributes.append(attribute)
 
-        host.clean_attributes(remove_attributes)  # silently ignores missing attributes
+        host.clean_attributes(
+            remove_attributes, pprint_value=active_config.wato_pprint_config
+        )  # silently ignores missing attributes
 
         if faulty_attributes:
             return problem(
@@ -640,6 +618,7 @@ def update_host(params: Mapping[str, Any]) -> Response:
         400: BulkHostActionWithFailedHosts,
     },
     permissions_required=UPDATE_PERMISSIONS,
+    family_name=HOST_CONFIG_FAMILY.name,
 )
 def bulk_update_hosts(params: Mapping[str, Any]) -> Response:
     """Bulk update hosts
@@ -698,7 +677,7 @@ def bulk_update_hosts(params: Mapping[str, Any]) -> Response:
 
         # skip save if no changes were made, presumably due to quick setup lock
         if pending_changes:
-            folder.save_hosts()
+            folder.save_hosts(pprint_value=active_config.wato_pprint_config)
             for host, diff, affected_sites in pending_changes:
                 host.add_edit_host_change(diff, affected_sites)
 
@@ -735,6 +714,7 @@ def bulk_update_hosts(params: Mapping[str, Any]) -> Response:
     ),
     request_schema=RenameHost,
     response_schema=HostConfigSchema,
+    family_name=HOST_CONFIG_FAMILY.name,
 )
 def rename_host(params: Mapping[str, Any]) -> Response:
     """Rename a host
@@ -765,7 +745,13 @@ def rename_host(params: Mapping[str, Any]) -> Response:
     result = background_job.start(
         JobTarget(
             callable=rename_hosts_job_entry_point,
-            args=RenameHostsJobArgs(renamings=[(host.folder().path(), host_name, new_name)]),
+            args=RenameHostsJobArgs(
+                renamings=[(host.folder().path(), host_name, new_name)],
+                site_configs=active_config.sites,
+                pprint_value=active_config.wato_pprint_config,
+                use_git=active_config.wato_use_git,
+                debug=active_config.debug,
+            ),
         ),
         InitialStatusArgs(
             title=f"Renaming of {host_name} -> {new_name}",
@@ -802,6 +788,7 @@ def rename_host(params: Mapping[str, Any]) -> Response:
     },
     additional_status_codes=[302, 404],
     output_empty=True,
+    family_name=HOST_CONFIG_FAMILY.name,
 )
 def renaming_job_wait_for_completion(params: Mapping[str, Any]) -> Response:
     """Wait for renaming process completion
@@ -841,6 +828,7 @@ def renaming_job_wait_for_completion(params: Mapping[str, Any]) -> Response:
             *PERMISSIONS.perms,
         ]
     ),
+    family_name=HOST_CONFIG_FAMILY.name,
 )
 def move(params: Mapping[str, Any]) -> Response:
     """Move a host to another folder"""
@@ -861,7 +849,9 @@ def move(params: Mapping[str, Any]) -> Response:
     try:
         if target_folder.as_choice_for_moving() not in current_folder.choices_for_moving_host():
             raise MKAuthException
-        current_folder.move_hosts([host_name], target_folder)
+        current_folder.move_hosts(
+            [host_name], target_folder, pprint_value=active_config.wato_pprint_config
+        )
     except MKAuthException:
         return problem(
             status=403,
@@ -881,12 +871,18 @@ def move(params: Mapping[str, Any]) -> Response:
     path_params=[HOST_NAME],
     output_empty=True,
     permissions_required=with_access_check_permission(PERMISSIONS),
+    family_name=HOST_CONFIG_FAMILY.name,
 )
 def delete(params: Mapping[str, Any]) -> Response:
     """Delete a host"""
     user.need_permission("wato.edit")
     host: Host = Host.load_host(params["host_name"])
-    host.folder().delete_hosts([host.name()], automation=delete_hosts)
+    host.folder().delete_hosts(
+        [host.name()],
+        automation=delete_hosts,
+        pprint_value=active_config.wato_pprint_config,
+        debug=active_config.debug,
+    )
     return Response(status=204)
 
 
@@ -897,6 +893,7 @@ def delete(params: Mapping[str, Any]) -> Response:
     request_schema=BulkDeleteHost,
     permissions_required=with_access_check_permission(PERMISSIONS),
     output_empty=True,
+    family_name=HOST_CONFIG_FAMILY.name,
 )
 def bulk_delete(params: Mapping[str, Any]) -> Response:
     """Bulk delete hosts"""
@@ -918,7 +915,12 @@ def bulk_delete(params: Mapping[str, Any]) -> Response:
     ):
         folder = folder_by_id[id_]
         # Calling Folder.delete_hosts is very expensive. Thus, we only call it once per folder.
-        folder.delete_hosts(list(hostnames_per_folder), automation=delete_hosts)
+        folder.delete_hosts(
+            list(hostnames_per_folder),
+            automation=delete_hosts,
+            pprint_value=active_config.wato_pprint_config,
+            debug=active_config.debug,
+        )
 
     return Response(status=204)
 
@@ -940,6 +942,7 @@ def bulk_delete(params: Mapping[str, Any]) -> Response:
     etag="output",
     response_schema=HostConfigSchema,
     permissions_required=permissions.Optional(permissions.Perm("wato.see_all_folders")),
+    family_name=HOST_CONFIG_FAMILY.name,
 )
 def show_host(params: Mapping[str, Any]) -> Response:
     """Show a host"""
@@ -1022,17 +1025,19 @@ def _host_etag_values(host: Host) -> dict[str, Any]:
     }
 
 
-def register(endpoint_registry: EndpointRegistry) -> None:
-    endpoint_registry.register(create_host)
-    endpoint_registry.register(create_cluster_host)
-    endpoint_registry.register(bulk_create_hosts)
-    endpoint_registry.register(list_hosts)
-    endpoint_registry.register(update_nodes)
-    endpoint_registry.register(update_host)
-    endpoint_registry.register(bulk_update_hosts)
-    endpoint_registry.register(rename_host)
-    endpoint_registry.register(renaming_job_wait_for_completion)
-    endpoint_registry.register(move)
-    endpoint_registry.register(delete)
-    endpoint_registry.register(bulk_delete)
-    endpoint_registry.register(show_host)
+def register(endpoint_registry: EndpointRegistry, *, ignore_duplicates: bool) -> None:
+    endpoint_registry.register(create_host, ignore_duplicates=ignore_duplicates)
+    endpoint_registry.register(create_cluster_host, ignore_duplicates=ignore_duplicates)
+    endpoint_registry.register(bulk_create_hosts, ignore_duplicates=ignore_duplicates)
+    endpoint_registry.register(list_hosts, ignore_duplicates=ignore_duplicates)
+    endpoint_registry.register(update_nodes, ignore_duplicates=ignore_duplicates)
+    endpoint_registry.register(update_host, ignore_duplicates=ignore_duplicates)
+    endpoint_registry.register(bulk_update_hosts, ignore_duplicates=ignore_duplicates)
+    endpoint_registry.register(rename_host, ignore_duplicates=ignore_duplicates)
+    endpoint_registry.register(
+        renaming_job_wait_for_completion, ignore_duplicates=ignore_duplicates
+    )
+    endpoint_registry.register(move, ignore_duplicates=ignore_duplicates)
+    endpoint_registry.register(delete, ignore_duplicates=ignore_duplicates)
+    endpoint_registry.register(bulk_delete, ignore_duplicates=ignore_duplicates)
+    endpoint_registry.register(show_host, ignore_duplicates=ignore_duplicates)

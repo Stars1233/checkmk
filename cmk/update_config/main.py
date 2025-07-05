@@ -18,13 +18,12 @@ import traceback
 from collections.abc import Callable, Generator, Sequence
 from contextlib import contextmanager
 from itertools import chain
-from pathlib import Path
 from typing import Literal
 
-from cmk.ccc import debug
+from cmk.ccc import debug, tty
 from cmk.ccc.version import Edition, edition
 
-from cmk.utils import log, paths, tty
+from cmk.utils import log, paths
 from cmk.utils.log import VERBOSE
 from cmk.utils.paths import check_mk_config_dir
 from cmk.utils.plugin_loader import load_plugins_with_exceptions
@@ -114,7 +113,7 @@ def main_check_config(logger: logging.Logger, conflict: ConflictMode) -> Literal
 
 def _cleanup_precompiled_files(logger: logging.Logger) -> None:
     logger.info("Cleanup precompiled host and folder files")
-    for p in Path(check_mk_config_dir, "wato").glob("**/*.pkl"):
+    for p in (check_mk_config_dir / "wato").glob("**/*.pkl"):
         p.unlink(missing_ok=True)
 
 
@@ -272,9 +271,11 @@ def update_config(logger: logging.Logger) -> Literal[0, 1]:
         if not has_errors and not is_wato_slave_site():
             # Force synchronization of the config after a successful configuration update
             add_change(
-                "cmk-update-config",
-                "Successfully updated Checkmk configuration",
+                action_name="cmk-update-config",
+                text="Successfully updated Checkmk configuration",
+                user_id=None,
                 need_sync=True,
+                use_git=False,
             )
 
     if has_errors:

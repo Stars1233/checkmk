@@ -16,7 +16,7 @@ from cmk.gui.permissions import (
 def register(
     permission_section_registry: PermissionSectionRegistry, permission_registry: PermissionRegistry
 ) -> None:
-    permission_section_registry.register(PermissionSectionNagVis)
+    permission_section_registry.register(PERMISSION_SECTION_NAGVIS)
     permission_registry.register(PermissionFullAccess)
     permission_registry.register(PermissionRotationViewAll)
     permission_registry.register(PermissionMapViewAll)
@@ -25,20 +25,17 @@ def register(
     permission_registry.register(PermissionMapView)
     permission_registry.register(PermissionMapEdit)
     permission_registry.register(PermissionMapDelete)
+    permission_registry.register(PermissionMapHTML)
 
 
-class PermissionSectionNagVis(PermissionSection):
-    @property
-    def name(self) -> str:
-        return "nagvis"
-
-    @property
-    def title(self) -> str:
-        return _("NagVis")
+PERMISSION_SECTION_NAGVIS = PermissionSection(
+    name="nagvis",
+    title=_("NagVis"),
+)
 
 
 PermissionFullAccess = Permission(
-    section=PermissionSectionNagVis,
+    section=PERMISSION_SECTION_NAGVIS,
     name="*_*_*",
     title=_l("Full access"),
     description=_l("This permission grants full access to NagVis."),
@@ -46,7 +43,7 @@ PermissionFullAccess = Permission(
 )
 
 PermissionRotationViewAll = Permission(
-    section=PermissionSectionNagVis,
+    section=PERMISSION_SECTION_NAGVIS,
     name="Rotation_view_*",
     title=_l("Use all map rotations"),
     description=_l("Grants read access to all rotations."),
@@ -54,7 +51,7 @@ PermissionRotationViewAll = Permission(
 )
 
 PermissionMapViewAll = Permission(
-    section=PermissionSectionNagVis,
+    section=PERMISSION_SECTION_NAGVIS,
     name="Map_view_*",
     title=_l("View all maps"),
     description=_l("Grants read access to all maps."),
@@ -62,7 +59,7 @@ PermissionMapViewAll = Permission(
 )
 
 PermissionMapEditAll = Permission(
-    section=PermissionSectionNagVis,
+    section=PERMISSION_SECTION_NAGVIS,
     name="Map_edit_*",
     title=_l("Edit all maps"),
     description=_l("Grants modify access to all maps."),
@@ -70,7 +67,7 @@ PermissionMapEditAll = Permission(
 )
 
 PermissionMapDeleteAll = Permission(
-    section=PermissionSectionNagVis,
+    section=PERMISSION_SECTION_NAGVIS,
     name="Map_delete_*",
     title=_l("Delete all maps"),
     description=_l("Permits to delete all maps."),
@@ -78,7 +75,7 @@ PermissionMapDeleteAll = Permission(
 )
 
 PermissionMapView = Permission(
-    section=PermissionSectionNagVis,
+    section=PERMISSION_SECTION_NAGVIS,
     name="Map_view",
     title=_l("View permitted maps"),
     description=_l("Grants read access to all maps the user is a contact for."),
@@ -86,7 +83,7 @@ PermissionMapView = Permission(
 )
 
 PermissionMapEdit = Permission(
-    section=PermissionSectionNagVis,
+    section=PERMISSION_SECTION_NAGVIS,
     name="Map_edit",
     title=_l("Edit permitted maps"),
     description=_l("Grants modify access to all maps the user is contact for."),
@@ -94,9 +91,21 @@ PermissionMapEdit = Permission(
 )
 
 PermissionMapDelete = Permission(
-    section=PermissionSectionNagVis,
+    section=PERMISSION_SECTION_NAGVIS,
     name="Map_delete",
     title=_l("Delete permitted maps"),
     description=_l("Permits to delete all maps the user is contact for."),
     defaults=["user"],
+)
+
+
+PermissionMapHTML = Permission(
+    section=PERMISSION_SECTION_NAGVIS,
+    name="Map_editHtml_*",
+    title=_l("Allow to add or edit elements that contain HTML"),
+    description=_l(
+        "Grants the access to add or edit elements that contain HTML. "
+        "Enabling this for other users except admins is considered a security risk. "
+    ),
+    defaults=["admin"],
 )

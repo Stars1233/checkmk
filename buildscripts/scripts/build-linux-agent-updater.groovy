@@ -16,8 +16,6 @@ def main() {
     def versioning = load("${checkout_dir}/buildscripts/scripts/utils/versioning.groovy");
     def package_helper = load("${checkout_dir}/buildscripts/scripts/utils/package_helper.groovy");
 
-    shout("configure");
-
     def branch_version = versioning.get_branch_version(checkout_dir);
 
     def safe_branch_name = versioning.safe_branch_name();
@@ -66,7 +64,7 @@ def main() {
                             passwordVariable: 'NEXUS_PASSWORD',
                             usernameVariable: 'NEXUS_USERNAME')
                     ]) {
-                        dir("${checkout_dir}/non-free/cmk-update-agent") {
+                        dir("${checkout_dir}/non-free/packages/cmk-update-agent") {
                             sh("""
                                 BRANCH_VERSION=${branch_version} \
                                 DOCKER_REGISTRY_NO_HTTP=${docker_registry_no_http} \
@@ -75,7 +73,7 @@ def main() {
                         }
                     }
                     dir("${WORKSPACE}/build") {
-                        sh("cp ${checkout_dir}/non-free/cmk-update-agent/cmk-update-agent${suffix} .");
+                        sh("cp ${checkout_dir}/non-free/packages/cmk-update-agent/cmk-update-agent${suffix} .");
                     }
                 }
             }]
@@ -106,7 +104,7 @@ def main() {
             setCustomBuildProperty(
                 key: "path_hashes",
                 // TODO: this must go to some SPoT
-                value: directory_hashes(["agents", "non-free/cmk-update-agent"])
+                value: directory_hashes(["agents", "non-free/packages/cmk-update-agent"])
             );
         }
         dir("${WORKSPACE}/build") {

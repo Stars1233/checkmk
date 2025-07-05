@@ -148,12 +148,9 @@ class WMITable:
                 self.timed_out = True
 
     def get(
-        self,
-        row: str | int,
-        column: str | int,
-        silently_skip_timed_out: bool = False,
+        self, row: str | int, column: str | int, *, raise_on_timeout: bool = False
     ) -> str | None:
-        if not silently_skip_timed_out and self.timed_out:
+        if raise_on_timeout and self.timed_out:
             raise WMIQueryTimeoutError("WMI query timed out")
         return self._get_row_col_value(row, column)
 
@@ -335,9 +332,13 @@ def required_tables_missing(
     return not set(required_tables).issubset(set(tables))
 
 
-def get_wmi_time(table: WMITable, row: str | int) -> float:
-    timestamp = table.timestamp or table.get(row, "Timestamp_PerfTime")
-    frequency = table.frequency or table.get(row, "Frequency_PerfTime")
+def get_wmi_time(table: WMITable, row: str | int, *, raise_on_timeout: bool = False) -> float:
+    timestamp = table.timestamp or table.get(
+        row, "Timestamp_PerfTime", raise_on_timeout=raise_on_timeout
+    )
+    frequency = table.frequency or table.get(
+        row, "Frequency_PerfTime", raise_on_timeout=raise_on_timeout
+    )
     assert timestamp is not None
     if not frequency:
         frequency = 1

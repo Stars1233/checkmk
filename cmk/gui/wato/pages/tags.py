@@ -16,10 +16,12 @@ from cmk.utils.tags import TagGroupID, TagID
 import cmk.gui.watolib.changes as _changes
 from cmk.gui import forms
 from cmk.gui.breadcrumb import Breadcrumb
+from cmk.gui.config import active_config
 from cmk.gui.exceptions import FinalizeRequest, MKUserError
 from cmk.gui.htmllib.html import html
 from cmk.gui.http import request
 from cmk.gui.i18n import _, _u
+from cmk.gui.logged_in import user
 from cmk.gui.page_menu import (
     make_simple_form_page_menu,
     make_simple_link,
@@ -208,8 +210,13 @@ class ModeTags(ABCTagMode):
                 self._tag_config.validate_config()
             except MKGeneralException as e:
                 raise MKUserError(None, "%s" % e)
-            update_tag_config(self._tag_config)
-            _changes.add_change("edit-tags", _("Removed tag group %s (%s)") % (message, del_id))
+            update_tag_config(self._tag_config, pprint_value=active_config.wato_pprint_config)
+            _changes.add_change(
+                action_name="edit-tags",
+                text=_("Removed tag group %s (%s)") % (message, del_id),
+                user_id=user.id,
+                use_git=active_config.wato_use_git,
+            )
             if isinstance(message, str):
                 flash(message)
         return redirect(makeuri(request, [], delvars=["_delete"]))
@@ -269,8 +276,13 @@ class ModeTags(ABCTagMode):
                 self._tag_config.validate_config()
             except MKGeneralException as e:
                 raise MKUserError(None, "%s" % e)
-            update_tag_config(self._tag_config)
-            _changes.add_change("edit-tags", _("Removed auxiliary tag %s (%s)") % (message, del_id))
+            update_tag_config(self._tag_config, pprint_value=active_config.wato_pprint_config)
+            _changes.add_change(
+                action_name="edit-tags",
+                text=_("Removed auxiliary tag %s (%s)") % (message, del_id),
+                user_id=user.id,
+                use_git=active_config.wato_use_git,
+            )
             if isinstance(message, str):
                 flash(message)
         return redirect(makeuri(request, [], delvars=["_del_aux"]))
@@ -287,9 +299,14 @@ class ModeTags(ABCTagMode):
             self._tag_config.validate_config()
         except MKGeneralException as e:
             raise MKUserError(None, "%s" % e)
-        update_tag_config(self._tag_config)
+        update_tag_config(self._tag_config, pprint_value=active_config.wato_pprint_config)
         self._load_effective_config()
-        _changes.add_change("edit-tags", _("Changed order of tag groups"))
+        _changes.add_change(
+            action_name="edit-tags",
+            text=_("Changed order of tag groups"),
+            user_id=user.id,
+            use_git=active_config.wato_use_git,
+        )
         return None
 
     def page(self) -> None:
@@ -559,7 +576,10 @@ class ModeTagUsage(ABCTagMode):
             tag_group.id, remove_tag_ids=[tag.id], replace_tag_ids={}
         )
         affected_folders, affected_hosts, affected_rulesets = change_host_tags(
-            operation, TagCleanupMode.CHECK
+            operation,
+            TagCleanupMode.CHECK,
+            pprint_value=active_config.wato_pprint_config,
+            debug=active_config.debug,
         )
 
         table.cell(_("Explicitly set on folders"))
@@ -608,7 +628,10 @@ class ModeTagUsage(ABCTagMode):
             raise Exception("uninitialized tag")
         operation = OperationRemoveAuxTag(TagGroupID(aux_tag.id))
         affected_folders, affected_hosts, affected_rulesets = change_host_tags(
-            operation, TagCleanupMode.CHECK
+            operation,
+            TagCleanupMode.CHECK,
+            pprint_value=active_config.wato_pprint_config,
+            debug=active_config.debug,
         )
 
         table.cell(_("Explicitly set on folders"))
@@ -667,7 +690,7 @@ class ModeEditAuxtag(ABCEditTagMode):
 
     def action(self) -> ActionResult:
         if not transactions.check_transaction():
-            return redirect(makeuri(request, []))
+            return redirect(mode_url("tags"))
 
         vs = self._valuespec()
         aux_tag_spec = vs.from_html_vars("aux_tag")
@@ -689,9 +712,9 @@ class ModeEditAuxtag(ABCEditTagMode):
         except MKGeneralException as e:
             raise MKUserError(None, "%s" % e)
 
-        update_tag_config(changed_hosttags_config)
+        update_tag_config(changed_hosttags_config, pprint_value=active_config.wato_pprint_config)
 
-        return redirect(makeuri(request, []))
+        return redirect(mode_url("tags"))
 
     def page(self) -> None:
         with html.form_context("aux_tag"):
@@ -758,7 +781,7 @@ class ModeEditTagGroup(ABCEditTagMode):
         check_csrf_token()
 
         if not transactions.check_transaction():
-            return redirect(makeuri(request, []))
+            return redirect(mode_url("tags"))
 
         vs = self._valuespec()
         tag_group_spec = vs.from_html_vars("tag_group")
@@ -778,9 +801,14 @@ class ModeEditTagGroup(ABCEditTagMode):
                 changed_hosttags_config.validate_config()
             except MKGeneralException as e:
                 raise MKUserError(None, "%s" % e)
-            update_tag_config(changed_hosttags_config)
+            update_tag_config(
+                changed_hosttags_config, pprint_value=active_config.wato_pprint_config
+            )
             _changes.add_change(
-                "edit-hosttags", _("Created new host tag group '%s'") % changed_tag_group.id
+                action_name="edit-hosttags",
+                text=_("Created new host tag group '%s'") % changed_tag_group.id,
+                user_id=user.id,
+                use_git=active_config.wato_use_git,
             )
             flash(_("Created new host tag group '%s'") % changed_tag_group.title)
             return redirect(mode_url("tags"))
@@ -805,14 +833,17 @@ class ModeEditTagGroup(ABCEditTagMode):
         if message is False:
             return FinalizeRequest(code=200)
 
-        update_tag_config(changed_hosttags_config)
+        update_tag_config(changed_hosttags_config, pprint_value=active_config.wato_pprint_config)
         _changes.add_change(
-            "edit-hosttags", _("Edited host tag group %s (%s)") % (message, self._id)
+            action_name="edit-hosttags",
+            text=_("Edited host tag group %s (%s)") % (message, self._id),
+            user_id=user.id,
+            use_git=active_config.wato_use_git,
         )
         if isinstance(message, str):
             flash(message)
 
-        return redirect(makeuri(request, [], delvars=["_delete"]))
+        return redirect(mode_url("tags"))
 
     def page(self) -> None:
         with html.form_context("tag_group", method="POST"):
@@ -923,7 +954,12 @@ def _rename_tags_after_confirmation(
         if mode == TagCleanupMode.ABORT:
             raise MKUserError("id_0", _("Aborting change."))
 
-        affected_folders, affected_hosts, affected_rulesets = change_host_tags(operation, mode)
+        affected_folders, affected_hosts, affected_rulesets = change_host_tags(
+            operation,
+            mode,
+            pprint_value=active_config.wato_pprint_config,
+            debug=active_config.debug,
+        )
 
         return _("Modified folders: %d, modified hosts: %d, modified rule sets: %d") % (
             len(affected_folders),
@@ -933,7 +969,10 @@ def _rename_tags_after_confirmation(
 
     message = HTML.empty()
     affected_folders, affected_hosts, affected_rulesets = change_host_tags(
-        operation, TagCleanupMode.CHECK
+        operation,
+        TagCleanupMode.CHECK,
+        pprint_value=active_config.wato_pprint_config,
+        debug=active_config.debug,
     )
 
     if affected_folders:
@@ -1082,7 +1121,7 @@ def _show_affected_rulesets(affected_rulesets: list[Ruleset]) -> None:
 
 
 def _is_removing_tags(operation: ABCOperation) -> bool:
-    if isinstance(operation, (OperationRemoveAuxTag, OperationRemoveTagGroup)):
+    if isinstance(operation, OperationRemoveAuxTag | OperationRemoveTagGroup):
         return True
 
     if isinstance(operation, OperationReplaceGroupedTags) and operation.remove_tag_ids:

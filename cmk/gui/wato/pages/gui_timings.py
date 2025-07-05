@@ -3,22 +3,20 @@
 # This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
 # conditions defined in the file COPYING, which is part of this source code package.
 from cmk.gui.breadcrumb import make_simple_page_breadcrumb
+from cmk.gui.config import Config
 from cmk.gui.htmllib.header import make_header
 from cmk.gui.htmllib.html import html
 from cmk.gui.i18n import _
-from cmk.gui.main_menu import mega_menu_registry
-from cmk.gui.pages import Page, PageRegistry, PageResult
+from cmk.gui.main_menu import main_menu_registry
+from cmk.gui.pages import Page, PageEndpoint, PageRegistry, PageResult
 
 
 class GuiTimingsPage(Page):
-    def _title(self) -> str:
-        return "GUI timings"
-
-    def page(self) -> PageResult:
-        breadcrumb = make_simple_page_breadcrumb(mega_menu_registry["help_links"], _("Info"))
+    def page(self, config: Config) -> PageResult:
+        breadcrumb = make_simple_page_breadcrumb(main_menu_registry["help"], _("Info"))
         make_header(
             html,
-            self._title(),
+            "GUI timings",
             breadcrumb=breadcrumb,
         )
 
@@ -40,4 +38,4 @@ class GuiTimingsPage(Page):
 
 
 def register(page_registry: PageRegistry) -> None:
-    page_registry.register_page("gui_timings")(GuiTimingsPage)
+    page_registry.register(PageEndpoint("gui_timings", GuiTimingsPage))

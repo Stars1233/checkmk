@@ -19,7 +19,6 @@ def main() {
 
     check_environment_variables([
         "DOCKER_REGISTRY",
-        "NEXUS_BUILD_CACHE_URL",
     ]);
 
     def distro = params.DISTRO;
@@ -34,9 +33,7 @@ def main() {
     def omd_env_vars = [
         "DEBFULLNAME='Checkmk Team'",
         "DEBEMAIL='feedback@checkmk.com'",
-    ] + (disable_cache ? [
-        "NEXUS_BUILD_CACHE_URL=",
-        ] : []);
+    ]
 
     def safe_branch_name = versioning.safe_branch_name();
     def branch_version = versioning.get_branch_version(checkout_dir);
@@ -91,7 +88,7 @@ def main() {
     }
 
     stage("Prepare workspace") {
-        inside_container() {
+        container("minimal-ubuntu-checkmk-master") {
             dir("${checkout_dir}") {
                 sh("""
                     make buildclean
@@ -104,15 +101,14 @@ def main() {
                 }
                 versioning.configure_checkout_folder(edition, cmk_version);
             }
-
-            // FIXME: should this be done by another job?
-            dir("${checkout_dir}") {
-                sh("make cmk-frontend-build frontend-vue-build");
-            }
         }
+    }
 
-        inside_container_minimal(safe_branch_name: safe_branch_name) {
+    def stages = [
+        "Build BOM": {
             def build_instance = null;
+            def artifacts_base_dir = "tmp_artifacts";
+
             smart_stage(
                 name: "Build BOM",
                 raiseOnError: true,
@@ -124,6 +120,7 @@ def main() {
                     build_params: [
                         CUSTOM_GIT_REF: effective_git_ref,
                         VERSION: version,
+                        EDITION: edition,
                         DISABLE_CACHE: disable_cache,
                     ],
                     build_params_no_check: [
@@ -132,40 +129,54 @@ def main() {
                         CIPARAM_BISECT_COMMENT: params.CIPARAM_BISECT_COMMENT,
                     ],
                     no_remove_others: true, // do not delete other files in the dest dir
-                    download: false,    // use copyArtifacts to avoid nested directories
+                    dest: "${artifacts_base_dir}",
                 );
             }
+
             smart_stage(
                 name: "Copy artifacts",
                 condition: build_instance,
                 raiseOnError: true,
             ) {
-                copyArtifacts(
-                    projectName: "${branch_base_folder}/builders/build-cmk-bom",
-                    selector: specific(build_instance.getId()),
-                    target: "${checkout_dir}",
-                    fingerprintArtifacts: true,
-                )
+                // copyArtifacts seems not to work with k8s
+                sh("""
+                    # needed only because upstream_build() only downloads relative
+                    # to `base-dir` which has to be `checkout_dir`
+                    cp ${checkout_dir}/${artifacts_base_dir}/omd/* ${checkout_dir}/omd
+                """);
             }
+        },
+    ];
 
-            smart_stage(
-                name: 'Fetch agent binaries',
-                condition: !params.FAKE_WINDOWS_ARTIFACTS,
-                raiseOnError: true,
-            ) {
-                package_helper.provide_agent_binaries(version, edition, disable_cache, params.CIPARAM_BISECT_COMMENT);
-            }
-
-            smart_stage(name: 'Fake agent binaries', condition: params.FAKE_WINDOWS_ARTIFACTS) {
-                dir("${checkout_dir}") {
-                    sh("scripts/fake-artifacts");
-                }
+    if (!params.FAKE_WINDOWS_ARTIFACTS) {
+        stages += package_helper.provide_agent_binaries(
+            version: version,
+            edition: edition,
+            disable_cache: disable_cache,
+            bisect_comment: params.CIPARAM_BISECT_COMMENT,
+            artifacts_base_dir: "tmp_artifacts",
+        );
+    } else {
+        smart_stage(name: 'Fake agent binaries') {
+            dir("${checkout_dir}") {
+                sh("scripts/fake-artifacts");
             }
         }
     }
 
+    inside_container_minimal(safe_branch_name: safe_branch_name) {
+        currentBuild.result = parallel(stages).values().every { it } ? "SUCCESS" : "FAILURE";
+    }
+
+    package_helper.cleanup_provided_agent_binaries("tmp_artifacts");
+
     stage("Build package") {
-        lock(label: "bzl_lock_${env.NODE_NAME.split('\\.')[0].split('-')[-1]}", quantity: 1, resource : null) {
+        def lock_label = "bzl_lock_${env.NODE_NAME.split('\\.')[0].split('-')[-1]}";
+        if (kubernetes_inherit_from != "UNSET") {
+            lock_label = "bzl_lock_k8s";
+        }
+
+        lock(label: lock_label, quantity: 1, resource : null) {
             dir("${checkout_dir}") {
                 // supplying the registry explicitly might not be needed but it looks like
                 // image.inside() will first try to use the image without registry and only
@@ -179,7 +190,7 @@ def main() {
                     ],
                 ) {
                     versioning.print_image_tag();
-                    sh("make .venv");
+
                     withCredentials([
                         usernamePassword(
                             credentialsId: 'nexus',
@@ -200,7 +211,13 @@ def main() {
         }
     }
 
-    inside_container(ulimit_nofile: 1024) {
+    container("deb-package-signer") {
+        // Install "dpkg-sig" manually, not part of default Ubuntu 22.04 image, see CMK-24094
+        sh("""
+            apt-get update
+            apt-get install -y dpkg-sig msitools
+        """);
+        println("Installed dpkg-sig manually, not part of default Ubuntu 22.04 image");
         stage("Sign package") {
             package_helper.sign_package(
                 checkout_dir,

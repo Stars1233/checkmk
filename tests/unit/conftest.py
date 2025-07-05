@@ -5,8 +5,10 @@
 
 import json
 import logging
+import logging.handlers
 import os
 import pprint
+import queue
 import shutil
 import tempfile
 from collections.abc import Callable, Generator, Iterable, Iterator
@@ -23,12 +25,12 @@ import livestatus
 
 import cmk.ccc.debug
 import cmk.ccc.version as cmk_version
-from cmk.ccc import store
-from cmk.ccc.site import omd_site
+from cmk.ccc import tty
+from cmk.ccc.site import omd_site, SiteId
 
 import cmk.utils.caching
 import cmk.utils.paths
-from cmk.utils import redis, tty
+from cmk.utils import redis
 from cmk.utils.livestatus_helpers.testing import (
     mock_livestatus_communication,
     MockLiveStatusConnection,
@@ -94,6 +96,12 @@ def _fake_version_and_paths() -> None:
         "local_dashboards_dir",
         "local_views_dir",
         "local_reports_dir",
+        # This starts with /etc and will not be changed by the code below
+        "cse_config_dir",
+        # these start with /opt and will not be changed in the code below
+        "rrd_multiple_dir",
+        "rrd_single_dir",
+        "mkbackup_lock_dir",
     }
 
     # patch `cmk.utils.paths` before `cmk.ccc.versions`
@@ -103,9 +111,10 @@ def _fake_version_and_paths() -> None:
     # Unit test context: load all available modules
     original_omd_root = Path(cmk.utils.paths.omd_root)
     for name, value in vars(cmk.utils.paths).items():
-        if name.startswith("_") or not isinstance(value, (str, Path)) or name in unpatched_paths:
+        if name.startswith("_") or not isinstance(value, str | Path) or name in unpatched_paths:
             continue
 
+        assert Path(value).is_relative_to(original_omd_root)
         try:
             monkeypatch.setattr(
                 f"cmk.utils.paths.{name}",
@@ -115,11 +124,11 @@ def _fake_version_and_paths() -> None:
             pass  # path is outside of omd_root
 
     # these use repo_path
-    monkeypatch.setattr("cmk.utils.paths.agents_dir", "%s/agents" % repo_path())
-    monkeypatch.setattr("cmk.utils.paths.checks_dir", "%s/checks" % repo_path())
+    monkeypatch.setattr("cmk.utils.paths.agents_dir", repo_path() / "agents")
+    monkeypatch.setattr("cmk.utils.paths.checks_dir", repo_path() / "checks")
     monkeypatch.setattr("cmk.utils.paths.notifications_dir", repo_path() / "notifications")
-    monkeypatch.setattr("cmk.utils.paths.inventory_dir", "%s/inventory" % repo_path())
-    monkeypatch.setattr("cmk.utils.paths.legacy_check_manpages_dir", "%s/checkman" % repo_path())
+    monkeypatch.setattr("cmk.utils.paths.inventory_dir", repo_path() / "inventory")
+    monkeypatch.setattr("cmk.utils.paths.legacy_check_manpages_dir", repo_path() / "checkman")
 
     # patch `cmk.ccc.versions`
     logger.info("Patching `cmk.ccc.versions`.")
@@ -249,28 +258,27 @@ def patch_omd_site(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     omd_site.cache_clear()
 
     _touch(cmk.utils.paths.htpasswd_file)
-    store.makedirs(cmk.utils.paths.autochecks_dir)
-    store.makedirs(cmk.utils.paths.var_dir + "/web")
-    store.makedirs(cmk.utils.paths.var_dir + "/php-api")
-    store.makedirs(cmk.utils.paths.var_dir + "/wato/php-api")
-    store.makedirs(cmk.utils.paths.var_dir + "/wato/auth")
-    store.makedirs(cmk.utils.paths.tmp_dir / "wato/activation")
-    store.makedirs(cmk.utils.paths.omd_root / "var/log")
-    store.makedirs(cmk.utils.paths.omd_root / "tmp/check_mk")
-    store.makedirs(cmk.utils.paths.default_config_dir + "/conf.d/wato")
-    store.makedirs(cmk.utils.paths.default_config_dir + "/multisite.d/wato")
-    store.makedirs(cmk.utils.paths.default_config_dir + "/mkeventd.d/wato")
-    store.makedirs(cmk.utils.paths.local_dashboards_dir)
-    store.makedirs(cmk.utils.paths.local_views_dir)
+    makedirs(cmk.utils.paths.autochecks_dir)
+    makedirs(cmk.utils.paths.var_dir / "web")
+    makedirs(cmk.utils.paths.var_dir / "php-api")
+    makedirs(cmk.utils.paths.var_dir / "wato/php-api")
+    makedirs(cmk.utils.paths.var_dir / "wato/auth")
+    makedirs(cmk.utils.paths.tmp_dir / "wato/activation")
+    makedirs(cmk.utils.paths.omd_root / "var/log")
+    makedirs(cmk.utils.paths.omd_root / "tmp/check_mk")
+    makedirs(cmk.utils.paths.default_config_dir / "conf.d/wato")
+    makedirs(cmk.utils.paths.default_config_dir / "multisite.d/wato")
+    makedirs(cmk.utils.paths.default_config_dir / "mkeventd.d/wato")
+    makedirs(cmk.utils.paths.local_dashboards_dir)
+    makedirs(cmk.utils.paths.local_views_dir)
     if cmk_version.edition(cmk.utils.paths.omd_root) is not cmk_version.Edition.CRE:
         # needed for visuals.load()
-        store.makedirs(cmk.utils.paths.local_reports_dir)
-    _touch(cmk.utils.paths.default_config_dir + "/mkeventd.mk")
-    _touch(cmk.utils.paths.default_config_dir + "/multisite.mk")
+        makedirs(cmk.utils.paths.local_reports_dir)
+    _touch(cmk.utils.paths.default_config_dir / "mkeventd.mk")
+    _touch(cmk.utils.paths.default_config_dir / "multisite.mk")
 
-    omd_config_dir = f"{cmk.utils.paths.omd_root}/etc/omd"
     _dump(
-        omd_config_dir + "/site.conf",
+        Path(cmk.utils.paths.omd_root, "etc/omd/site.conf"),
         """CONFIG_ADMIN_MAIL=''
 CONFIG_AGENT_RECEIVER='on'
 CONFIG_AGENT_RECEIVER_PORT='8000'
@@ -307,7 +315,7 @@ CONFIG_TRACE_SEND_TARGET='local_site'
 CONFIG_TMPFS='on'""",
     )
     _dump(
-        cmk.utils.paths.default_config_dir + "/mkeventd.d/wato/rules.mk",
+        cmk.utils.paths.default_config_dir / "mkeventd.d/wato/rules.mk",
         r"""
 # Written by WATO
 # encoding: utf-8
@@ -316,21 +324,59 @@ rule_packs += \
 [{'id': 'default', 'title': 'Default rule pack', 'rules': [], 'disabled': False, 'hits': 0}]
 """,
     )
+    _dump(
+        cmk.utils.paths.default_config_dir / "multisite.d/sites.mk",
+        r"""
+# Written by conftest.py
+# encoding: utf-8
+
+sites.update(%r)
+        """
+        % livestatus.SiteConfigurations(
+            {
+                SiteId("NO_SITE"): livestatus.SiteConfiguration(
+                    {
+                        "id": SiteId("NO_SITE"),
+                        "alias": "Local site NO_SITE",
+                        "socket": ("local", None),
+                        "disable_wato": True,
+                        "disabled": False,
+                        "insecure": False,
+                        "url_prefix": "/NO_SITE/",
+                        "multisiteurl": "",
+                        "persist": False,
+                        "replicate_ec": False,
+                        "replicate_mkps": False,
+                        "replication": None,
+                        "timeout": 5,
+                        "user_login": True,
+                        "proxy": None,
+                        "user_sync": "all",
+                        "status_host": None,
+                        "message_broker_port": 5672,
+                    }
+                )
+            }
+        ),
+    )
 
     yield
     omd_site.cache_clear()
 
 
-def _dump(path, data):
-    p = Path(path)
-    p.parent.mkdir(parents=True, exist_ok=True)
+def _dump(path: Path, data: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w") as f:
         f.write(data)
 
 
-def _touch(path):
-    Path(path).parent.mkdir(parents=True, exist_ok=True)
-    Path(path).touch()
+def makedirs(path: Path) -> None:
+    path.mkdir(mode=0o770, parents=True, exist_ok=True)
+
+
+def _touch(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.touch()
 
 
 @pytest.fixture(autouse=True)
@@ -403,7 +449,7 @@ def agent_based_plugins() -> AgentBasedPlugins:
         config,
     )
 
-    plugins = config.load_all_plugins(str(repo_path() / "cmk/base/legacy_checks"))
+    plugins = config.load_all_pluginX(repo_path() / "cmk/base/legacy_checks")
     assert not plugins.errors
     return plugins
 
@@ -470,6 +516,21 @@ def reduce_password_hashing_rounds() -> Iterator[None]:
     """Reduce the number of rounds for hashing with bcrypt to the allowed minimum"""
     with patch.object(cmk.crypto.password_hashing, "BCRYPT_ROUNDS", 4):
         yield
+
+
+@pytest.fixture(autouse=True, scope="session")
+def prevent_security_event_file_logging() -> Iterator[queue.Queue[logging.LogRecord]]:
+    """cmk.utils.log.security_event.log_security_event implicitly opens a file logger upon it's
+    first call which we want to avoid in the unit test context."""
+    q: queue.Queue[logging.LogRecord] = queue.Queue()
+    queue_handler = logging.handlers.QueueHandler(q)
+
+    logger = logging.getLogger("cmk_security")
+    logger.addHandler(queue_handler)
+    try:
+        yield q
+    finally:
+        logger.removeHandler(queue_handler)
 
 
 @pytest.fixture(name="monkeypatch_module", scope="module")

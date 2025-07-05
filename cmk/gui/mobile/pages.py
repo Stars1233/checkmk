@@ -7,7 +7,7 @@ from cmk.ccc.site import omd_site
 import cmk.gui.utils
 import cmk.gui.view_utils
 from cmk.gui import visuals
-from cmk.gui.config import active_config
+from cmk.gui.config import Config
 from cmk.gui.data_source import ABCDataSource, data_source_registry
 from cmk.gui.display_options import display_options
 from cmk.gui.exceptions import MKUserError
@@ -180,7 +180,7 @@ def jqm_page_index_topic_renderer(topic: str, items: Items) -> None:
     html.close_ul()
 
 
-def page_login() -> None:
+def page_login(config: Config) -> None:
     title = _("Checkmk Mobile")
     mobile_html_head(title)
     jqm_page_header(title, id_="login")
@@ -233,11 +233,7 @@ def page_login() -> None:
 
 
 class PageMobileIndex(Page):
-    @classmethod
-    def ident(cls) -> str:
-        return "mobile"
-
-    def page(self) -> PageResult:
+    def page(self, config: Config) -> PageResult:
         _page_index()
         return None
 
@@ -297,16 +293,12 @@ def _page_index() -> None:
 
 
 class PageMobileView(Page):
-    @classmethod
-    def ident(cls) -> str:
-        return "mobile_view"
-
-    def page(self) -> PageResult:
-        _page_view()
+    def page(self, config: Config) -> PageResult:
+        _page_view(debug=config.debug)
         return None
 
 
-def _page_view() -> None:
+def _page_view(*, debug: bool) -> None:
     view_name = request.var("view_name")
     if not view_name:
         return _page_index()
@@ -335,10 +327,10 @@ def _page_view() -> None:
     painter_options.load(view_name)
 
     try:
-        process_view(MobileViewRenderer(view))
+        process_view(MobileViewRenderer(view), debug=debug)
     except Exception as e:
         logger.exception("error showing mobile view")
-        if active_config.debug:
+        if debug:
             raise
         html.write_text_permissive("ERROR showing view: %s" % e)
 
@@ -354,6 +346,8 @@ class MobileViewRenderer(ABCViewRenderer):
         num_columns: int,
         show_filters: list[Filter],
         unfiltered_amount_of_rows: int,
+        *,
+        debug: bool,
     ) -> None:
         view_spec = self.view.spec
         home = ("mobile.py", "Home", "home")

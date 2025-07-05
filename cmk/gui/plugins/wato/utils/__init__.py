@@ -19,10 +19,10 @@ from livestatus import SiteConfiguration, SiteConfigurations
 import cmk.ccc.plugin_registry
 import cmk.ccc.version as cmk_version
 from cmk.ccc.exceptions import MKGeneralException
+from cmk.ccc.hostaddress import HostName
 from cmk.ccc.site import SiteId
 from cmk.ccc.version import Edition, edition
 
-from cmk.utils.hostaddress import HostName
 from cmk.utils.rulesets.definition import RuleGroup
 
 from cmk.checkengine.plugins import CheckPluginName
@@ -123,25 +123,31 @@ from cmk.gui.watolib.host_attributes import (
 )
 from cmk.gui.watolib.host_attributes import ABCHostAttributeValueSpec as ABCHostAttributeValueSpec
 from cmk.gui.watolib.host_attributes import (
+    HOST_ATTRIBUTE_TOPIC_BASIC_SETTINGS as HOST_ATTRIBUTE_TOPIC_BASIC_SETTINGS,
+)
+from cmk.gui.watolib.host_attributes import (
+    HOST_ATTRIBUTE_TOPIC_CUSTOM_ATTRIBUTES as HOST_ATTRIBUTE_TOPIC_CUSTOM_ATTRIBUTES,
+)
+from cmk.gui.watolib.host_attributes import (
+    HOST_ATTRIBUTE_TOPIC_HOST_TAGS as HOST_ATTRIBUTE_TOPIC_HOST_TAGS,
+)
+from cmk.gui.watolib.host_attributes import (
+    HOST_ATTRIBUTE_TOPIC_MANAGEMENT_BOARD as HOST_ATTRIBUTE_TOPIC_MANAGEMENT_BOARD,
+)
+from cmk.gui.watolib.host_attributes import (
+    HOST_ATTRIBUTE_TOPIC_META_DATA as HOST_ATTRIBUTE_TOPIC_META_DATA,
+)
+from cmk.gui.watolib.host_attributes import (
+    HOST_ATTRIBUTE_TOPIC_MONITORING_DATASOURCES as HOST_ATTRIBUTE_TOPIC_MONITORING_DATASOURCES,
+)
+from cmk.gui.watolib.host_attributes import (
+    HOST_ATTRIBUTE_TOPIC_NETWORK_ADDRESS as HOST_ATTRIBUTE_TOPIC_NETWORK_ADDRESS,
+)
+from cmk.gui.watolib.host_attributes import (
+    HOST_ATTRIBUTE_TOPIC_NETWORK_SCAN as HOST_ATTRIBUTE_TOPIC_NETWORK_SCAN,
+)
+from cmk.gui.watolib.host_attributes import (
     host_attribute_topic_registry as host_attribute_topic_registry,
-)
-from cmk.gui.watolib.host_attributes import HostAttributeTopicAddress as HostAttributeTopicAddress
-from cmk.gui.watolib.host_attributes import (
-    HostAttributeTopicBasicSettings as HostAttributeTopicBasicSettings,
-)
-from cmk.gui.watolib.host_attributes import (
-    HostAttributeTopicCustomAttributes as HostAttributeTopicCustomAttributes,
-)
-from cmk.gui.watolib.host_attributes import (
-    HostAttributeTopicDataSources as HostAttributeTopicDataSources,
-)
-from cmk.gui.watolib.host_attributes import HostAttributeTopicHostTags as HostAttributeTopicHostTags
-from cmk.gui.watolib.host_attributes import (
-    HostAttributeTopicManagementBoard as HostAttributeTopicManagementBoard,
-)
-from cmk.gui.watolib.host_attributes import HostAttributeTopicMetaData as HostAttributeTopicMetaData
-from cmk.gui.watolib.host_attributes import (
-    HostAttributeTopicNetworkScan as HostAttributeTopicNetworkScan,
 )
 from cmk.gui.watolib.hosts_and_folders import Folder as Folder
 from cmk.gui.watolib.hosts_and_folders import folder_from_request as folder_from_request

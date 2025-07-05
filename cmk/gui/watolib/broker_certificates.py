@@ -30,16 +30,20 @@ from cmk.utils.certs import (
 
 from cmk.gui.http import request as _request
 from cmk.gui.watolib.automation_commands import AutomationCommand
-from cmk.gui.watolib.automations import do_remote_automation
+from cmk.gui.watolib.automations import do_remote_automation, RemoteAutomationConfig
 
 from cmk import messaging
 from cmk.crypto.certificate import (
     CertificateSigningRequest,
     CertificateWithPrivateKey,
     PersistedCertificateWithPrivateKey,
-    X509Name,
 )
 from cmk.crypto.keys import PrivateKey
+from cmk.crypto.x509 import (
+    SAN,
+    SubjectAlternativeNames,
+    X509Name,
+)
 
 logger = logging.getLogger("cmk.web.background-job")
 _ORG_TEMPLATE = "Checkmk Site {}"
@@ -71,10 +75,11 @@ class BrokerCertificateSync(abc.ABC):
     @abc.abstractmethod
     def create_broker_certificates(
         self,
-        site_id: SiteId,
-        settings: SiteConfiguration,
+        automation_config: RemoteAutomationConfig,
         central_ca_bundle: PersistedCertificateWithPrivateKey,
         customer_ca_bundle: PersistedCertificateWithPrivateKey | None,
+        *,
+        debug: bool,
     ) -> None:
         raise NotImplementedError
 
@@ -104,51 +109,66 @@ class DefaultBrokerCertificateSync(BrokerCertificateSync):
 
     def create_broker_certificates(
         self,
-        site_id: SiteId,
-        settings: SiteConfiguration,
+        automation_config: RemoteAutomationConfig,
         central_ca_bundle: PersistedCertificateWithPrivateKey,
         customer_ca_bundle: PersistedCertificateWithPrivateKey | None,
+        *,
+        debug: bool,
     ) -> None:
-        logger.info("Remote broker certificates creation for site %s", site_id)
-        csr = ask_remote_csr(settings)
-        signed = central_ca_bundle.sign_csr(CertificateSigningRequest(csr), relativedelta(years=2))
+        logger.info("Remote broker certificates creation for site %s", automation_config.site_id)
+        csr = CertificateSigningRequest(ask_remote_csr(automation_config, debug=debug))
+        if csr.subject.common_name is None:
+            raise ValueError("CSR must provide a common name")
+
+        signed = central_ca_bundle.sign_csr(
+            csr,
+            relativedelta(years=2),
+            SubjectAlternativeNames([SAN.dns_name(csr.subject.common_name)]),
+        )
 
         remote_broker_certs = messaging.BrokerCertificates(
             cert=signed.dump_pem().bytes,
             signing_ca=central_ca_bundle.certificate.dump_pem().bytes,
         )
 
-        logger.info("Sending signed broker certificates for site %s", site_id)
-        sync_broker_certs(settings, remote_broker_certs)
+        logger.info("Sending signed broker certificates for site %s", automation_config.site_id)
+        _sync_broker_certs(automation_config, remote_broker_certs, debug=debug)
 
         # the presence of the following cert is used to determine if the broker certificates need
         # to be created/synced, so only save it if the sync was successful
-        LocalBrokerCertificate(messaging.multisite_cert_file(paths.omd_root, site_id)).write(
-            remote_broker_certs.cert
-        )
+        LocalBrokerCertificate(
+            messaging.multisite_cert_file(paths.omd_root, automation_config.site_id)
+        ).write(remote_broker_certs.cert)
 
     def update_trusted_cas(self) -> None:
         # Only relevant for editions with different customers
         pass
 
 
-def sync_broker_certs(
-    settings: SiteConfiguration, remote_broker_certs: messaging.BrokerCertificates
+def _sync_broker_certs(
+    automation_config: RemoteAutomationConfig,
+    remote_broker_certs: messaging.BrokerCertificates,
+    *,
+    debug: bool,
 ) -> None:
     do_remote_automation(
-        settings,
+        automation_config,
         "store-broker-certs",
         [("certificates", remote_broker_certs.model_dump_json()), ("site_id", omd_site())],
         timeout=120,
+        debug=debug,
     )
 
 
-def ask_remote_csr(settings: SiteConfiguration) -> x509CertificateSigningRequest:
+def ask_remote_csr(
+    automation_config: RemoteAutomationConfig, *, debug: bool
+) -> x509CertificateSigningRequest:
     raw_response = do_remote_automation(
-        settings,
+        automation_config,
         "create-broker-certs",
         [],
         timeout=60,
+        debug=debug,
     )
 
     match raw_response:
@@ -181,17 +201,21 @@ def create_remote_broker_certs(
 
 
 def sync_remote_broker_certs(
-    site: SiteConfiguration, broker_certificates: messaging.BrokerCertificates
+    automation_config: RemoteAutomationConfig,
+    broker_certificates: messaging.BrokerCertificates,
+    *,
+    debug: bool,
 ) -> None:
     """
     Send the broker certificates to the remote site for storage.
     """
 
     do_remote_automation(
-        site,
+        automation_config,
         "store-broker-certs",
         [("certificates", broker_certificates.model_dump_json()), ("site_id", omd_site())],
         timeout=120,
+        debug=debug,
     )
 
 
@@ -207,7 +231,7 @@ def clean_remote_sites_certs(*, kept_sites: Container[SiteId]) -> None:
 
 
 def trigger_remote_certs_creation(
-    site_id: SiteId, settings: SiteConfiguration, force: bool = False
+    site_id: SiteId, settings: SiteConfiguration, *, force: bool, debug: bool
 ) -> None:
     broker_sync = broker_certificate_sync_registry["broker_certificate_sync"]
     if not force and broker_sync.broker_certs_created(site_id, settings):
@@ -215,7 +239,9 @@ def trigger_remote_certs_creation(
 
     central_ca = broker_sync.load_central_ca()
     customer_ca = broker_sync.load_or_create_customer_ca(settings.get("customer", "provider"))
-    broker_sync.create_broker_certificates(site_id, settings, central_ca, customer_ca)
+    broker_sync.create_broker_certificates(
+        RemoteAutomationConfig.from_site_config(settings), central_ca, customer_ca, debug=debug
+    )
     broker_sync.update_trusted_cas()
 
 

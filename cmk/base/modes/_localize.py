@@ -9,11 +9,10 @@ import subprocess
 import sys
 from pathlib import Path
 
-from cmk.ccc import store
+from cmk.ccc import tty
 from cmk.ccc.exceptions import MKException
 
 import cmk.utils.paths
-from cmk.utils import tty
 from cmk.utils.log import VERBOSE
 
 __all__ = ["do_localize"]
@@ -38,7 +37,7 @@ def _locale_base() -> Path:
 def _pot_file() -> Path:
     if (local_pot_file := cmk.utils.paths.local_locale_dir / "multisite.pot").exists():
         return local_pot_file
-    return _locale_base() / "/multisite.pot"
+    return _locale_base() / "multisite.pot"
 
 
 def _builtin_po_file(lang: str) -> Path:
@@ -186,9 +185,9 @@ def _localize_sniff() -> None:
     logger.info("Sniffing source code...")
 
     paths = [
-        cmk.utils.paths.default_config_dir,
-        cmk.utils.paths.web_dir + "/app",
-        cmk.utils.paths.lib_dir + "/python/cmk",
+        str(cmk.utils.paths.default_config_dir),
+        str(cmk.utils.paths.web_dir / "app"),
+        str(cmk.utils.paths.lib_dir / "python/cmk"),
     ]
     if cmk.utils.paths.local_web_dir.exists():
         paths.append(str(cmk.utils.paths.local_web_dir))
@@ -291,9 +290,7 @@ def _localize_compile(lang: LanguageName) -> None:
 def _initialize_local_po_file(lang: LanguageName) -> None:
     """Initialize the file in the local hierarchy with the file in the default hierarchy if needed"""
     po_file = _po_file(lang)
-
-    store.makedirs(Path(po_file).parent)
-
+    po_file.parent.mkdir(mode=0o770, exist_ok=True, parents=True)
     builtin_po_file = _builtin_po_file(lang)
     if not po_file.exists() and builtin_po_file.exists():
         po_file.write_text(

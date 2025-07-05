@@ -6,7 +6,6 @@
 
 from __future__ import annotations
 
-import json
 import threading
 import typing
 from collections.abc import Iterator
@@ -26,6 +25,15 @@ from tests.testlib.unit.rest_api_client import (
     RestApiClient,
 )
 
+from tests.unit.cmk.gui.common_fixtures import (
+    create_aut_user_auth_wsgi_app,
+    create_flask_app,
+    create_wsgi_app,
+    perform_gui_cleanup_after_test,
+    perform_load_config,
+    perform_load_plugins,
+    validate_background_job_annotation,
+)
 from tests.unit.cmk.web_test_app import (
     SetConfig,
     SingleRequest,
@@ -33,24 +41,23 @@ from tests.unit.cmk.web_test_app import (
     WebTestAppRequestHandler,
 )
 
+from cmk.ccc.hostaddress import HostName
+from cmk.ccc.user import UserId
+
 import cmk.utils.log
-from cmk.utils.hostaddress import HostName
 from cmk.utils.livestatus_helpers.testing import MockLiveStatusConnection
-from cmk.utils.user import UserId
 
 from cmk.automations.results import DeleteHostsResult
 
 import cmk.gui.config as config_module
 import cmk.gui.mkeventd.wato as mkeventd
 import cmk.gui.watolib.password_store
-from cmk.gui import hooks, http, login, main_modules, userdb
+from cmk.gui import http, login, userdb
 from cmk.gui.config import active_config
 from cmk.gui.livestatus_utils.testing import mock_livestatus
 from cmk.gui.session import session
 from cmk.gui.type_defs import SessionInfo
 from cmk.gui.userdb.session import load_session_infos
-from cmk.gui.utils import get_failed_plugins
-from cmk.gui.utils.json import patch_json
 from cmk.gui.utils.script_helpers import session_wsgi_app
 from cmk.gui.watolib import activate_changes, groups
 from cmk.gui.watolib.hosts_and_folders import folder_tree
@@ -89,12 +96,7 @@ def execute_background_jobs_without_job_scheduler(monkeypatch: pytest.MonkeyPatc
 def gui_cleanup_after_test(
     mocker: MockerFixture,
 ) -> Iterator[None]:
-    # deactivate_search_index_building_at_requenst_end.
-    mocker.patch("cmk.gui.watolib.search.updates_requested", return_value=False)
-    yield
-    # In case some tests use @request_memoize but don't use the request context, we'll emit the
-    # clear event after each request.
-    hooks.call("request-end")
+    yield from perform_gui_cleanup_after_test(mocker)
 
 
 def fake_detect_icon_path(_: None, icon_name: str = "", prefix: str = "") -> str:
@@ -142,10 +144,7 @@ def fixture_mock_livestatus() -> Iterator[MockLiveStatusConnection]:
 
 @pytest.fixture()
 def load_config(request_context: None) -> Iterator[None]:
-    old_root_log_level = cmk.utils.log.logger.getEffectiveLevel()
-    config_module.initialize()
-    yield
-    cmk.utils.log.logger.setLevel(old_root_log_level)
+    yield from perform_load_config()
 
 
 @pytest.fixture(name="set_config")
@@ -191,21 +190,13 @@ def set_config(**kwargs: Any) -> Iterator[None]:
 
 @pytest.fixture(scope="session", autouse=True)
 def load_plugins() -> None:
-    main_modules.load_plugins()
-    if errors := get_failed_plugins():
-        raise Exception(f"The following errors occured during plug-in loading: {errors}")
+    perform_load_plugins()
 
 
 @pytest.fixture()
 def ui_context(load_plugins: None, load_config: None) -> Iterator[None]:
     """Some helper fixture to provide a initialized UI context to tests outside of tests/unit/cmk/gui"""
     yield
-
-
-@pytest.fixture(name="patch_json", autouse=True)
-def fixture_patch_json() -> Iterator[None]:
-    with patch_json(json):
-        yield
 
 
 @pytest.fixture()
@@ -309,33 +300,7 @@ def allow_background_jobs() -> None:
 def fail_on_unannotated_background_job_start(
     request: pytest.FixtureRequest, mocker: MockerFixture
 ) -> None:
-    """Unannotated background job call
-
-    Tests must not execute logic in background job processes, which may continue to run
-    independently of the test case.
-
-    If your test shall execute a background job, the default is to annotate your test with the
-    `inline_background_jobs` fixture above. It makes the background job run synchronously so that
-    the test code waits for the job to complete. In many cases this is the desired behavior and
-    makes it easier to deal with the jobs in the tests.
-
-    However, in some cases you actually want to have a backrgound job being executed as in the
-    production environment. In that case, you need to define a local  klacono-op finamed
-    "inline_background_jobs" to override these global fixtures.xture
-
-    This autoload fixture is here to make you aware of the fact that you are calling a background
-    job and that you have to decide explicitly which behavior you want to have.
-    """
-    if (
-        "inline_background_jobs" in request.fixturenames
-        or "allow_background_jobs" in request.fixturenames
-    ):
-        return
-
-    mocker.patch(
-        "cmk.gui.background_job._base.BackgroundJob.start",
-        side_effect=RuntimeError(fail_on_unannotated_background_job_start.__doc__),
-    )
+    validate_background_job_annotation(request, mocker)
 
 
 @pytest.fixture(name="suppress_bake_agents_in_background")
@@ -387,7 +352,7 @@ def single_auth_request(wsgi_app: WebTestAppForCMK, auth_request: http.Request) 
 
     def caller(*, in_the_past: int = 0) -> tuple[UserId, SessionInfo]:
         wsgi_app.get(auth_request)
-        infos = load_session_infos(session.user.ident)
+        infos = load_session_infos(session.user.ident, lock=True)
 
         # When `in_the_past` is a positive integer, the resulting session will have happened
         # that many seconds in the past.
@@ -405,15 +370,7 @@ def single_auth_request(wsgi_app: WebTestAppForCMK, auth_request: http.Request) 
 
 @pytest.fixture()
 def wsgi_app(flask_app: Flask) -> Iterator[WebTestAppForCMK]:
-    """Yield a Flask test client."""
-    flask_app.test_client_class = WebTestAppForCMK
-    with flask_app.test_client() as client:
-        if isinstance(client, WebTestAppForCMK):
-            yield client
-        else:
-            raise TypeError(
-                f"Expected flask client of type: 'WebTestAppForCMK' and not '{type(client)}'!"
-            )
+    yield from create_wsgi_app(flask_app)
 
 
 @pytest.fixture()
@@ -437,21 +394,19 @@ def aut_user_auth_wsgi_app(
     wsgi_app: WebTestAppForCMK,
     with_automation_user: tuple[UserId, str],
 ) -> WebTestAppForCMK:
-    username, secret = with_automation_user
-    wsgi_app.set_authorization(("Bearer", f"{username} {secret}"))
-    return wsgi_app
+    return create_aut_user_auth_wsgi_app(wsgi_app, with_automation_user)
 
 
 @pytest.fixture()
 def with_groups(monkeypatch, request_context, with_admin_login, suppress_remote_automation_calls):
-    groups.add_group("windows", "host", {"alias": "windows"})
-    groups.add_group("routers", "service", {"alias": "routers"})
-    groups.add_group("admins", "contact", {"alias": "admins"})
+    groups.add_group("windows", "host", {"alias": "windows"}, pprint_value=False)
+    groups.add_group("routers", "service", {"alias": "routers"}, pprint_value=False)
+    groups.add_group("admins", "contact", {"alias": "admins"}, pprint_value=False)
     yield
-    groups.delete_group("windows", "host")
-    groups.delete_group("routers", "service")
+    groups.delete_group("windows", "host", pprint_value=False)
+    groups.delete_group("routers", "service", pprint_value=False)
     monkeypatch.setattr(mkeventd, "_get_rule_stats_from_ec", lambda: {})
-    groups.delete_group("admins", "contact")
+    groups.delete_group("admins", "contact", pprint_value=False)
 
 
 @pytest.fixture()
@@ -461,11 +416,14 @@ def with_host(
 ):
     hostnames = [HostName("heute"), HostName("example.com")]
     root_folder = folder_tree().root_folder()
-    root_folder.create_hosts(
-        [(hostname, {}, None) for hostname in hostnames],
-    )
+    root_folder.create_hosts([(hostname, {}, None) for hostname in hostnames], pprint_value=False)
     yield hostnames
-    root_folder.delete_hosts(hostnames, automation=lambda *args, **kwargs: DeleteHostsResult())
+    root_folder.delete_hosts(
+        hostnames,
+        automation=lambda *args, **kwargs: DeleteHostsResult(),
+        pprint_value=False,
+        debug=False,
+    )
 
 
 @pytest.fixture
@@ -479,15 +437,7 @@ def flask_app(
     use_fakeredis_client: None,
     load_plugins: None,
 ) -> Iterator[Flask]:
-    """Initialize a Flask app for testing purposes.
-
-    Register a global htmllib.html() instance, just like in the regular GUI.
-    """
-    app = session_wsgi_app(debug=False, testing=True)
-    with app.test_request_context():
-        app.preprocess_request()
-        yield app
-        app.process_response(http.Response())
+    yield from create_flask_app()
 
 
 @pytest.fixture(name="base")

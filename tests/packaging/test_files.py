@@ -10,6 +10,7 @@ import logging
 import os
 import re
 import subprocess
+from datetime import date
 from functools import cache
 from pathlib import Path, PosixPath
 
@@ -39,6 +40,20 @@ def _edition_short_from_pkg_path(package_path: str) -> str:
     if file_name.startswith("check-mk-saas-"):
         return "cse"
     raise NotImplementedError("Could not get edition from package path: %s" % package_path)
+
+
+def _file_exists_in_package(package_path: str, cmk_version: str, version_rel_path: str) -> bool:
+    omd_version = _get_omd_version(cmk_version, package_path)
+
+    file_list = _get_paths_from_package(package_path)
+
+    if package_path.endswith(".deb") or package_path.endswith(".rpm"):
+        return f"/opt/omd/versions/{omd_version}/{version_rel_path}" in file_list
+
+    if package_path.endswith(".cma"):
+        return f"{omd_version}/{version_rel_path}" in file_list
+
+    raise NotImplementedError()
 
 
 def _get_file_from_package(package_path: str, cmk_version: str, version_rel_path: str) -> bytes:
@@ -173,19 +188,26 @@ def test_files_not_in_version_path(package_path: str, cmk_version: str) -> None:
 @cache
 def _get_paths_from_package(path_to_package: str) -> list[str]:
     if path_to_package.endswith(".rpm"):
-        paths = subprocess.check_output(
+        return subprocess.check_output(
             ["rpm", "-qlp", path_to_package], encoding="utf-8"
         ).splitlines()
-    elif path_to_package.endswith(".deb"):
-        paths = []
-        for line in subprocess.check_output(
-            ["dpkg", "-c", path_to_package], encoding="utf-8"
-        ).splitlines():
-            paths.append(line.split()[5].lstrip("."))
-    else:
-        raise NotImplementedError()
 
-    return paths
+    if path_to_package.endswith(".deb"):
+        return [
+            line.split()[5].lstrip(".")
+            for line in subprocess.check_output(
+                ["dpkg", "-c", path_to_package], encoding="utf-8"
+            ).splitlines()
+        ]
+    if path_to_package.endswith(".cma"):
+        return [
+            line
+            for line in subprocess.check_output(
+                ["tar", "tzf", path_to_package], encoding="utf-8"
+            ).splitlines()
+        ]
+
+    raise NotImplementedError()
 
 
 def test_cma_only_contains_version_paths(package_path: str, cmk_version: str) -> None:
@@ -423,9 +445,9 @@ def load_license_csv(package_path: str, cmk_version: str) -> list[dict[str, str]
         _get_file_from_package(
             package_path,
             cmk_version,
-            "omd/bill-of-materials.json"
+            "omd/bill-of-materials.csv"
             if package_path.endswith(".tar.gz")
-            else "share/doc/bill-of-materials.json",
+            else "share/doc/bill-of-materials.csv",
         ).decode("utf-8")
     )
     reader = csv.DictReader(license_file)
@@ -444,6 +466,13 @@ def test_bom(bom_json: Bom) -> None:
     assert "pkg:pypi/certifi" in purls_wo_version
 
 
+# Unskip with https://jira.lan.tribe29.com/browse/CMK-23389
+@pytest.mark.skipif(
+    date.today() < date(2025, 10, 1),
+    reason="Skip bom synchronous check for some time. "
+    "At the moment there is a lot of rework regarding WORKSPACE/MODULE.bazel (see CMK-20349)."
+    "That's why the bom generation is mostly wrong at the moment.",
+)
 def test_bom_csv_synchronous(bom_json: Bom, license_csv_rows: list[dict[str, str]]) -> None:
     """test that the csv and bom contain the same versions
 
@@ -467,3 +496,38 @@ def test_bom_csv_synchronous(bom_json: Bom, license_csv_rows: list[dict[str, str
             assert row["Version"] == openssl_version
         if row["Name"] == "Python module: certifi":
             assert row["Version"] in certifi_versions
+
+
+AGENT_PLUGINS_PREFIX = [
+    "apache_status",
+    "isc_dhcpd",
+    "mk_ceph",
+    "mk_docker",
+    "mk_filestats",
+    "mk_inotify",
+    "mk_jolokia",
+    "mk_logwatch",
+    "mk_mongodb",
+    "mk_postgres",
+    "mk_sap",
+    "mk_tinkerforge",
+    "mtr",
+    "nginx_status",
+    "plesk_backups",
+    "plesk_domains",
+    "unitrends_replication",
+]
+
+
+def test_python_agent_plugins(package_path: str, cmk_version: str) -> None:
+    if package_path.endswith(".tar.gz"):
+        pytest.skip(
+            "Skipping test for source package as it is more interessting for the install-able packages."
+        )
+
+    for prefix in AGENT_PLUGINS_PREFIX:
+        for suffix in (".py", "_2.py"):
+            filename = f"{prefix}{suffix}"
+            assert _file_exists_in_package(
+                package_path, cmk_version, f"share/check_mk/agents/plugins/{filename}"
+            ), f"File {filename} is missing in {package_path}"

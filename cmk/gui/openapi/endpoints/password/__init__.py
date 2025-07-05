@@ -10,6 +10,7 @@ from cmk.ccc import version
 from cmk.utils import paths
 from cmk.utils.password_store import Password
 
+from cmk.gui.config import active_config
 from cmk.gui.http import Response
 from cmk.gui.logged_in import user
 from cmk.gui.openapi.endpoints.password.request_schemas import InputPassword, UpdatePassword
@@ -49,7 +50,7 @@ stored passwords. You are also able to fetch a list of passwrods or individual p
 however, the password itself is not returned for security reasons.
 """
     ),
-    tag_group="Setup",
+    doc_group="Setup",
 )
 
 PERMISSIONS = permissions.AllPerm(
@@ -100,7 +101,14 @@ def create_password(params: Mapping[str, Any]) -> Response:
     password_details["owned_by"] = mutually_exclusive_fields(
         str, body, "owned_by", "editable_by", default="admin"
     )
-    save_password(ident, cast(Password, password_details), new_password=True)
+    save_password(
+        ident,
+        cast(Password, password_details),
+        new_password=True,
+        user_id=user.id,
+        pprint_value=active_config.wato_pprint_config,
+        use_git=active_config.wato_use_git,
+    )
     return _serve_password(ident, load_password(ident))
 
 
@@ -135,7 +143,14 @@ def update_password(params: Mapping[str, Any]) -> Response:
             detail="The password you asked for is not known. Please check for eventual misspellings.",
         )
     password_details.update(body)
-    save_password(ident, password_details)
+    save_password(
+        ident,
+        password_details,
+        new_password=False,
+        user_id=user.id,
+        pprint_value=active_config.wato_pprint_config,
+        use_git=active_config.wato_use_git,
+    )
     return _serve_password(ident, load_password(ident))
 
 
@@ -167,7 +182,12 @@ def delete_password(params: Mapping[str, Any]) -> Response:
             title=f'Password "{ident}" is not known.',
             detail="The password you asked for is not known. Please check for eventual misspellings.",
         )
-    remove_password(ident)
+    remove_password(
+        ident,
+        user_id=user.id,
+        pprint_value=active_config.wato_pprint_config,
+        use_git=active_config.wato_use_git,
+    )
     return Response(status=204)
 
 
@@ -250,11 +270,14 @@ def serialize_password(ident: str, details: Password) -> DomainObject:
 
 
 def register(
-    endpoint_family_registry: EndpointFamilyRegistry, endpoint_registry: EndpointRegistry
+    endpoint_family_registry: EndpointFamilyRegistry,
+    endpoint_registry: EndpointRegistry,
+    *,
+    ignore_duplicates: bool,
 ) -> None:
-    endpoint_family_registry.register(PASSWORD_FAMILY)
-    endpoint_registry.register(create_password)
-    endpoint_registry.register(update_password)
-    endpoint_registry.register(delete_password)
-    endpoint_registry.register(show_password)
-    endpoint_registry.register(list_passwords)
+    endpoint_family_registry.register(PASSWORD_FAMILY, ignore_duplicates=ignore_duplicates)
+    endpoint_registry.register(create_password, ignore_duplicates=ignore_duplicates)
+    endpoint_registry.register(update_password, ignore_duplicates=ignore_duplicates)
+    endpoint_registry.register(delete_password, ignore_duplicates=ignore_duplicates)
+    endpoint_registry.register(show_password, ignore_duplicates=ignore_duplicates)
+    endpoint_registry.register(list_passwords, ignore_duplicates=ignore_duplicates)

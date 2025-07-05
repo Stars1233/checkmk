@@ -7,11 +7,12 @@ from collections.abc import Sequence
 from functools import partial
 from typing import override
 
-from cmk.utils.user import UserId
+from cmk.ccc.user import UserId
 
 from cmk.gui.htmllib.html import html
 from cmk.gui.http import request, response
 from cmk.gui.i18n import _, _l
+from cmk.gui.logged_in import user
 from cmk.gui.painter.v0 import Cell
 from cmk.gui.painter_options import PainterOptions
 from cmk.gui.type_defs import ColumnSpec, Rows, SorterSpec, ViewSpec, VisualLinkSpec
@@ -104,7 +105,7 @@ multisite_builtin_views.update(
             "sort_index": 99,
             "is_show_more": False,
             "packaged": False,
-            "megamenu_search_terms": [],
+            "main_menu_search_terms": [],
         },
         # View of all current service problems
         "mobile_svcproblems": {
@@ -159,7 +160,7 @@ multisite_builtin_views.update(
             "sort_index": 99,
             "is_show_more": False,
             "packaged": False,
-            "megamenu_search_terms": [],
+            "main_menu_search_terms": [],
         },
         # View of unhandled service problems
         "mobile_svcproblems_unack": {
@@ -220,7 +221,7 @@ multisite_builtin_views.update(
             "sort_index": 99,
             "is_show_more": False,
             "packaged": False,
-            "megamenu_search_terms": [],
+            "main_menu_search_terms": [],
         },
         # Service details
         "mobile_service": {
@@ -268,7 +269,7 @@ multisite_builtin_views.update(
             "sort_index": 99,
             "is_show_more": False,
             "packaged": False,
-            "megamenu_search_terms": [],
+            "main_menu_search_terms": [],
         },
         # All services of one host
         "mobile_host": {
@@ -315,7 +316,7 @@ multisite_builtin_views.update(
             "sort_index": 99,
             "is_show_more": False,
             "packaged": False,
-            "megamenu_search_terms": [],
+            "main_menu_search_terms": [],
         },
         # Host details
         "mobile_hoststatus": {
@@ -379,7 +380,7 @@ multisite_builtin_views.update(
             "sort_index": 99,
             "is_show_more": False,
             "packaged": False,
-            "megamenu_search_terms": [],
+            "main_menu_search_terms": [],
         },
         # Search hosts
         "mobile_searchhost": {
@@ -422,7 +423,7 @@ multisite_builtin_views.update(
             "sort_index": 99,
             "is_show_more": False,
             "packaged": False,
-            "megamenu_search_terms": [],
+            "main_menu_search_terms": [],
         },
         # List all host problems
         "mobile_hostproblems": {
@@ -468,7 +469,7 @@ multisite_builtin_views.update(
             "sort_index": 99,
             "is_show_more": False,
             "packaged": False,
-            "megamenu_search_terms": [],
+            "main_menu_search_terms": [],
         },
         # List unhandled host problems
         "mobile_hostproblems_unack": {
@@ -514,7 +515,7 @@ multisite_builtin_views.update(
             "sort_index": 99,
             "is_show_more": False,
             "packaged": False,
-            "megamenu_search_terms": [],
+            "main_menu_search_terms": [],
         },
         # All Nagios Events at all
         "mobile_events": {
@@ -561,7 +562,7 @@ multisite_builtin_views.update(
             "sort_index": 99,
             "is_show_more": False,
             "packaged": False,
-            "megamenu_search_terms": [],
+            "main_menu_search_terms": [],
         },
         # All Notifications at all
         "mobile_notifications": {
@@ -624,7 +625,7 @@ multisite_builtin_views.update(
             "sort_index": 99,
             "is_show_more": False,
             "packaged": False,
-            "megamenu_search_terms": [],
+            "main_menu_search_terms": [],
         },
         # All events of a Host
         "mobile_hostsvcevents": {
@@ -674,7 +675,7 @@ multisite_builtin_views.update(
             "sort_index": 99,
             "is_show_more": False,
             "packaged": False,
-            "megamenu_search_terms": [],
+            "main_menu_search_terms": [],
         },
         # All events of one service
         "mobile_svcevents": {
@@ -718,7 +719,7 @@ multisite_builtin_views.update(
             "sort_index": 99,
             "is_show_more": False,
             "packaged": False,
-            "megamenu_search_terms": [],
+            "main_menu_search_terms": [],
         },
         # All Notfications of a contact
         "mobile_contactnotifications": {
@@ -780,7 +781,7 @@ multisite_builtin_views.update(
             "sort_index": 99,
             "is_show_more": False,
             "packaged": False,
-            "megamenu_search_terms": [],
+            "main_menu_search_terms": [],
         },
         # All Notfications of Host
         "mobile_hostsvcnotifications": {
@@ -843,7 +844,7 @@ multisite_builtin_views.update(
             "sort_index": 99,
             "is_show_more": False,
             "packaged": False,
-            "megamenu_search_terms": [],
+            "main_menu_search_terms": [],
         },
         # All Notfications of a service
         "mobile_svcnotifications": {
@@ -897,7 +898,7 @@ multisite_builtin_views.update(
             "sort_index": 99,
             "is_show_more": False,
             "packaged": False,
-            "megamenu_search_terms": [],
+            "main_menu_search_terms": [],
         },
     }
 )
@@ -958,7 +959,7 @@ def render_mobile_table(
             else:
                 colspan = None
 
-            cell.paint(row, link_renderer, colspan=colspan)
+            cell.paint(row, link_renderer, user=user, colspan=colspan)
         html.close_tr()
     html.close_table()
     html.javascript('$("table.mobile a").attr("data-ajax", "false");')
@@ -1015,10 +1016,10 @@ def render_mobile_list(
     # Paint data rows
     for row in rows:
         html.open_li()
-        rendered_cells = [cell.render(row, link_renderer) for cell in cells]
+        rendered_cells = [cell.render(row, link_renderer, user) for cell in cells]
         if rendered_cells:  # First cell (assumedly state) is left
             rendered_class, rendered_content = rendered_cells[0]
-            assert isinstance(rendered_content, (str, HTML))
+            assert isinstance(rendered_content, str | HTML)
             html.p(rendered_content, class_=["ui-li-aside", "ui-li-desc", rendered_class])
 
             if len(rendered_cells) > 1:
@@ -1026,7 +1027,7 @@ def render_mobile_list(
                     [
                         rendered_cell[1]
                         for rendered_cell in rendered_cells[1 : num_columns + 1]
-                        if isinstance(rendered_cell[1], (str, HTML))
+                        if isinstance(rendered_cell[1], str | HTML)
                     ]
                 )
                 html.h3(content)
@@ -1035,7 +1036,7 @@ def render_mobile_list(
                     rendered_cells[num_columns + 1 :], cells[num_columns + 1 :]
                 ):
                     rendered_class, rendered_content = rendered_cell
-                    assert isinstance(rendered_content, (str, HTML))
+                    assert isinstance(rendered_content, str | HTML)
                     html.open_p(class_="ui-li-desc")
                     cell.paint_as_header()
                     html.write_text_permissive(": ")
@@ -1095,7 +1096,7 @@ def render_mobile_dataset(
     for row in rows:
         html.open_table(class_="dataset")
         for cell in cells:
-            _tdclass, content = cell.render(row, link_renderer)
+            _tdclass, content = cell.render(row, link_renderer, user)
             if not content:
                 continue  # Omit empty cells
 
@@ -1104,7 +1105,7 @@ def render_mobile_dataset(
             html.close_tr()
 
             html.open_tr(class_="data")
-            cell.paint(row, link_renderer)
+            cell.paint(row, link_renderer, user=user)
             html.close_tr()
 
         html.close_table()

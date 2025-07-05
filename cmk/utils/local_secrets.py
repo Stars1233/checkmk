@@ -10,9 +10,9 @@ from pathlib import Path
 from typing import assert_never
 
 from cmk.ccc import store
+from cmk.ccc.user import UserId
 
 from cmk.utils import paths
-from cmk.utils.user import UserId
 
 from cmk.crypto.password import Password
 from cmk.crypto.secrets import LocalSecret, Secret
@@ -129,7 +129,7 @@ class DistributedSetupSecret:
 
     @property
     def path(self) -> Path:
-        return Path(paths.var_dir) / "wato" / "automation_secret.mk"
+        return paths.var_dir / "wato" / "automation_secret.mk"
 
     def read_or_create(self) -> Password:
         if self.password is None:

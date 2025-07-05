@@ -81,6 +81,8 @@ API_DOMAIN = Literal[
     "notification_parameter",
     "broker_connection",
     "background_job",
+    "acknowledge",
+    "otel_collector_config",
 ]
 
 
@@ -599,6 +601,7 @@ class UserClient(RestApiClient):
         language: str | None = None,
         temperature_unit: str | None = None,
         contact_options: dict[str, Any] | None = None,
+        start_url: str | None = None,
         extra: dict[str, Any] | None = None,
         expect_ok: bool = True,
     ) -> Response:
@@ -624,6 +627,7 @@ class UserClient(RestApiClient):
                 "language": language,
                 "temperature_unit": temperature_unit,
                 "contact_options": contact_options,
+                "start_url": start_url,
             }.items()
             if v is not None
         }
@@ -686,6 +690,7 @@ class UserClient(RestApiClient):
         pager_address: str | None = None,
         extra: dict[str, Any] | None = None,
         roles: list[str] | None = None,
+        start_url: str | None = None,
         expect_ok: bool = True,
         etag: IF_MATCH_HEADER_OPTIONS = "star",
     ) -> Response:
@@ -708,6 +713,7 @@ class UserClient(RestApiClient):
                 "contact_options": contact_options,
                 "disable_login": disable_login,
                 "pager_address": pager_address,
+                "start_url": start_url,
             }.items()
             if v is not None
         }
@@ -3223,6 +3229,38 @@ class BrokerConnectionClient(RestApiClient):
         return set_if_match_header(etag)
 
 
+class OtelConfigClient(RestApiClient):
+    domain: API_DOMAIN = "otel_collector_config"
+
+    def get_all(self, expect_ok: bool = True) -> Response:
+        return self.request(
+            "get", url=f"/domain-types/{self.domain}/collections/all", expect_ok=expect_ok
+        )
+
+    def create(self, payload: Mapping[str, Any], expect_ok: bool = True) -> Response:
+        return self.request(
+            "post",
+            url=f"/domain-types/{self.domain}/collections/all",
+            body=dict(payload),
+            expect_ok=expect_ok,
+        )
+
+    def edit(self, config_id: str, payload: Mapping[str, Any], expect_ok: bool = True) -> Response:
+        return self.request(
+            "put",
+            url=f"/objects/{self.domain}/{config_id}",
+            body=dict(payload),
+            expect_ok=expect_ok,
+        )
+
+    def delete(self, config_id: str, expect_ok: bool = True) -> Response:
+        return self.request(
+            "delete",
+            url=f"/objects/{self.domain}/{config_id}",
+            expect_ok=expect_ok,
+        )
+
+
 class BackgroundJobClient(RestApiClient):
     domain: API_DOMAIN = "background_job"
 
@@ -3230,6 +3268,68 @@ class BackgroundJobClient(RestApiClient):
         return self.request(
             "get",
             url=f"/objects/{self.domain}/{job_id}",
+            expect_ok=expect_ok,
+        )
+
+
+class AcknowledgeClient(RestApiClient):
+    domain: API_DOMAIN = "acknowledge"
+
+    def remove_for_host(self, host_name: str, expect_ok: bool = True) -> Response:
+        return self.request(
+            "post",
+            url=f"/domain-types/{self.domain}/actions/delete/invoke",
+            body={"acknowledge_type": "host", "host_name": host_name},
+            expect_ok=expect_ok,
+        )
+
+    def remove_for_host_group(self, host_group_name: str, expect_ok: bool = True) -> Response:
+        return self.request(
+            "post",
+            url=f"/domain-types/{self.domain}/actions/delete/invoke",
+            body={"acknowledge_type": "hostgroup", "hostgroup_name": host_group_name},
+            expect_ok=expect_ok,
+        )
+
+    def remove_for_host_by_query(
+        self, query: dict[str, object], expect_ok: bool = True
+    ) -> Response:
+        return self.request(
+            "post",
+            url=f"/domain-types/{self.domain}/actions/delete/invoke",
+            body={"acknowledge_type": "host_by_query", "query": query},
+            expect_ok=expect_ok,
+        )
+
+    def remove_for_service(
+        self, host_name: str, service_description: str, expect_ok: bool = True
+    ) -> Response:
+        return self.request(
+            "post",
+            url=f"/domain-types/{self.domain}/actions/delete/invoke",
+            body={
+                "acknowledge_type": "service",
+                "host_name": host_name,
+                "service_description": service_description,
+            },
+            expect_ok=expect_ok,
+        )
+
+    def remove_for_service_group(self, service_group_name: str, expect_ok: bool = True) -> Response:
+        return self.request(
+            "post",
+            url=f"/domain-types/{self.domain}/actions/delete/invoke",
+            body={"acknowledge_type": "servicegroup", "servicegroup_name": service_group_name},
+            expect_ok=expect_ok,
+        )
+
+    def remove_for_service_by_query(
+        self, query: dict[str, object], expect_ok: bool = True
+    ) -> Response:
+        return self.request(
+            "post",
+            url=f"/domain-types/{self.domain}/actions/delete/invoke",
+            body={"acknowledge_type": "service_by_query", "query": query},
             expect_ok=expect_ok,
         )
 
@@ -3284,6 +3384,8 @@ class ClientRegistry:
     ManagedRobots: ManagedRobotsClient
     BrokerConnection: BrokerConnectionClient
     BackgroundJob: BackgroundJobClient
+    Acknowledge: AcknowledgeClient
+    OtelConfigClient: OtelConfigClient
 
 
 def get_client_registry(request_handler: RequestHandler, url_prefix: str) -> ClientRegistry:
@@ -3326,4 +3428,6 @@ def get_client_registry(request_handler: RequestHandler, url_prefix: str) -> Cli
         ManagedRobots=ManagedRobotsClient(request_handler, url_prefix),
         BrokerConnection=BrokerConnectionClient(request_handler, url_prefix),
         BackgroundJob=BackgroundJobClient(request_handler, url_prefix),
+        Acknowledge=AcknowledgeClient(request_handler, url_prefix),
+        OtelConfigClient=OtelConfigClient(request_handler, url_prefix),
     )

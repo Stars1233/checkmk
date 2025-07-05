@@ -434,13 +434,19 @@ class LDAPUsersRequest(BaseSchema):
     search_filter = fields.Nested(
         LDAPUserSearchFilterRequestSelector,
         description="Enable and define an optional LDAP filter.",
-        example={"state": "enabled", "filter": "(&(objectclass=user)(objectcategory=person))"},
+        example={
+            "state": "enabled",
+            "filter": "(&(objectclass=user)(objectcategory=person))",
+        },
         load_default={"state": "disabled"},
     )
     filter_group = fields.Nested(
         LDAPUserGroupFilterRequestSelector,
         description="Enable and define the DN of a group object which is used to filter the users.",
-        example={"state": "enabled", "filter": "CN=cmk-users,OU=groups,DC=example,DC=com"},
+        example={
+            "state": "enabled",
+            "filter": "CN=cmk-users,OU=groups,DC=example,DC=com",
+        },
         load_default={"state": "disabled"},
     )
     user_id_attribute = fields.Nested(
@@ -632,6 +638,15 @@ class LDAPSyncPluginGroupDisableNotificationsRequest(LDAPSyncPluginGroupBaseRequ
     )
 
 
+class LDAPSyncPluginGroupStartURLRequest(LDAPSyncPluginGroupBaseRequest):
+    value = fields.String(
+        description="The URL that the user should be redirected to after login. There is a "
+        "'default_start_url', a 'welcome_page', and any other will be treated as a custom URL",
+        required=True,
+        example="welcome_page",
+    )
+
+
 class LDAPSyncPluginGroupAllOthersRequest(LDAPSyncPluginGroupBaseRequest):
     value = fields.String(
         description="",
@@ -645,12 +660,13 @@ class LDAPSyncPluginGroupsToSyncSelector(OneOfSchema):
     type_field_remove = False
     type_schemas = {
         "disable_notifications": LDAPSyncPluginGroupDisableNotificationsRequest,
+        "start_url": LDAPSyncPluginGroupStartURLRequest,
         "all_others": LDAPSyncPluginGroupAllOthersRequest,
     }
 
     def get_data_type(self, data):
         data_type = data.get(self.type_field)
-        if data_type != "disable_notifications":
+        if data_type not in ("start_url", "disable_notifications"):
             return "all_others"
 
         return data_type
@@ -799,9 +815,9 @@ class LDAPSyncPluginsRequest(BaseSchema):
         description="Synchronizes the email of the LDAP user account into Checkmk when enabled",
         load_default={"state": "disabled"},
     )
-    mega_menu_icons = fields.Nested(
+    main_menu_icons = fields.Nested(
         LDAPSyncPluginAttrubuteSelector,
-        description="When enabled, in the mega menus you can select between two options: Have a green icon"
+        description="When enabled, in the main menus you can select between two options: Have a green icon"
         " only for the headlines – the 'topics' – for lean design. Or have a colored icon for every entry"
         " so that over time you can zoom in more quickly to a specific entry.",
         load_default={"state": "disabled"},
@@ -962,7 +978,10 @@ class LDAPConnectionConfigRequest(BaseSchema):
                 "filter": "(&(objectclass=user)(objectcategory=person))",
             },
             "filter_group": {"state": "enabled", "filter": "filtergroupexample"},
-            "user_id_attribute": {"state": "enabled", "attribute": "userattributeexample"},
+            "user_id_attribute": {
+                "state": "enabled",
+                "attribute": "userattributeexample",
+            },
             "user_id_case": "convert_to_lowercase",
             "umlauts_in_user_ids": "keep_umlauts",
             "create_users": "on_login",

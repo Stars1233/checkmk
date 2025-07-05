@@ -100,20 +100,20 @@ function addSelected() {
 }
 
 function removeSelected() {
-  const removedEntries: DualListChoiceElement[] = []
+  const removedEntries: string[] = []
   activeSelected.value.forEach((entry) => {
     const index = value.value.map((element) => element.name).indexOf(entry)
     if (index !== -1) {
       const element = localElements.value.find((element) => element.name === entry)
       if (element) {
-        removedEntries.push(element)
+        removedEntries.push(entry)
       }
     }
   })
   if (removedEntries.length === 0) {
     return
   }
-  value.value = value.value.filter((entry) => !removedEntries.includes(entry))
+  value.value = value.value.filter((entry) => !removedEntries.includes(entry.name))
   cleanSelection()
 }
 
@@ -260,18 +260,24 @@ const handleDoubleClickToRemoveItem = (element: DualListChoiceElement) => {
           </td>
           <td>
             <div class="centered-container">
-              <button type="button" :disabled="availableSelected.length === 0" @click="addSelected">
+              <button
+                type="button"
+                :disabled="availableSelected.length === 0"
+                @click.prevent="addSelected"
+              >
                 {{ props.spec.i18n.add }}
               </button>
-              <button type="button" @click="toggleAll(true)">{{ props.spec.i18n.add_all }}</button>
-              <button type="button" @click="toggleAll(false)">
+              <button type="button" @click.prevent="toggleAll(true)">
+                {{ props.spec.i18n.add_all }}
+              </button>
+              <button type="button" @click.prevent="toggleAll(false)">
                 {{ props.spec.i18n.remove_all }}
               </button>
               <button
                 type="button"
                 :disabled="activeSelected.length === 0"
                 value="<"
-                @click="removeSelected"
+                @click.prevent="removeSelected"
               >
                 {{ props.spec.i18n.remove }}
               </button>

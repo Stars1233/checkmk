@@ -18,21 +18,18 @@ import py_compile
 import re
 import socket
 import sys
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import assert_never
 
 import cmk.ccc.debug
-from cmk.ccc import store
+from cmk.ccc import store, tty
 from cmk.ccc.exceptions import MKIPAddressLookupError
+from cmk.ccc.hostaddress import HostAddress, HostName
 
-import cmk.utils.config_path
 import cmk.utils.password_store
 import cmk.utils.paths
-from cmk.utils import tty
-from cmk.utils.config_path import VersionedConfigPath
-from cmk.utils.hostaddress import HostAddress, HostName
-from cmk.utils.ip_lookup import IPStackConfig
+from cmk.utils.ip_lookup import IPLookup, IPStackConfig
 from cmk.utils.log import console
 from cmk.utils.rulesets import RuleSetName
 from cmk.utils.rulesets.ruleset_matcher import RuleSpec
@@ -46,12 +43,7 @@ from cmk.checkengine.plugins import (
     SectionPlugin,
 )
 
-from cmk.base.config import (
-    ConfigCache,
-    FilterMode,
-    lookup_ip_address,
-    save_packed_config,
-)
+from cmk.base.config import ConfigCache, FilterMode, save_packed_config
 from cmk.base.configlib.servicename import PassiveServiceNameConfig
 
 from cmk.discover_plugins import PluginLocation
@@ -76,18 +68,18 @@ class HostCheckStore:
     """Caring about persistence of the precompiled host check files"""
 
     @staticmethod
-    def host_check_file_path(config_path: VersionedConfigPath, hostname: HostName) -> Path:
-        return Path(config_path) / "host_checks" / hostname
+    def host_check_file_path(config_path: Path, hostname: HostName) -> Path:
+        return config_path / "host_checks" / hostname
 
     @staticmethod
-    def host_check_source_file_path(config_path: VersionedConfigPath, hostname: HostName) -> Path:
+    def host_check_source_file_path(config_path: Path, hostname: HostName) -> Path:
         # TODO: Use append_suffix(".py") once we are on Python 3.10
         path = HostCheckStore.host_check_file_path(config_path, hostname)
         return path.with_suffix(path.suffix + ".py")
 
     def write(
         self,
-        config_path: VersionedConfigPath,
+        config_path: Path,
         hostname: HostName,
         host_check: str,
         *,
@@ -96,8 +88,7 @@ class HostCheckStore:
         compiled_filename = self.host_check_file_path(config_path, hostname)
         source_filename = self.host_check_source_file_path(config_path, hostname)
 
-        store.makedirs(compiled_filename.parent)
-
+        compiled_filename.parent.mkdir(mode=0o770, exist_ok=True, parents=True)
         store.save_text_to_file(source_filename, host_check)
 
         # compile python (either now or delayed - see host_check code for delay_precompile handling)
@@ -119,11 +110,13 @@ class HostCheckStore:
 
 
 def precompile_hostchecks(
-    config_path: VersionedConfigPath,
+    config_path: Path,
     config_cache: ConfigCache,
     service_name_config: PassiveServiceNameConfig,
     plugins: AgentBasedPlugins,
     discovery_rules: Mapping[RuleSetName, Sequence[RuleSpec]],
+    get_ip_stack_config: Callable[[HostName], IPStackConfig],
+    ip_address_of: IPLookup,
     *,
     precompile_mode: PrecompileMode,
 ) -> None:
@@ -150,7 +143,9 @@ def precompile_hostchecks(
                 service_name_config,
                 config_path,
                 hostname,
+                get_ip_stack_config,
                 plugins,
+                ip_address_of=ip_address_of,
                 precompile_mode=precompile_mode,
             )
 
@@ -169,60 +164,52 @@ def precompile_hostchecks(
 def dump_precompiled_hostcheck(
     config_cache: ConfigCache,
     service_name_config: PassiveServiceNameConfig,
-    config_path: VersionedConfigPath,
+    config_path: Path,
     hostname: HostName,
+    get_ip_stack_config: Callable[[HostName], IPStackConfig],
     plugins: AgentBasedPlugins,
     *,
+    ip_address_of: IPLookup,
     verify_site_python: bool = True,
     precompile_mode: PrecompileMode,
 ) -> str:
     locations, legacy_checks_to_load = _make_needed_plugins_locations(
         config_cache, service_name_config, hostname, plugins
     )
+    ip_stack_config = get_ip_stack_config(hostname)
 
     # IP addresses
-    ip_stack_config = ConfigCache.ip_stack_config(hostname)
     needed_ipaddresses: dict[HostName, HostAddress] = {}
     needed_ipv6addresses: dict[HostName, HostAddress] = {}
     if hostname in config_cache.hosts_config.clusters:
         assert config_cache.nodes(hostname)
         for node in config_cache.nodes(hostname):
-            node_ip_stack_config = ConfigCache.ip_stack_config(node)
+            node_ip_stack_config = get_ip_stack_config(node)
             if IPStackConfig.IPv4 in node_ip_stack_config:
-                needed_ipaddresses[node] = lookup_ip_address(
-                    config_cache, node, family=socket.AddressFamily.AF_INET
-                )
+                needed_ipaddresses[node] = ip_address_of(node, socket.AddressFamily.AF_INET)
 
             if IPStackConfig.IPv6 in node_ip_stack_config:
-                needed_ipv6addresses[node] = lookup_ip_address(
-                    config_cache, node, family=socket.AddressFamily.AF_INET6
-                )
+                needed_ipv6addresses[node] = ip_address_of(node, socket.AddressFamily.AF_INET6)
 
         try:
             if IPStackConfig.IPv4 in ip_stack_config:
-                needed_ipaddresses[hostname] = lookup_ip_address(
-                    config_cache, hostname, family=socket.AddressFamily.AF_INET
-                )
+                needed_ipaddresses[hostname] = ip_address_of(hostname, socket.AddressFamily.AF_INET)
         except Exception:
             pass
 
         try:
             if IPStackConfig.IPv6 in ip_stack_config:
-                needed_ipv6addresses[hostname] = lookup_ip_address(
-                    config_cache, hostname, family=socket.AddressFamily.AF_INET6
+                needed_ipv6addresses[hostname] = ip_address_of(
+                    hostname, socket.AddressFamily.AF_INET6
                 )
         except Exception:
             pass
     else:
         if IPStackConfig.IPv4 in ip_stack_config:
-            needed_ipaddresses[hostname] = lookup_ip_address(
-                config_cache, hostname, family=socket.AddressFamily.AF_INET
-            )
+            needed_ipaddresses[hostname] = ip_address_of(hostname, socket.AddressFamily.AF_INET)
 
         if IPStackConfig.IPv6 in ip_stack_config:
-            needed_ipv6addresses[hostname] = lookup_ip_address(
-                config_cache, hostname, family=socket.AddressFamily.AF_INET6
-            )
+            needed_ipv6addresses[hostname] = ip_address_of(hostname, socket.AddressFamily.AF_INET6)
 
     # assign the values here, just to let the type checker do its job
     host_check_config = HostCheckConfig(

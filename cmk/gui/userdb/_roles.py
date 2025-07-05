@@ -5,8 +5,7 @@
 
 from dataclasses import dataclass, field
 from enum import Enum
-from pathlib import Path
-from typing import Any, Literal, TypedDict
+from typing import Any, Literal, override, TypedDict
 
 from cmk.ccc import store
 
@@ -69,16 +68,19 @@ class UserRolesConfigFile(WatoSingleConfigFile[Roles]):
 
     def __init__(self) -> None:
         super().__init__(
-            config_file_path=Path(multisite_dir()) / "roles.mk",
+            config_file_path=multisite_dir() / "roles.mk",
             config_variable="roles",
             spec_class=dict[RoleName, CustomUserRole | BuiltInUserRole],
         )
 
-    def _load_file(self, lock: bool = False) -> Roles:
+    @override
+    def _load_file(self, *, lock: bool) -> Roles:
+        # NOTE: Typing chaos...
+        default: Roles = _get_builtin_roles()  # type: ignore[assignment]
         cfg = store.load_from_mk_file(
             self._config_file_path,
             key=self._config_variable,
-            default=_get_builtin_roles(),
+            default=default,
             lock=lock,
         )
         # Make sure that "general." is prefixed to the general permissions
@@ -92,16 +94,17 @@ class UserRolesConfigFile(WatoSingleConfigFile[Roles]):
 
         return cfg
 
+    # TODO: Why is this not implemented by overriding validate()?
     def read_file_and_validate(self) -> None:
-        cfg = self._load_file(lock=False)
-        for role in cfg.values():
+        for role in self.load_for_reading().values():
             if "basedon" in role and role["basedon"] in builtin_role_ids:
                 role["basedon"] = BuiltInUserRoleValues(role["basedon"])
 
-    def save(self, cfg: Roles) -> None:
+    @override
+    def save(self, cfg: Roles, pprint_value: bool) -> None:
         active_config.roles.update(cfg)
         hooks.call("roles-saved", cfg)
-        super().save(cfg)
+        super().save(cfg, pprint_value)
 
 
 def load_roles() -> Roles:

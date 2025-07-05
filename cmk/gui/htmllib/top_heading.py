@@ -8,14 +8,13 @@ from __future__ import annotations
 from cmk.utils.licensing.registry import get_licensing_user_effect
 
 from cmk.gui.breadcrumb import Breadcrumb, BreadcrumbRenderer
-from cmk.gui.config import active_config
 from cmk.gui.htmllib.foldable_container import foldable_container
 from cmk.gui.http import Request
 from cmk.gui.http import request as _request
 from cmk.gui.i18n import _
 from cmk.gui.logged_in import user
 from cmk.gui.page_menu import PageMenu, PageMenuPopupsRenderer, PageMenuRenderer
-from cmk.gui.page_state import PageState, PageStateRenderer
+from cmk.gui.page_state import PageState
 from cmk.gui.utils.html import HTML
 from cmk.gui.utils.urls import makeuri_contextless
 
@@ -29,9 +28,9 @@ def top_heading(
     title: str,
     breadcrumb: Breadcrumb,
     page_menu: PageMenu | None = None,
-    page_state: PageState | None = None,
     *,
     browser_reload: float,
+    debug: bool,
 ) -> None:
     _may_show_license_expiry(writer)
 
@@ -54,17 +53,7 @@ def top_heading(
 
     writer.close_div()
 
-    if page_state is None:
-        page_state = _make_default_page_state(
-            writer,
-            request,
-            browser_reload=browser_reload,
-        )
-
     _may_show_license_banner(writer)
-
-    if page_state:
-        PageStateRenderer().show(page_state)
 
     writer.close_div()  # titlebar
 
@@ -79,7 +68,7 @@ def top_heading(
     if page_menu:
         PageMenuPopupsRenderer().show(page_menu)
 
-    if active_config.debug:
+    if debug:
         _dump_get_vars(
             writer,
             request,

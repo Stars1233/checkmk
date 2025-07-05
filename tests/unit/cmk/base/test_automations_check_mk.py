@@ -4,6 +4,7 @@
 # conditions defined in the file COPYING, which is part of this source code package.
 
 from collections.abc import Mapping, Sequence
+from dataclasses import replace
 
 import pytest
 
@@ -12,9 +13,10 @@ from tests.testlib.unit.base_configuration_scenario import Scenario
 from tests.unit.cmk.base.emptyconfig import EMPTYCONFIG
 
 import cmk.ccc.debug
+import cmk.ccc.resulttype as result
+from cmk.ccc.hostaddress import HostAddress, HostName
 
-import cmk.utils.resulttype as result
-from cmk.utils.hostaddress import HostAddress
+from cmk.utils.tags import TagGroupID, TagID
 
 from cmk.automations import results as automation_results
 from cmk.automations.results import DiagHostResult
@@ -50,8 +52,7 @@ class TestAutomationDiagHost:
         ts = Scenario()
         ts.add_host(hostname)
         ts.set_option("ipaddresses", {hostname: ipaddress})
-        ts.apply(monkeypatch)
-        return ts
+        return ts.apply(monkeypatch)
 
     @pytest.fixture
     def patch_fetch(self, raw_data, monkeypatch):
@@ -63,11 +64,28 @@ class TestAutomationDiagHost:
             ),
         )
 
-    @pytest.mark.usefixtures("scenario")
     @pytest.mark.usefixtures("patch_fetch")
-    def test_execute(self, hostname: str, ipaddress: str, raw_data: str) -> None:
+    def test_execute(
+        self, hostname: str, ipaddress: str, raw_data: str, scenario: ConfigCache
+    ) -> None:
         args = [hostname, "agent", ipaddress, "", "6557", "10", "5", "5", ""]
-        loaded_config = EMPTYCONFIG
+        configured_tags = {
+            HostName("testhost"): {
+                TagGroupID("checkmk-agent"): TagID("checkmk-agent"),
+                TagGroupID("piggyback"): TagID("auto-piggyback"),
+                TagGroupID("networking"): TagID("lan"),
+                TagGroupID("agent"): TagID("cmk-agent"),
+                TagGroupID("criticality"): TagID("prod"),
+                TagGroupID("snmp_ds"): TagID("no-snmp"),
+                TagGroupID("site"): TagID("unit"),
+                TagGroupID("address_family"): TagID("ip-v4-only"),
+                TagGroupID("tcp"): TagID("tcp"),
+                TagGroupID("ip-v4"): TagID("ip-v4"),
+            }
+        }
+
+        loaded_config = replace(EMPTYCONFIG, host_tags=configured_tags)
+
         assert check_mk.AutomationDiagHost().execute(
             args,
             AgentBasedPlugins.empty(),
@@ -265,13 +283,12 @@ def test_automation_active_check_invalid_args(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     _patch_plugin_loading(monkeypatch, loaded_active_checks)
-    monkeypatch.setattr(
-        config, config.lookup_ip_address.__name__, lambda *a, **kw: HostAddress("127.0.0.1")
-    )
     monkeypatch.setattr(ConfigCache, "get_host_attributes", lambda *a, **kw: host_attrs)
     monkeypatch.setattr(config, "get_resource_macros", lambda *a, **kw: {})
 
-    loaded_config = EMPTYCONFIG
+    loaded_config = replace(
+        EMPTYCONFIG, ipaddresses={HostName("my_host"): HostAddress("127.0.0.1")}
+    )
     config_cache = config.ConfigCache(loaded_config)
     monkeypatch.setattr(config_cache, "active_checks", lambda *a, **kw: active_checks)
 

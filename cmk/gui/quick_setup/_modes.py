@@ -14,7 +14,7 @@ from cmk.utils.rulesets.definition import RuleGroup, RuleGroupType
 from cmk.gui import forms
 from cmk.gui.breadcrumb import Breadcrumb, BreadcrumbItem
 from cmk.gui.config import active_config
-from cmk.gui.exceptions import MKAuthException, MKUserError
+from cmk.gui.exceptions import MKUserError
 from cmk.gui.htmllib.generator import HTMLWriter
 from cmk.gui.htmllib.html import html
 from cmk.gui.http import request
@@ -37,13 +37,7 @@ from cmk.gui.utils.escaping import escape_to_html_permissive
 from cmk.gui.utils.html import HTML
 from cmk.gui.utils.transaction_manager import transactions
 from cmk.gui.utils.urls import make_confirm_delete_link
-from cmk.gui.valuespec import (
-    Dictionary,
-    DictionaryEntry,
-    FixedValue,
-    RuleComment,
-    TextInput,
-)
+from cmk.gui.valuespec import Dictionary, DictionaryEntry, FixedValue, RuleComment, TextInput
 from cmk.gui.wato import TileMenuRenderer
 from cmk.gui.wato._main_module_topics import MainModuleTopicQuickSetup
 from cmk.gui.wato.pages.hosts import ModeEditHost
@@ -63,7 +57,6 @@ from cmk.gui.watolib.configuration_bundles import (
     delete_config_bundle_objects,
     edit_config_bundle_configuration,
     identify_bundle_references,
-    read_config_bundle,
     valid_special_agent_bundle,
 )
 from cmk.gui.watolib.hosts_and_folders import make_action_link
@@ -153,8 +146,8 @@ class ModeQuickSetupSpecialAgent(WatoMode):
     @override
     def page(self) -> None:
         enable_page_menu_entry(html, "inline_help")
-        html.vue_app(
-            app_name="quick_setup",
+        html.vue_component(
+            component_name="cmk-quick-setup",
             data={
                 "quick_setup_id": self._quick_setup_id,
                 "mode": "guided",
@@ -266,21 +259,22 @@ class ModeEditConfigurationBundles(WatoMode):
             # revert changes does not work correctly when a config sync to another site occurred
             # for consistency reasons we always prevent the user from reverting the changes
             prevent_discard_changes = True
-
-            # If the current user is different from the one who created the bundle, they need
-            # permission to edit all passwords in order to (find and) delete the password.
-            if not user.may("wato.edit_all_passwords"):
-                bundle = read_config_bundle(bundle_id)
-                if (owned_by := bundle.get("owned_by")) and owned_by != user.id:
-                    raise MKAuthException(_("You are not permitted to perform this action."))
         else:
             raise MKGeneralException("Not implemented")
 
-        delete_config_bundle(bundle_id)
+        delete_config_bundle(
+            bundle_id,
+            user_id=user.id,
+            pprint_value=active_config.wato_pprint_config,
+            use_git=active_config.wato_use_git,
+            debug=active_config.debug,
+        )
         add_change(
-            "delete-quick-setup",
-            _("Deleted Quick setup {bundle_id}").format(bundle_id=bundle_id),
+            action_name="delete-quick-setup",
+            text=_("Deleted Quick setup {bundle_id}").format(bundle_id=bundle_id),
+            user_id=user.id,
             prevent_discard_changes=prevent_discard_changes,
+            use_git=active_config.wato_use_git,
         )
 
     def _bundles_listing(self, group_name: str) -> None:
@@ -486,7 +480,7 @@ class MainModuleQuickSetupAWS(ABCMainModuleQuickSetup):
 
     @classmethod
     @override
-    def megamenu_search_terms(cls) -> Sequence[str]:
+    def main_menu_search_terms(cls) -> Sequence[str]:
         return ["aws"]
 
 
@@ -526,7 +520,7 @@ class MainModuleQuickSetupAzure(ABCMainModuleQuickSetup):
 
     @classmethod
     @override
-    def megamenu_search_terms(cls) -> Sequence[str]:
+    def main_menu_search_terms(cls) -> Sequence[str]:
         return ["azure"]
 
 
@@ -566,7 +560,7 @@ class MainModuleQuickSetupGCP(ABCMainModuleQuickSetup):
 
     @classmethod
     @override
-    def megamenu_search_terms(cls) -> Sequence[str]:
+    def main_menu_search_terms(cls) -> Sequence[str]:
         return ["gcp"]
 
 
@@ -794,7 +788,14 @@ class ModeConfigurationBundle(WatoMode):
             return redirect(self.mode_url(bundle_id=self._bundle_id))
 
         if request.has_var("_clean_up"):
-            delete_config_bundle_objects(self._bundle_id, None)
+            references = identify_bundle_references(None, {self._bundle_id})[self._bundle_id]
+            delete_config_bundle_objects(
+                references,
+                user_id=user.id,
+                pprint_value=active_config.wato_pprint_config,
+                use_git=active_config.wato_use_git,
+                debug=active_config.debug,
+            )
             return redirect(mode_url("changelog"))
 
         if request.has_var("_save"):
@@ -807,6 +808,10 @@ class ModeConfigurationBundle(WatoMode):
                     "comment": config["_comment"],
                 }
             )
-            edit_config_bundle_configuration(self._bundle_id, self._bundle)
+            edit_config_bundle_configuration(
+                self._bundle_id,
+                self._bundle,
+                pprint_value=active_config.wato_pprint_config,
+            )
 
         return redirect(self.parent_mode().mode_url(varname=self._bundle_group))

@@ -19,7 +19,7 @@
 import os
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeAlias, TypedDict
 
 import cmk.utils.paths
 
@@ -27,27 +27,32 @@ from cmk.gui.i18n import _u
 from cmk.gui.permissions import declare_permission
 
 
-def load_user_scripts(what: str) -> dict[str, Any]:
-    scripts: dict[str, Any] = {}
-    not_dir = cmk.utils.paths.share_dir + "/" + what
-    try:
-        if what == "notifications":
-            # Support for setup.sh
-            not_dir = str(cmk.utils.paths.notifications_dir)
-    except Exception:
-        pass
+class UserScriptInfo(TypedDict):
+    bulk: bool
+    title: str
 
-    scripts = _load_user_scripts_from(not_dir)
+
+NotificationUserScripts: TypeAlias = dict[str, UserScriptInfo]
+
+
+def load_user_scripts(what: str) -> NotificationUserScripts:
+    scripts: NotificationUserScripts = _load_user_scripts_from(
+        cmk.utils.paths.notifications_dir
+        if what == "notifications"
+        else (cmk.utils.paths.share_dir / what)
+    )
     try:
-        local_dir = str(cmk.utils.paths.omd_root / "local/share/check_mk" / what)
-        scripts.update(_load_user_scripts_from(local_dir))
+        scripts.update(
+            _load_user_scripts_from(cmk.utils.paths.omd_root / "local/share/check_mk" / what)
+        )
     except Exception:
         pass
 
     return scripts
 
 
-def _load_user_scripts_from(adir: str) -> dict[str, Any]:
+def _load_user_scripts_from(directory: Path) -> dict[str, Any]:
+    adir = str(directory)
     scripts: dict[str, Any] = {}
     if os.path.exists(adir):
         for entry in os.listdir(adir):
@@ -79,7 +84,7 @@ def _load_user_scripts_from(adir: str) -> dict[str, Any]:
     return scripts
 
 
-def load_notification_scripts():
+def load_notification_scripts() -> NotificationUserScripts:
     return load_user_scripts("notifications")
 
 

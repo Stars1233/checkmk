@@ -23,7 +23,7 @@ from cmk.utils.redis import get_redis_client
 
 import cmk.gui.utils
 from cmk.gui import sites
-from cmk.gui.config import active_config
+from cmk.gui.config import active_config, Config
 from cmk.gui.crash_handler import handle_exception_as_gui_crash_report
 from cmk.gui.ctx_stack import g
 from cmk.gui.exceptions import HTTPRedirect, MKUserError
@@ -33,7 +33,7 @@ from cmk.gui.http import request
 from cmk.gui.i18n import _
 from cmk.gui.log import logger
 from cmk.gui.logged_in import user
-from cmk.gui.main_menu import mega_menu_registry
+from cmk.gui.main_menu import get_main_menu_items_prefixed_by_segment, main_menu_registry
 from cmk.gui.pages import AjaxPage, PageResult
 from cmk.gui.type_defs import (
     HTTPVariables,
@@ -175,7 +175,8 @@ class ABCQuicksearchConductor(abc.ABC):
 class BasicPluginQuicksearchConductor(ABCQuicksearchConductor):
     """Passes queries through to a non livestatus plug-in
 
-    There is no aggregation done by this conductor. It deals with a single search plug-in."""
+    There is no aggregation done by this conductor. It deals with a single search plug-in.
+    """
 
     def __init__(self, used_filters: UsedFilters, filter_behaviour: FilterBehaviour) -> None:
         super().__init__(used_filters, filter_behaviour)
@@ -485,6 +486,7 @@ class LivestatusQuicksearchConductor(ABCQuicksearchConductor):
         # Add additional info to the display text
         for element in elements:
             hostname = element.row.get("host_name", element.row.get("name"))
+            assert hostname is not None  # TODO: Why is this the case? Needed for correct typing.
             if "&host_regex=" not in element.url:
                 element.url += "&host_regex=%s" % hostname
 
@@ -699,15 +701,15 @@ class QuicksearchSnapin(SidebarSnapin):
         super().__init__()
 
     @classmethod
-    def type_name(cls):
+    def type_name(cls) -> str:
         return "search"
 
     @classmethod
-    def title(cls):
+    def title(cls) -> str:
         return _("Quicksearch")
 
     @classmethod
-    def description(cls):
+    def description(cls) -> str:
         return _(
             "Interactive search field for direct access to monitoring instances (hosts, services, "
             "host and service groups).<br>You can use the following filters: <i>h:</i> Host,<br> "
@@ -716,12 +718,15 @@ class QuicksearchSnapin(SidebarSnapin):
             "Service label"
         )
 
-    def show(self):
+    def show(self, config: Config) -> None:
         id_ = "mk_side_search_field"
         html.open_div(id_="mk_side_search", onclick="cmk.quicksearch.close_popup();")
         html.input(id_=id_, type_="text", name="search", autocomplete="off")
         html.icon_button(
-            "#", _("Search"), "quicksearch", onclick="cmk.quicksearch.on_search_click();"
+            "#",
+            _("Search"),
+            "quicksearch",
+            onclick="cmk.quicksearch.on_search_click();",
         )
         html.close_div()
         html.div("", id_="mk_side_clear")
@@ -733,7 +738,7 @@ class QuicksearchSnapin(SidebarSnapin):
             "search_open": self._page_search_open,
         }
 
-    def _ajax_search(self) -> None:
+    def _ajax_search(self, config: Config) -> None:
         """Generate the search result list"""
         query = _maybe_strip(request.get_str_input("q"))
         if not query:
@@ -768,7 +773,7 @@ class QuicksearchSnapin(SidebarSnapin):
             self._quicksearch_manager._evaluate_results(search_objects), query
         )
 
-    def _page_search_open(self) -> None:
+    def _page_search_open(self, config: Config) -> None:
         """Generate the URL to the view that is opened when confirming the search field"""
         query = _maybe_strip(request.var("q"))
         if not query:
@@ -903,7 +908,7 @@ class ABCLivestatusMatchPlugin(ABCMatchPlugin):
 
 
 class MatchPluginRegistry(cmk.ccc.plugin_registry.Registry[ABCMatchPlugin]):
-    def plugin_name(self, instance):
+    def plugin_name(self, instance: ABCMatchPlugin) -> str:
         return instance.name
 
     def get_livestatus_match_plugins(self) -> list[ABCLivestatusMatchPlugin]:
@@ -969,7 +974,10 @@ class GroupMatchPlugin(ABCLivestatusMatchPlugin):
             "servicegroup": ["servicegroup", "name"],
             "svcgroups": ["servicegroup_regex", "name"],
             # Host/Service domain (hosts, services)
-            "allservices": ["%sgroups" % self._group_type, "%s_groups" % self._group_type],
+            "allservices": [
+                "%sgroups" % self._group_type,
+                "%s_groups" % self._group_type,
+            ],
             "searchsvc": [
                 "%sgroups" % self._group_type,
                 self._group_type == "service" and "groups" or "host_groups",
@@ -1054,6 +1062,69 @@ class ServiceMatchPlugin(ABCLivestatusMatchPlugin):
 match_plugin_registry.register(ServiceMatchPlugin())
 
 
+class ServiceStateMatchPlugin(ABCLivestatusMatchPlugin):
+    def __init__(self) -> None:
+        super().__init__(["services"], "services", "st")
+        self._state_mapping = {
+            "ok": "0",
+            "warn": "1",
+            "crit": "2",
+            "unkn": "3",
+            "pend": "p",
+        }
+        self._supported_views = frozenset({"allservices", "searchsvc"})
+
+    def _get_service_state_from_filter(self, value: str) -> str:
+        return self._state_mapping.get(value.lower(), "")
+
+    def get_match_topic(self) -> str:
+        return _("Service states")
+
+    def get_livestatus_columns(self, livestatus_table: LivestatusTable) -> list[LivestatusColumn]:
+        return ["state"]
+
+    def get_livestatus_filters(
+        self, livestatus_table: LivestatusTable, used_filters: UsedFilters
+    ) -> LivestatusFilterHeaders:
+        if not (raw_used_filters := used_filters.get(self.name, [])):
+            return ""
+
+        filter_lines = [
+            f"Filter: state = {self._get_service_state_from_filter(entry)}"
+            for entry in raw_used_filters
+        ]
+
+        if len(filter_lines) > 1:
+            filter_lines.append("Or: %d" % len(filter_lines))
+
+        return "\n".join(filter_lines)
+
+    def get_matches(
+        self,
+        for_view: ViewName,
+        row: Row | None,
+        livestatus_table: LivestatusTable,
+        used_filters: UsedFilters,
+        rows: Rows,
+    ) -> Matches:
+        if for_view not in self._supported_views:
+            return None
+
+        url_infos: HTTPVariables = [
+            (f"st{self._get_service_state_from_filter(entry)}", "on")
+            for entry in used_filters.get(self.name, [])
+        ]
+
+        # add support for clicking on an individual filtered service.
+        service_field = row["description"] if row else ""
+        url_infos.append(("service", service_field))
+
+        return service_field, url_infos
+
+
+match_plugin_registry.register(ServiceStateMatchPlugin())
+
+
 class HostMatchPlugin(ABCLivestatusMatchPlugin):
     def __init__(self, livestatus_field: LivestatusColumn, name: str) -> None:
         super().__init__(["hosts", "services"], "hosts", name)
@@ -1098,10 +1169,22 @@ class HostMatchPlugin(ABCLivestatusMatchPlugin):
             # View name     Filter name
             # Exact matches (always uses hostname as filter)
             "host": {"name": "host", "address": "host", "alias": "host"},
-            "allservices": {"name": "host_regex", "address": "host_regex", "alias": "host_regex"},
+            "allservices": {
+                "name": "host_regex",
+                "address": "host_regex",
+                "alias": "host_regex",
+            },
             # Multi matches
-            "searchhost": {"name": "host_regex", "address": "host_address", "alias": "hostalias"},
-            "searchsvc": {"name": "host_regex", "address": "host_address", "alias": "hostalias"},
+            "searchhost": {
+                "name": "host_regex",
+                "address": "host_address",
+                "alias": "hostalias",
+            },
+            "searchsvc": {
+                "name": "host_regex",
+                "address": "host_address",
+                "alias": "hostalias",
+            },
         }
 
         view_info = supported_views.get(for_view)
@@ -1216,6 +1299,7 @@ class HosttagMatchPlugin(ABCLivestatusMatchPlugin):
 
         if row and filter_name not in ["allservices", "searchsvc"]:
             hostname = row.get("host_name", row.get("name"))
+            assert hostname is not None  # TODO: Why is this the case? Needed for correct typing.
             return hostname, [(filter_name, hostname)]
 
         url_infos = []
@@ -1348,16 +1432,20 @@ class MonitorMenuMatchPlugin(ABCBasicMatchPlugin):
     def get_results(self, query: str) -> list[SearchResult]:
         return [
             SearchResult(
-                title=topic_menu_item.title,
-                url=topic_menu_item.url,
+                title=main_menu_item.title,
+                url=main_menu_item.url,
             )
-            for topic_menu_topic in mega_menu_registry["monitoring"].topics()
-            for topic_menu_item in topic_menu_topic.items
+            for main_menu_topic in (
+                main_menu_registry["monitoring"].topics()
+                if main_menu_registry["monitoring"].topics
+                else []
+            )
+            for main_menu_item in get_main_menu_items_prefixed_by_segment(main_menu_topic)
             if any(
                 query.lower() in match_text.lower()
                 for match_text in [
-                    topic_menu_item.title,
-                    *topic_menu_item.megamenu_search_terms,
+                    main_menu_item.title,
+                    *main_menu_item.main_menu_search_terms,
                 ]
             )
         ]
@@ -1381,7 +1469,7 @@ class MenuSearchResultsRenderer(abc.ABC):
     MAX_RESULTS_BEFORE_SHOW_ALL: Final = 10
 
     @abc.abstractmethod
-    def generate_results(self, query: SearchQuery) -> SearchResultsByTopic:
+    def generate_results(self, query: SearchQuery, config: Config) -> SearchResultsByTopic:
         raise NotImplementedError()
 
     @property
@@ -1394,10 +1482,10 @@ class MenuSearchResultsRenderer(abc.ABC):
     def max_results_after_show_all(self) -> None | int:
         raise NotImplementedError()
 
-    def render(self, query: str) -> str:
+    def render(self, query: str, config: Config) -> str:
         try:
-            results = self.generate_results(query)
-        # Don't render the IncorrectLabelInputError in Mega Menu to make the handling of
+            results = self.generate_results(query, config)
+        # Don't render the IncorrectLabelInputError in Main Menu to make the handling of
         # incorrect inputs consistent with other search querys
         except IncorrectLabelInputError:
             return ""
@@ -1420,24 +1508,25 @@ class MenuSearchResultsRenderer(abc.ABC):
         # {topic: (Icon(Topic): green, Icon(Item): colorful)}
         mapping: dict[str, tuple[Icon, Icon]] = {}
         for menu in [
-            mega_menu_registry.menu_setup(),
-            mega_menu_registry.menu_monitoring(),
+            main_menu_registry.menu_setup(),
+            main_menu_registry.menu_monitoring(),
         ]:
             mapping[str(menu.title)] = (
-                menu.icon + "_active" if isinstance(menu.icon, str) else default_icons[0],
+                (menu.icon + "_active" if isinstance(menu.icon, str) else default_icons[0]),
                 menu.icon if menu.icon else default_icons[1],
             )
 
-            for topic in menu.topics():
-                mapping[topic.title] = (
-                    topic.icon if topic.icon else default_icons[0],
-                    topic.icon if topic.icon else default_icons[1],
-                )
-                for item in topic.items:
-                    mapping[item.title] = (
+            if menu.topics:
+                for topic in menu.topics():
+                    mapping[topic.title] = (
                         topic.icon if topic.icon else default_icons[0],
-                        item.icon if item.icon else default_icons[1],
+                        topic.icon if topic.icon else default_icons[1],
                     )
+                    for item in topic.entries:
+                        mapping[item.title] = (
+                            topic.icon if topic.icon else default_icons[0],
+                            item.icon if item.icon else default_icons[1],
+                        )
         for module_class in main_module_registry.values():
             module = module_class()
             if module.title not in mapping:
@@ -1456,7 +1545,10 @@ class MenuSearchResultsRenderer(abc.ABC):
         results: SearchResultsByTopic,
     ) -> str:
         with output_funnel.plugged():
-            default_icons = ("main_" + self.search_type + "_active", "main_" + self.search_type)
+            default_icons = (
+                "main_" + self.search_type + "_active",
+                "main_" + self.search_type,
+            )
             icon_mapping = self._get_icon_mapping(default_icons)
 
             for topic, search_results_iter in results:
@@ -1517,9 +1609,9 @@ class MenuSearchResultsRenderer(abc.ABC):
         html.div(class_="spacer", content="")
 
         html.open_a(
-            class_="show_all_topics",
+            class_="collapse_topic",
             href=None,
-            onclick=f"cmk.search.on_click_show_all_topics({json.dumps(topic)})",
+            onclick=f"cmk.search.on_click_collapse_topic({json.dumps(topic)})",
         )
         html.icon(icon="collapse_arrow", title=_("Show all topics"))
         html.close_a()
@@ -1556,7 +1648,7 @@ class MonitorMenuSearchResultsRenderer(MenuSearchResultsRenderer):
     def __init__(self) -> None:
         self._search_manager: Final = QuicksearchManager(raise_too_many_rows_error=False)
 
-    def generate_results(self, query: SearchQuery) -> SearchResultsByTopic:
+    def generate_results(self, query: SearchQuery, config: Config) -> SearchResultsByTopic:
         return self._search_manager.generate_results(query)
 
 
@@ -1570,8 +1662,8 @@ class SetupMenuSearchResultsRenderer(MenuSearchResultsRenderer):
             PermissionsHandler(),
         )
 
-    def generate_results(self, query: SearchQuery) -> SearchResultsByTopic:
-        return self._search_manager.search(query)
+    def generate_results(self, query: SearchQuery, config: Config) -> SearchResultsByTopic:
+        return self._search_manager.search(query, config)
 
 
 _TIterItem = TypeVar("_TIterItem")
@@ -1593,16 +1685,16 @@ def _evaluate_iterable_up_to(
 
 
 class PageSearchMonitoring(AjaxPage):
-    def page(self) -> PageResult:
+    def page(self, config: Config) -> PageResult:
         query = request.get_str_input_mandatory("q")
-        return MonitorMenuSearchResultsRenderer().render(livestatus.lqencode(query))
+        return MonitorMenuSearchResultsRenderer().render(livestatus.lqencode(query), config)
 
 
 class PageSearchSetup(AjaxPage):
-    def page(self) -> PageResult:
+    def page(self, config: Config) -> PageResult:
         query = request.get_str_input_mandatory("q")
         try:
-            return SetupMenuSearchResultsRenderer().render(livestatus.lqencode(query))
+            return SetupMenuSearchResultsRenderer().render(livestatus.lqencode(query), config)
         except IndexNotFoundException:
             with output_funnel.plugged():
                 html.open_div(class_="topic")

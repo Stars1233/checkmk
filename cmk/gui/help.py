@@ -5,16 +5,17 @@
 
 import json
 
+from cmk.gui.config import Config
 from cmk.gui.http import request, response
 from cmk.gui.logged_in import user
-from cmk.gui.pages import PageRegistry
+from cmk.gui.pages import PageEndpoint, PageRegistry
 
 
 def register(page_registry: PageRegistry) -> None:
-    page_registry.register_page_handler("ajax_switch_help", ajax_switch_help)
+    page_registry.register(PageEndpoint("ajax_switch_help", ajax_switch_help))
 
 
-def ajax_switch_help() -> None:
+def ajax_switch_help(config: Config) -> None:
     state = request.var("enabled", "") != ""
     user.inline_help_as_text = state
     response.set_data(json.dumps(state))

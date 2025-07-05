@@ -7,21 +7,23 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import timedelta
 from functools import partial
-from typing import Any
+from typing import override
 
 from cmk.ccc.plugin_registry import Registry
+
+from cmk.gui.config import Config
 
 
 @dataclass
 class CronJob:
     name: str
-    # the callable should really return None, but some jobs return something (which is then ignored)
-    callable: Callable[[], Any] | partial
+    callable: Callable[[Config], None] | partial
     interval: timedelta
     run_in_thread: bool = False
 
 
 class CronJobRegistry(Registry[CronJob]):
+    @override
     def plugin_name(self, instance: CronJob) -> str:
         return instance.name
 

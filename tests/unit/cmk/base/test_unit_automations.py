@@ -11,10 +11,10 @@ from tests.testlib.unit.base_configuration_scenario import Scenario
 from tests.unit.cmk.base.emptyconfig import EMPTYCONFIG
 
 import cmk.ccc.version as cmk_version
+from cmk.ccc.hostaddress import HostName
 from cmk.ccc.version import Edition, edition
 
 from cmk.utils import paths
-from cmk.utils.hostaddress import HostName
 from cmk.utils.labels import LabelSource
 from cmk.utils.rulesets.ruleset_matcher import RuleSpec
 
@@ -31,6 +31,7 @@ def test_registered_automations() -> None:
     needed_automations = [
         "active-check",
         "analyse-host",
+        "analyze-host-rule-effectiveness",
         "analyze-host-rule-matches",
         "analyze-service-rule-matches",
         "get-services-labels",
@@ -38,6 +39,7 @@ def test_registered_automations() -> None:
         "create-diagnostics-dump",
         "delete-hosts",
         "delete-hosts-known-remote",
+        "diag-cmk-agent",
         "diag-host",
         "diag-special-agent",
         "autodiscovery",
@@ -49,11 +51,11 @@ def test_registered_automations() -> None:
         "get-configuration",
         "get-section-information",
         "get-service-name",
-        "inventory",
         "notification-analyse",
         "notification-get-bulks",
         "notification-replay",
         "notification-test",
+        "ping-host",
         "reload",
         "rename-hosts",
         "restart",

@@ -278,6 +278,11 @@ class MKDockerClient(docker.DockerClient):  # type: ignore[misc]
             self.all_containers = {c.attrs["Name"].lstrip("/"): c for c in all_containers}
         elif config["container_id"] == "long":
             self.all_containers = {c.attrs["Id"]: c for c in all_containers}
+        elif config["container_id"] == "combined":
+            nodename = os.uname()[0]
+            self.all_containers = {
+                f"{nodename}_{c.attrs['Name'].lstrip('/')}": c for c in all_containers
+            }
         else:
             self.all_containers = {c.attrs["Id"][:12]: c for c in all_containers}
         self._env = {"REMOTE": os.getenv("REMOTE", "")}
@@ -502,6 +507,9 @@ def section_node_images(client):
     LOGGER.debug(images)
     section.append("[[[images]]]")
     for image in images:
+        if image.attrs.get("Config", {}).get("Env"):
+            # do not collect env - could contain sensitive data
+            del image.attrs["Config"]["Env"]
         section.append(json.dumps(image.attrs))
 
     LOGGER.debug(client.all_containers)

@@ -2,7 +2,6 @@
 # Copyright (C) 2021 Checkmk GmbH - License: GNU General Public License v2
 # This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
 # conditions defined in the file COPYING, which is part of this source code package.
-import os
 import pprint
 from datetime import datetime
 from typing import TypedDict
@@ -26,18 +25,17 @@ def update_user_custom_attrs(now: datetime) -> None:
     userdb.rewrite_users(now)
 
 
-def update_host_custom_attrs():
+def update_host_custom_attrs(*, pprint_value: bool) -> None:
     load_config()
     tree = folder_tree()
     tree.invalidate_caches()
-    tree.root_folder().recursively_save_hosts()
+    tree.root_folder().recursively_save_hosts(pprint_value=pprint_value)
 
 
 def load_custom_attrs_from_mk_file(lock: bool) -> CustomAttrSpecs:
-    filename = os.path.join(multisite_dir(), "custom_attrs.mk")
     vars_ = store.load_mk_file(
-        filename,
-        {
+        multisite_dir() / "custom_attrs.mk",
+        default={
             "wato_user_attrs": [],
             "wato_host_attrs": [],
         },
@@ -64,5 +62,5 @@ def save_custom_attrs_to_mk_file(attrs: CustomAttrSpecs) -> None:
         output += "if type(wato_host_attrs) != list:\n    wato_host_attrs = []\n"
         output += f"wato_host_attrs += {pprint.pformat(attrs['host'])}\n\n"
 
-    store.makedirs(multisite_dir())
-    store.save_text_to_file(multisite_dir() + "custom_attrs.mk", output)
+    multisite_dir().mkdir(mode=0o770, parents=True, exist_ok=True)
+    store.save_text_to_file(multisite_dir() / "custom_attrs.mk", output)

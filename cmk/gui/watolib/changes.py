@@ -9,16 +9,15 @@ from collections.abc import Iterable, Iterator, Sequence
 from contextlib import contextmanager
 
 from cmk.ccc.site import SiteId
+from cmk.ccc.user import UserId
 
 import cmk.utils
 from cmk.utils.setup_search_index import request_index_update
-from cmk.utils.user import UserId
 
 import cmk.gui.utils
 import cmk.gui.watolib.git
 import cmk.gui.watolib.sidebar_reload
 from cmk.gui.config import active_config
-from cmk.gui.logged_in import user
 from cmk.gui.site_config import site_is_local
 from cmk.gui.user_sites import activation_sites
 from cmk.gui.utils import escaping
@@ -33,11 +32,13 @@ from cmk.gui.watolib.site_changes import SiteChanges
 
 
 def add_change(
+    *,
     action_name: str,
     text: LogMessage,
+    user_id: UserId | None,
+    use_git: bool,
     object_ref: ObjectRef | None = None,
     diff_text: str | None = None,
-    add_user: bool = True,
     need_sync: bool | None = None,
     need_restart: bool | None = None,
     need_apache_reload: bool | None = None,
@@ -54,7 +55,8 @@ def add_change(
         action=action_name,
         message=text,
         object_ref=object_ref,
-        user_id=user.id if add_user else UserId(""),
+        user_id=user_id,
+        use_git=use_git,
         diff_text=diff_text,
     )
     cmk.gui.watolib.sidebar_reload.need_sidebar_reload()
@@ -65,7 +67,7 @@ def add_change(
         action_name,
         text,
         object_ref,
-        add_user,
+        user_id,
         need_sync,
         need_restart,
         need_apache_reload,
@@ -94,7 +96,7 @@ class ActivateChangesWriter:
         action_name: str,
         text: LogMessage,
         object_ref: ObjectRef | None,
-        add_user: bool,
+        user_id: UserId | None,
         need_sync: bool | None,
         need_restart: bool | None,
         need_apache_reload: bool | None,
@@ -124,7 +126,7 @@ class ActivateChangesWriter:
                 action_name,
                 text,
                 object_ref,
-                add_user,
+                user_id,
                 need_sync,
                 need_restart,
                 need_apache_reload,
@@ -144,7 +146,7 @@ class ActivateChangesWriter:
         action_name: str,
         text: LogMessage,
         object_ref: ObjectRef | None,
-        add_user: bool,
+        user_id: UserId | None,
         need_sync: bool | None,
         need_restart: bool | None,
         need_apache_reload: bool | None,
@@ -176,7 +178,7 @@ class ActivateChangesWriter:
                 "action_name": action_name,
                 "text": "%s" % text,
                 "object": object_ref,
-                "user_id": user.id if add_user else None,
+                "user_id": user_id,
                 "domains": [d.ident() for d in domains],
                 "time": time.time(),
                 "need_sync": need_sync,
@@ -184,7 +186,7 @@ class ActivateChangesWriter:
                 "domain_settings": domain_settings or {},
                 "prevent_discard_changes": prevent_discard_changes,
                 "diff_text": diff_text,
-                "has_been_activated": site_is_local(active_config, site_id)
+                "has_been_activated": site_is_local(active_config.sites[site_id])
                 and need_restart is False
                 and need_apache_reload is False,
             }
@@ -192,22 +194,27 @@ class ActivateChangesWriter:
 
 
 def add_service_change(
+    *,
     action_name: str,
     text: str,
+    user_id: UserId | None,
     object_ref: ObjectRef,
     domains: Sequence[ABCConfigDomain],
     domain_settings: DomainSettings,
     site_id: SiteId,
+    use_git: bool,
     diff_text: str | None = None,
     need_sync: bool = False,
 ) -> None:
     add_change(
-        action_name,
-        text,
+        action_name=action_name,
+        text=text,
+        user_id=user_id,
         object_ref=object_ref,
         sites=[site_id],
         diff_text=diff_text,
         need_sync=need_sync,
         domains=domains,
         domain_settings=domain_settings,
+        use_git=use_git,
     )

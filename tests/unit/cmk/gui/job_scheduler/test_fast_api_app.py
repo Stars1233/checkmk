@@ -9,7 +9,7 @@ from collections import Counter
 
 from fastapi.testclient import TestClient
 
-import cmk.utils.resulttype as result
+import cmk.ccc.resulttype as result
 
 from cmk.gui.background_job import (
     BackgroundJob,
@@ -77,7 +77,7 @@ class HelloJob(BackgroundJob):
         return "Hello Job"
 
     @classmethod
-    def on_scheduler_start(cls, executor: JobExecutor) -> None:
+    def on_scheduler_start(cls, executor: JobExecutor, *, debug: bool) -> None:
         HelloJob.on_scheduler_start_called = True
 
 

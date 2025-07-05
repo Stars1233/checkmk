@@ -9,7 +9,7 @@ from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import asynccontextmanager
 from logging import Logger
 from pathlib import Path
-from typing import get_type_hints
+from typing import get_type_hints, override
 
 from fastapi import FastAPI, Request
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
@@ -47,7 +47,7 @@ def get_application(
         # The code before `yield` is executed on startup, after `yield` on shutdown
         logger.info("Starting background jobs on_scheduler_start hooks")
         for job_cls in registered_jobs.values():
-            job_cls.on_scheduler_start(executor)
+            job_cls.on_scheduler_start(executor, debug=False)
         logger.info("Finished on_scheduler_start hooks")
         yield
 
@@ -125,6 +125,7 @@ def get_application(
 class PrettyJSONResponse(Response):
     media_type = "application/json"
 
+    @override
     def render(self, content: object) -> bytes:
         return json.dumps(
             content,

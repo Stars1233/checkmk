@@ -23,6 +23,7 @@ from cmk.gui.htmllib.html import html
 from cmk.gui.http import Request
 from cmk.gui.http import request as active_request
 from cmk.gui.i18n import _, _l, ungettext
+from cmk.gui.logged_in import LoggedInUser
 from cmk.gui.painter.v0 import Cell, Painter
 from cmk.gui.painter_options import paint_age
 from cmk.gui.permissions import Permission, permission_registry
@@ -34,7 +35,7 @@ from cmk.gui.views.command import (
     Command,
     CommandActionResult,
     CommandGroupVarious,
-    PermissionSectionAction,
+    PERMISSION_SECTION_ACTION,
 )
 from cmk.gui.views.sorter import cmp_simple_number, Sorter
 from cmk.gui.visuals.filter import Filter
@@ -180,7 +181,7 @@ class PainterCrashIdent(Painter):
     def columns(self) -> Sequence[ColumnName]:
         return ["crash_id"]
 
-    def render(self, row: Row, cell: Cell) -> CellSpec:
+    def render(self, row: Row, cell: Cell, user: LoggedInUser) -> CellSpec:
         url = makeuri_contextless(
             self.request,
             [
@@ -207,7 +208,7 @@ class PainterCrashType(Painter):
     def columns(self) -> Sequence[ColumnName]:
         return ["crash_type"]
 
-    def render(self, row: Row, cell: Cell) -> CellSpec:
+    def render(self, row: Row, cell: Cell, user: LoggedInUser) -> CellSpec:
         return None, row["crash_type"]
 
 
@@ -226,7 +227,7 @@ class PainterCrashSource(Painter):
     def columns(self) -> Sequence[ColumnName]:
         return ["crash_exc_traceback"]
 
-    def render(self, row: Row, cell: Cell) -> CellSpec:
+    def render(self, row: Row, cell: Cell, user: LoggedInUser) -> CellSpec:
         return (
             None,
             (
@@ -256,7 +257,7 @@ class PainterCrashTime(Painter):
     def painter_options(self):
         return ["ts_format", "ts_date"]
 
-    def render(self, row: Row, cell: Cell) -> CellSpec:
+    def render(self, row: Row, cell: Cell, user: LoggedInUser) -> CellSpec:
         return paint_age(
             row["crash_time"],
             has_been_checked=True,
@@ -281,7 +282,7 @@ class PainterCrashVersion(Painter):
     def columns(self) -> Sequence[ColumnName]:
         return ["crash_version"]
 
-    def render(self, row: Row, cell: Cell) -> CellSpec:
+    def render(self, row: Row, cell: Cell, user: LoggedInUser) -> CellSpec:
         return None, row["crash_version"]
 
 
@@ -300,7 +301,7 @@ class PainterCrashException(Painter):
     def columns(self) -> Sequence[ColumnName]:
         return ["crash_exc_type", "crash_exc_value"]
 
-    def render(self, row: Row, cell: Cell) -> CellSpec:
+    def render(self, row: Row, cell: Cell, user: LoggedInUser) -> CellSpec:
         return None, "{}: {}".format(row["crash_exc_type"], row["crash_exc_value"])
 
 
@@ -325,7 +326,7 @@ SorterCrashTime = Sorter(
 
 PermissionActionDeleteCrashReport = permission_registry.register(
     Permission(
-        section=PermissionSectionAction,
+        section=PERMISSION_SECTION_ACTION,
         name="delete_crash_report",
         title=_l("Delete crash reports"),
         description=_l("Delete crash reports created by Checkmk"),

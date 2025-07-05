@@ -1,0 +1,61 @@
+title: SQL Database Request Check
+agents: active
+catalog: agentless
+license: GPLv2
+distribution: check_mk
+
+item:
+ The name of the active service
+
+description:
+  This is an active check that connects to a database server.
+  It sends an SQL query to that server, and interprets the result in the following manner:
+
+  Only the first row of the result is considered, which must consist of one to three columns.
+
+  First column: A number.
+  If levels are provided, this number will be considered a measurement value, that is compared against those levels.
+  If no levels are provided, the number will be interpreted as the service state, where 0, 1, 2 and 3 represent `OK`, `WARN`, `CRIT` and `UNKNOWN`, respectively.
+
+  Second column: A text.
+  The text is used as the service output. If there is no second column, the number from the first column will be displayed.
+
+  Third column: Metrics.
+  Metrics must be in the standard format of nagios performance data.
+  If no third column is present, the service will not have any metrics.
+
+  Currently the check works with MySQL, Postgresql, MSSQL, DB2, SQL Anywhere and Oracle databases.
+  For this to work, additional python libraries must be installed (depending on the type of database one of {psycopg2}, {pymysql}, {pymssql}, {oracledb}, {ibm_db}, {ibm_db_dbi} and {sqlanydb}).
+  Remember to use {pip3} when installing python libraries from the omd shell.
+
+  This check is configured by the WATO ruleset "Check SQL Database".
+
+  See the {usage} page of the check for details about the invocation on the command line ({check_sql --help}).
+
+  -- Oracle Support --
+
+  In order to use Oracle in this check, {instantclient} must be installed. You also need to modify
+  the {LD_LIBRARY_PATH} environment variable to point to the location where the {libclntsh.so}
+  library is located.
+
+  Note, the Oracle check supports procedure calls. However, it must return exactly one output
+  variable. The value of this variable must be in the same format as the return value of the SQL
+  statement described above.
+
+  -- SQL Anywhere Support --
+
+  SQL Anywhere should be installed under your site's {~/local/lib} folder.
+
+  Ensure that the site has permission to use the SQL Anywhere files:
+
+  {omd[site]$ chown -R site:site /omd/sites/site/local/lib/sqlanywhere*}
+
+  SQL Anywhere requires certain environment variables to be set at runtime. So, add the following
+  line to the site's {~/.bashrc} file:
+
+  {source ./local/lib/sqlanywhere17/bin64/sa_config.sh}
+
+  This example is unique to an installation of SQL Anywhere 17 on a 64 bit machine, but you may
+  need to adapt this to fit your installation.
+
+  Finally, run {omd restart}, so that the environment variables are loaded into the site.

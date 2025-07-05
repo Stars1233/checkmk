@@ -42,46 +42,64 @@ from cmk.gui.openapi.endpoints import (
 )
 from cmk.gui.openapi.restful_objects.registry import EndpointRegistry
 
+from .api_endpoints.host_config import registration as api_host_config
+from .framework.registry import VersionedEndpointRegistry
 from .restful_objects.endpoint_family import EndpointFamilyRegistry
+from .shared_endpoint_families.host_config import HOST_CONFIG_FAMILY
 from .spec import spec_generator_job
 
 
 def register(
     endpoint_registry: EndpointRegistry,
+    versioned_endpoint_registry: VersionedEndpointRegistry,
     endpoint_family_registry: EndpointFamilyRegistry,
     job_registry: BackgroundJobRegistry,
+    *,
+    ignore_duplicate_endpoints: bool = False,
 ) -> None:
-    acknowledgement.register(endpoint_registry)
-    activate_changes.register(endpoint_registry)
-    agent.register(endpoint_registry)
-    audit_log.register(endpoint_registry)
-    aux_tags.register(endpoint_registry)
-    background_job.register(endpoint_registry)
-    cert.register(endpoint_registry)
-    comment.register(endpoint_registry)
-    contact_group_config.register(endpoint_registry)
-    downtime.register(endpoint_registry)
-    folder_config.register(endpoint_registry)
-    configuration_entity.register(endpoint_registry)
-    ldap_connection.register(endpoint_registry)
-    host.register(endpoint_registry)
-    host_config.register(endpoint_registry)
-    host_group_config.register(endpoint_registry)
-    host_internal.register(endpoint_registry)
-    host_tag_group.register(endpoint_registry)
-    notification_rules.register(endpoint_registry)
-    password.register(endpoint_family_registry, endpoint_registry)
-    parent_scan.register(endpoint_registry)
-    rule.register(endpoint_registry)
-    ruleset.register(endpoint_registry)
-    service.register(endpoint_registry)
-    service_discovery.register(endpoint_registry)
-    service_group_config.register(endpoint_registry)
-    site_management.register(endpoint_registry)
-    time_periods.register(endpoint_registry)
-    user_config.register(endpoint_registry)
-    user_role.register(endpoint_registry)
-    version.register(endpoint_registry)
+    # TODO: once all legacy endpoints have been migrated the family registry should happen inside
+    #  respective endpoint module
+    endpoint_family_registry.register(
+        HOST_CONFIG_FAMILY, ignore_duplicates=ignore_duplicate_endpoints
+    )
+
+    acknowledgement.register(endpoint_registry, ignore_duplicates=ignore_duplicate_endpoints)
+    activate_changes.register(endpoint_registry, ignore_duplicates=ignore_duplicate_endpoints)
+    agent.register(endpoint_registry, ignore_duplicates=ignore_duplicate_endpoints)
+    audit_log.register(endpoint_registry, ignore_duplicates=ignore_duplicate_endpoints)
+    aux_tags.register(endpoint_registry, ignore_duplicates=ignore_duplicate_endpoints)
+    background_job.register(endpoint_registry, ignore_duplicates=ignore_duplicate_endpoints)
+    cert.register(endpoint_registry, ignore_duplicates=ignore_duplicate_endpoints)
+    comment.register(endpoint_registry, ignore_duplicates=ignore_duplicate_endpoints)
+    contact_group_config.register(endpoint_registry, ignore_duplicates=ignore_duplicate_endpoints)
+    downtime.register(endpoint_registry, ignore_duplicates=ignore_duplicate_endpoints)
+    folder_config.register(endpoint_registry, ignore_duplicates=ignore_duplicate_endpoints)
+    configuration_entity.register(endpoint_registry, ignore_duplicates=ignore_duplicate_endpoints)
+    ldap_connection.register(endpoint_registry, ignore_duplicates=ignore_duplicate_endpoints)
+    host.register(endpoint_registry, ignore_duplicates=ignore_duplicate_endpoints)
+    host_config.register(endpoint_registry, ignore_duplicates=ignore_duplicate_endpoints)
+    host_group_config.register(endpoint_registry, ignore_duplicates=ignore_duplicate_endpoints)
+    host_internal.register(endpoint_registry, ignore_duplicates=ignore_duplicate_endpoints)
+    host_tag_group.register(endpoint_registry, ignore_duplicates=ignore_duplicate_endpoints)
+    notification_rules.register(endpoint_registry, ignore_duplicates=ignore_duplicate_endpoints)
+    password.register(
+        endpoint_family_registry, endpoint_registry, ignore_duplicates=ignore_duplicate_endpoints
+    )
+    parent_scan.register(endpoint_registry, ignore_duplicates=ignore_duplicate_endpoints)
+    rule.register(endpoint_registry, ignore_duplicates=ignore_duplicate_endpoints)
+    ruleset.register(endpoint_registry, ignore_duplicates=ignore_duplicate_endpoints)
+    service.register(endpoint_registry, ignore_duplicates=ignore_duplicate_endpoints)
+    service_discovery.register(endpoint_registry, ignore_duplicates=ignore_duplicate_endpoints)
+    service_group_config.register(endpoint_registry, ignore_duplicates=ignore_duplicate_endpoints)
+    site_management.register(endpoint_registry, ignore_duplicates=ignore_duplicate_endpoints)
+    time_periods.register(endpoint_registry, ignore_duplicates=ignore_duplicate_endpoints)
+    user_config.register(endpoint_registry, ignore_duplicates=ignore_duplicate_endpoints)
+    user_role.register(endpoint_registry, ignore_duplicates=ignore_duplicate_endpoints)
+    version.register(endpoint_registry, ignore_duplicates=ignore_duplicate_endpoints)
     spec_generator_job.register(job_registry)
-    quick_setup.register(endpoint_registry)
-    broker_connection.register(endpoint_registry)
+    quick_setup.register(endpoint_registry, ignore_duplicates=ignore_duplicate_endpoints)
+    broker_connection.register(endpoint_registry, ignore_duplicates=ignore_duplicate_endpoints)
+
+    api_host_config.register(
+        versioned_endpoint_registry, ignore_duplicates=ignore_duplicate_endpoints
+    )

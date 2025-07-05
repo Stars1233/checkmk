@@ -29,14 +29,23 @@ def main() {
                     credentialsId: 'win_sign',
                     passwordVariable: 'WIN_SIGN_PASSWORD',
                     usernameVariable: ''),
+                usernamePassword(
+                    credentialsId: 'nexus',
+                    passwordVariable: 'NEXUS_PASSWORD',
+                    usernameVariable: 'NEXUS_USERNAME'),
                 string(
                     credentialsId: "CI_TEST_SQL_DB_ENDPOINT",
                     variable:"CI_TEST_SQL_DB_ENDPOINT"),
+                string(
+                    credentialsId: "CI_ORA2_DB_TEST",
+                    variable:"CI_ORA2_DB_TEST"),
             ]) {
                 // The windows.build function will create stages.
                 windows.build(
                     TARGET: 'agent_with_sign',
                     PASSWORD: WIN_SIGN_PASSWORD,
+                    CREDS: NEXUS_USERNAME+':'+NEXUS_PASSWORD,
+                    CACHE_URL: 'https://artifacts.lan.tribe29.com/repository/omd-build-cache/'
                 );
             }
         }

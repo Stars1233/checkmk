@@ -3,6 +3,7 @@
 # This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
 # conditions defined in the file COPYING, which is part of this source code package.
 
+import abc
 import datetime
 import json
 import time
@@ -10,21 +11,21 @@ from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import auto, Enum
 from pathlib import Path
-from typing import Literal
+from typing import override
 
 from livestatus import SiteConfigurations
 
 from cmk.ccc import store
 from cmk.ccc.site import omd_site, SiteId
+from cmk.ccc.user import UserId
 from cmk.ccc.version import __version__, Version
 
 from cmk.utils import paths
 from cmk.utils.html import replace_state_markers
-from cmk.utils.user import UserId
 
 import cmk.ec.export as ec  # pylint: disable=cmk-module-layer-violation
 
-from cmk.gui.config import active_config
+from cmk.gui.config import Config
 from cmk.gui.cron import CronJob, CronJobRegistry
 from cmk.gui.htmllib.generator import HTMLWriter
 from cmk.gui.http import request
@@ -32,13 +33,14 @@ from cmk.gui.i18n import _
 from cmk.gui.job_scheduler_client import JobSchedulerClient
 from cmk.gui.log import logger
 from cmk.gui.message import get_gui_messages, Message, message_gui, MessageText
-from cmk.gui.site_config import get_site_config, is_wato_slave_site
+from cmk.gui.site_config import is_wato_slave_site
 from cmk.gui.sites import states
 from cmk.gui.type_defs import Users
 from cmk.gui.userdb import load_users
 from cmk.gui.utils import gen_id
 from cmk.gui.utils.html import HTML
 from cmk.gui.utils.roles import user_may
+from cmk.gui.utils.urls import makeuri_contextless
 from cmk.gui.watolib.analyze_configuration import ACResultState, ACTestResult, perform_tests
 
 from cmk.discover_plugins import addons_plugins_local_path, plugins_local_path
@@ -53,7 +55,7 @@ class _MarkerFileStore:
         self, site_id: SiteId, site_version: str, ac_test_results: Sequence[ACTestResult]
     ) -> None:
         marker_file = self._folder / str(site_id) / site_version
-        store.makedirs(marker_file.parent)
+        marker_file.parent.mkdir(mode=0o770, exist_ok=True, parents=True)
         store.save_text_to_file(marker_file, json.dumps([repr(r) for r in ac_test_results]))
 
     def cleanup_site_dir(self, site_id: SiteId) -> None:
@@ -104,7 +106,6 @@ def _make_path_config() -> PathConfig | None:
         checks_dir=paths.local_checks_dir,
         doc_dir=paths.local_doc_dir,
         gui_plugins_dir=paths.local_gui_plugins_dir,
-        installed_packages_dir=paths.installed_packages_dir,
         inventory_dir=paths.local_inventory_dir,
         lib_dir=paths.local_lib_dir,
         locale_dir=paths.local_locale_dir,
@@ -113,7 +114,6 @@ def _make_path_config() -> PathConfig | None:
         mkp_rule_pack_dir=ec.mkp_rule_pack_dir(),
         notifications_dir=paths.local_notifications_dir,
         pnp_templates_dir=paths.local_pnp_templates_dir,
-        manifests_dir=paths.tmp_dir,
         web_dir=paths.local_web_dir,
     )
 
@@ -148,7 +148,6 @@ class _NotificationCategory(Enum):
 @dataclass(frozen=True)
 class _ACTestResultProblem:
     ident: str
-    type: Literal["mkp", "file", "unsorted"]
     notification_category: _NotificationCategory
     _ac_test_results: dict[SiteId, list[ACTestResult]] = field(default_factory=dict)
 
@@ -173,15 +172,15 @@ class _ACTestResultProblem:
 
         return ", ".join(words)
 
-    def html(self, version: str) -> HTML:
-        if not self._ac_test_results:
-            return HTML("", escape=False)
+    @abc.abstractmethod
+    def _create_title(self) -> str: ...
 
-        match ACResultState.worst(r.state for rs in self._ac_test_results.values() for r in rs):
+    def _create_error_box_message(self, version: str, state: ACResultState) -> str:
+        match state:
             case ACResultState.CRIT:
-                error = _("This does not work in Checkmk %s.") % version
+                return _("This does not work in Checkmk %s.") % version
             case ACResultState.WARN:
-                error = (
+                return (
                     _(
                         "This may partially work in Checkmk %s but will stop working from the"
                         " next major version onwards."
@@ -189,50 +188,38 @@ class _ACTestResultProblem:
                     % version
                 )
             case _:
-                return HTML("", escape=False)
+                return ""
 
-        match self.type:
-            case "mkp":
-                title = _("Deprecated extension package: %s") % self.ident
-                info = (
-                    _(
-                        "The extension package uses APIs which are deprecated or removed in"
-                        " Checkmk %s so that this extension will not work anymore once you upgrade"
-                        " your site to next major version."
-                    )
-                    % version
-                )
-                recommendation = _(
-                    "We highly recommend solving this issue already in your installation by"
-                    " updating the extension package. Otherwise the extension package will be"
-                    " deactivated after an upgrade."
-                )
-            case "file":
-                title = _("Deprecated plug-in: %s") % self.ident
-                info = (
-                    _(
-                        "The plug-in uses APIs which are deprecated or removed in"
-                        " Checkmk %s, so that this extension will not work anymore once you upgrade"
-                        " your site to next major version."
-                    )
-                    % version
-                )
-                recommendation = _(
-                    "We highly recommend solving this issue already in your installation either"
-                    " by migrating or removing this plug-in."
-                )
-            case "unsorted":
-                title = self.ident
-                info = ""
-                recommendation = _(
-                    "We highly recommend solving this issue already in your installation."
-                )
+    @abc.abstractmethod
+    def _create_info(self, version: str) -> str: ...
 
-        html_code = HTMLWriter.render_h2(title)
-        html_code += HTMLWriter.render_div(error, class_="error")
-        if info:
+    @abc.abstractmethod
+    def _create_recommendation(self) -> HTML | str: ...
+
+    def html(self, version: str) -> HTML:
+        if (
+            not self._ac_test_results
+            or (
+                overall_state := ACResultState.worst(
+                    r.state for rs in self._ac_test_results.values() for r in rs
+                )
+            )
+            is ACResultState.OK
+        ):
+            return HTML("", escape=False)
+
+        html_code = HTMLWriter.render_h2(self._create_title())
+        if error_box_message := self._create_error_box_message(version, overall_state):
+            html_code += HTMLWriter.render_div(error_box_message, class_="error")
+
+        if info := self._create_info(version):
             html_code += HTMLWriter.render_p(info)
-        html_code += HTMLWriter.render_p(recommendation)
+
+        if isinstance(recommendation := self._create_recommendation(), HTML):
+            html_code += recommendation
+        else:
+            html_code += HTMLWriter.render_p(recommendation)
+
         html_code += HTMLWriter.render_p(
             _("Affected sites: %s") % ", ".join(sorted(self._ac_test_results))
         )
@@ -265,6 +252,103 @@ class _ACTestResultProblem:
         return html_code
 
 
+class _ACTestResultProblemMKP(_ACTestResultProblem):
+    @override
+    def _create_title(self) -> str:
+        return _("Deprecated extension package: %s") % self.ident
+
+    @override
+    def _create_info(self, version: str) -> str:
+        return (
+            _(
+                "The extension package uses APIs which are deprecated or removed in"
+                " Checkmk %s so that this extension will not work anymore once you upgrade"
+                " your site to next major version."
+            )
+            % version
+        )
+
+    @override
+    def _create_recommendation(self) -> HTML | str:
+        return _(
+            "We highly recommend solving this issue already in your installation by"
+            " updating the extension package. Otherwise the extension package will be"
+            " deactivated after an upgrade."
+        )
+
+
+class _ACTestResultProblemFile(_ACTestResultProblem):
+    @override
+    def _create_title(self) -> str:
+        return _("Deprecated plug-in: %s") % self.ident
+
+    @override
+    def _create_info(self, version: str) -> str:
+        return (
+            _(
+                "The plug-in uses APIs which are deprecated or removed in"
+                " Checkmk %s, so that this extension will not work anymore once you upgrade"
+                " your site to next major version."
+            )
+            % version
+        )
+
+    @override
+    def _create_recommendation(self) -> HTML | str:
+        return _(
+            "We highly recommend solving this issue already in your installation either"
+            " by migrating or removing this plug-in."
+        )
+
+
+class _ACTestResultProblemUnsorted(_ACTestResultProblem):
+    @override
+    def _create_title(self) -> str:
+        return self.ident
+
+    @property
+    def _is_unknown_check_params_rule_set_problem(self) -> bool:
+        return all(
+            r.test_id == "ACTestUnknownCheckParameterRuleSets"
+            for rs in self._ac_test_results.values()
+            for r in rs
+        )
+
+    @override
+    def _create_error_box_message(self, version: str, state: ACResultState) -> str:
+        return (
+            ""
+            if self._is_unknown_check_params_rule_set_problem
+            else super()._create_error_box_message(version, state)
+        )
+
+    @override
+    def _create_info(self, version: str) -> str:
+        return ""
+
+    @override
+    def _create_recommendation(self) -> HTML | str:
+        if self._is_unknown_check_params_rule_set_problem:
+            return HTMLWriter.render_p(
+                _(
+                    "This configuration has no effect in the current installation. It may be"
+                    " associated with an older version of Checkmk or an unused extension package,"
+                    " in which case it can be safely removed. Alternatively, it might belong to a"
+                    " temporarily disabled extension package, so you may want to retain it for now."
+                    " You can use the %s page in case you want to remove the rule."
+                )
+                % HTMLWriter.render_a(
+                    _("unknown rulesets"),
+                    href=makeuri_contextless(
+                        request,
+                        [("mode", "unknown_rulesets")],
+                        filename="wato.py",
+                    ),
+                ),
+            )
+        return _("We highly recommend solving this issue already in your installation.")
+
+
 def _find_ac_test_result_problems(
     not_ok_ac_test_results: Mapping[SiteId, Sequence[ACTestResult]],
     manifests_by_path: Mapping[Path, Manifest],
@@ -278,20 +362,12 @@ def _find_ac_test_result_problems(
                 if manifest := manifests_by_path.get(path):
                     problem = problem_by_ident.setdefault(
                         manifest.name,
-                        _ACTestResultProblem(
-                            manifest.name,
-                            "mkp",
-                            _NotificationCategory.manage_mkps,
-                        ),
+                        _ACTestResultProblemMKP(manifest.name, _NotificationCategory.manage_mkps),
                     )
                 else:
                     problem = problem_by_ident.setdefault(
                         str(path),
-                        _ACTestResultProblem(
-                            str(path),
-                            "file",
-                            _NotificationCategory.manage_mkps,
-                        ),
+                        _ACTestResultProblemFile(str(path), _NotificationCategory.manage_mkps),
                     )
 
             else:
@@ -314,11 +390,7 @@ def _find_ac_test_result_problems(
 
                 problem = problem_by_ident.setdefault(
                     ac_test_result.text,
-                    _ACTestResultProblem(
-                        ac_test_result.text,
-                        "unsorted",
-                        notification_category,
-                    ),
+                    _ACTestResultProblemUnsorted(ac_test_result.text, notification_category),
                 )
 
             problem.add_ac_test_result(site_id, ac_test_result)
@@ -375,11 +447,11 @@ def _find_problems_to_send(
             )
 
 
-def execute_deprecation_tests_and_notify_users() -> None:
+def execute_deprecation_tests_and_notify_users(config: Config) -> None:
     if is_wato_slave_site():
         return
 
-    marker_file_store = _MarkerFileStore(Path(paths.var_dir) / "deprecations")
+    marker_file_store = _MarkerFileStore(paths.var_dir / "deprecations")
 
     site_versions_by_site_id = {
         site_id: site_version
@@ -391,15 +463,12 @@ def execute_deprecation_tests_and_notify_users() -> None:
         not_ok_ac_test_results := _filter_non_ok_ac_test_results(
             perform_tests(
                 logger,
-                active_config,
                 request,
                 SiteConfigurations(
-                    {
-                        site_id: get_site_config(active_config, site_id)
-                        for site_id in site_versions_by_site_id
-                    }
+                    {site_id: config.sites[site_id] for site_id in site_versions_by_site_id}
                 ),
                 categories=["deprecations"],
+                debug=config.debug,
             )
         )
     ):

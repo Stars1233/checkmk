@@ -10,18 +10,17 @@ Checkmk uses TLS certificates to secure agent communication.
 """
 
 from collections.abc import Mapping
-from pathlib import Path
 from typing import Any
 
 from cryptography import x509
 from dateutil.relativedelta import relativedelta
 
-from cmk.utils.certs import cert_dir, CertManagementEvent, root_cert_path, RootCA
+from cmk.utils.certs import agent_root_ca_path, cert_dir, CertManagementEvent, RootCA, SiteCA
 from cmk.utils.log.security_event import log_security_event
 from cmk.utils.paths import omd_root
 
 from cmk.gui import config
-from cmk.gui.default_permissions import PermissionSectionGeneral
+from cmk.gui.default_permissions import PERMISSION_SECTION_GENERAL
 from cmk.gui.http import Response
 from cmk.gui.i18n import _l
 from cmk.gui.logged_in import user
@@ -37,12 +36,13 @@ from cmk.gui.permissions import Permission, permission_registry
 from cmk.gui.utils import permission_verification as permissions
 
 from cmk.crypto.certificate import CertificateSigningRequest
+from cmk.crypto.x509 import SAN, SubjectAlternativeNames
 
 _403_STATUS_DESCRIPTION = "You do not have the permission for agent pairing."
 
 permission_registry.register(
     Permission(
-        section=PermissionSectionGeneral,
+        section=PERMISSION_SECTION_GENERAL,
         name="agent_pairing",
         title=_l("Agent pairing"),
         description=_l(
@@ -59,24 +59,25 @@ def _user_is_authorized() -> bool:
     return user.may("general.agent_pairing")
 
 
-def _get_root_ca() -> RootCA:
-    return RootCA.load(root_cert_path(cert_dir(Path(omd_root))))
-
-
 def _get_agent_ca() -> RootCA:
-    return RootCA.load(root_cert_path(cert_dir(Path(omd_root)) / "agents"))
+    return RootCA.load(agent_root_ca_path(omd_root))
 
 
 def _serialized_root_cert() -> str:
-    return _get_root_ca().certificate.dump_pem().str
+    # loading and dumping the PEM is needed here to ensure that we don't send the private key along
+    return SiteCA.load(cert_dir(omd_root)).root_ca.certificate.dump_pem().str
 
 
 def _serialized_signed_cert(csr: x509.CertificateSigningRequest) -> str:
+    csr_ = CertificateSigningRequest(csr)
+    if csr_.subject.common_name is None:
+        raise ValueError("CSR must provide a common name")
     cert = _get_agent_ca().sign_csr(
-        CertificateSigningRequest(csr),
+        csr_,
         expiry=relativedelta(
             months=config.active_config.agent_controller_certificates["lifetime_in_months"]
         ),
+        subject_alternative_names=SubjectAlternativeNames([SAN.dns_name(csr_.subject.common_name)]),
     )
     log_security_event(
         CertManagementEvent(
@@ -173,7 +174,9 @@ def agent_controller_certificates_settings(param: object) -> Response:
     return serve_json(config.active_config.agent_controller_certificates)
 
 
-def register(endpoint_registry: EndpointRegistry) -> None:
-    endpoint_registry.register(root_cert)
-    endpoint_registry.register(make_certificate)
-    endpoint_registry.register(agent_controller_certificates_settings)
+def register(endpoint_registry: EndpointRegistry, *, ignore_duplicates: bool) -> None:
+    endpoint_registry.register(root_cert, ignore_duplicates=ignore_duplicates)
+    endpoint_registry.register(make_certificate, ignore_duplicates=ignore_duplicates)
+    endpoint_registry.register(
+        agent_controller_certificates_settings, ignore_duplicates=ignore_duplicates
+    )

@@ -9,12 +9,13 @@ from unittest.mock import call, MagicMock, patch
 import pytest
 from pytest_mock import MockerFixture
 
+from cmk.ccc.hostaddress import HostName
+from cmk.ccc.user import UserId
+
 from cmk.utils.everythingtype import EVERYTHING
-from cmk.utils.hostaddress import HostName
 from cmk.utils.labels import HostLabel
 from cmk.utils.sectionname import SectionName
 from cmk.utils.servicename import ServiceName
-from cmk.utils.user import UserId
 
 from cmk.automations.results import (
     DeleteHostsResult,
@@ -28,6 +29,7 @@ from cmk.checkengine.plugins import AutocheckEntry, CheckPluginName
 
 from cmk.gui.utils import transaction_manager
 from cmk.gui.watolib.audit_log import AuditLogStore
+from cmk.gui.watolib.automations import LocalAutomationConfig
 from cmk.gui.watolib.hosts_and_folders import folder_tree, Host
 from cmk.gui.watolib.services import (
     Discovery,
@@ -139,11 +141,16 @@ def fixture_sample_host(
 ) -> Generator[Host, None, None]:
     hostname = sample_host_name
     root_folder = folder_tree().root_folder()
-    root_folder.create_hosts([(hostname, {}, None)])
+    root_folder.create_hosts([(hostname, {}, None)], pprint_value=False)
     host = root_folder.host(hostname)
     assert host is not None
     yield host
-    root_folder.delete_hosts([hostname], automation=lambda *args, **kwargs: DeleteHostsResult())
+    root_folder.delete_hosts(
+        [hostname],
+        automation=lambda *args, **kwargs: DeleteHostsResult(),
+        pprint_value=False,
+        debug=False,
+    )
 
 
 @pytest.mark.usefixtures("inline_background_jobs")
@@ -154,7 +161,9 @@ def test_perform_discovery_none_action(
         action=DiscoveryAction.NONE,
         host=sample_host,
         previous_discovery_result=None,
+        automation_config=LocalAutomationConfig(),
         raise_errors=True,
+        debug=False,
     )
     mock_discovery_preview.assert_called_once()
     assert discovery_result.check_table == MOCK_DISCOVERY_RESULT.check_table
@@ -170,13 +179,15 @@ def test_perform_discovery_tabula_rasa_action_with_no_previous_discovery_result(
     discovery_result = get_check_table(
         sample_host,
         DiscoveryAction.TABULA_RASA,
+        automation_config=LocalAutomationConfig(),
         raise_errors=True,
+        debug=False,
     )
 
     mock_discovery.assert_called_once()
     mock_discovery_preview.assert_has_calls(
         [
-            call(sample_host_name, prevent_fetching=False, raise_errors=False),
+            call(sample_host_name, prevent_fetching=False, raise_errors=False, debug=False),
         ]
     )
     assert discovery_result.check_table == MOCK_DISCOVERY_RESULT.check_table
@@ -323,21 +334,27 @@ def test_perform_discovery_fix_all_with_previous_discovery_result(
             action=DiscoveryAction.FIX_ALL,
             host=sample_host,
             previous_discovery_result=previous_discovery_result,
+            automation_config=LocalAutomationConfig(),
             raise_errors=True,
+            debug=False,
         ),
         host=sample_host,
+        automation_config=LocalAutomationConfig(),
         raise_errors=True,
+        pprint_value=False,
+        debug=False,
     )
     sample_autochecks: Mapping[ServiceName, AutocheckEntry] = {
         "Temperature Zone 1": AutocheckEntry(CheckPluginName("lnx_thermal"), "Zone 1", {}, {}),
     }
     mock_set_autochecks.assert_called_with(
-        "NO_SITE",
+        LocalAutomationConfig(),
         SetAutochecksInput(
             sample_host_name,
             sample_autochecks,
             {},
         ),
+        debug=False,
     )
     mock_discovery_preview.assert_called_once()
     assert [entry.check_source for entry in discovery_result.check_table] == [
@@ -574,28 +591,37 @@ def test_perform_discovery_single_update(
             action=DiscoveryAction.SINGLE_UPDATE,
             host=sample_host,
             previous_discovery_result=previous_discovery_result,
+            automation_config=LocalAutomationConfig(),
             raise_errors=True,
+            debug=False,
         ),
         selected_services=(("mem_linux", None),),
         update_source="new",
         update_target="unchanged",
         host=sample_host,
         raise_errors=True,
+        automation_config=LocalAutomationConfig(),
+        pprint_value=False,
+        debug=False,
     )
     sample_autochecks: Mapping[ServiceName, AutocheckEntry] = {
         "Check_MK Agent": AutocheckEntry(CheckPluginName("checkmk_agent"), None, {}, {}),
         "Memory": AutocheckEntry(CheckPluginName("mem_linux"), None, {}, {}),
     }
     mock_set_autochecks.assert_called_with(
-        "NO_SITE",
+        LocalAutomationConfig(),
         SetAutochecksInput(
             sample_host_name,
             sample_autochecks,
             {},
         ),
+        debug=False,
     )
     mock_discovery_preview.assert_called_with(
-        sample_host_name, prevent_fetching=False, raise_errors=False
+        sample_host_name,
+        prevent_fetching=False,
+        raise_errors=False,
+        debug=False,
     )
     assert [
         entry.check_source
@@ -781,13 +807,18 @@ def test_perform_discovery_action_update_services(
             action=DiscoveryAction.UPDATE_SERVICES,
             host=sample_host,
             previous_discovery_result=previous_discovery_result,
+            automation_config=LocalAutomationConfig(),
             raise_errors=True,
+            debug=False,
         ),
         selected_services=EVERYTHING,
         update_source=None,
         update_target=None,
         host=sample_host,
         raise_errors=True,
+        automation_config=LocalAutomationConfig(),
+        pprint_value=False,
+        debug=False,
     )
     sample_autochecks: Mapping[ServiceName, AutocheckEntry] = {
         "Filesystem /opt/omd/sites/heute/tmp": AutocheckEntry(
@@ -801,15 +832,19 @@ def test_perform_discovery_action_update_services(
         )
     }
     mock_set_autochecks.assert_called_with(
-        "NO_SITE",
+        LocalAutomationConfig(),
         SetAutochecksInput(
             sample_host_name,
             sample_autochecks,
             {},
         ),
+        debug=False,
     )
     mock_discovery_preview.assert_called_with(
-        sample_host_name, prevent_fetching=False, raise_errors=False
+        sample_host_name,
+        prevent_fetching=False,
+        raise_errors=False,
+        debug=False,
     )
     assert [entry.check_source for entry in discovery_result.check_table] == ["unchanged"]
 
@@ -892,23 +927,32 @@ def test_perform_discovery_action_update_host_labels(
             action=DiscoveryAction.UPDATE_HOST_LABELS,
             host=sample_host,
             previous_discovery_result=previous_discovery_result,
+            automation_config=LocalAutomationConfig(),
             raise_errors=True,
+            debug=False,
         ),
         host=sample_host,
         raise_errors=True,
+        automation_config=LocalAutomationConfig(),
+        pprint_value=False,
+        debug=False,
     )
 
     mock_update_host_labels.assert_called_once_with(
-        "NO_SITE",
+        LocalAutomationConfig(),
         sample_host_name,
         [
             # HostLabel("cmk/check_mk_server", "yes", SectionName("omd_info")),
             HostLabel("cmk/os_family", "linux", SectionName("check_mk")),
         ],
+        debug=False,
     )
     mock_set_autochecks.assert_not_called()
     mock_discovery_preview.assert_called_with(
-        sample_host_name, prevent_fetching=False, raise_errors=False
+        sample_host_name,
+        prevent_fetching=False,
+        raise_errors=False,
+        debug=False,
     )
     assert "cmk/check_mk_server" not in discovery_result.host_labels
 

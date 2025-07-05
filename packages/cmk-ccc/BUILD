@@ -1,4 +1,3 @@
-load("@aspect_rules_lint//format:defs.bzl", "format_multirun")
 load("@aspect_rules_py//py:defs.bzl", "py_library", "py_pytest_main", "py_test")
 load("@cmk_requirements//:requirements.bzl", "requirement")
 load("@rules_python//python:packaging.bzl", "py_wheel")
@@ -14,6 +13,34 @@ py_library(
     name = "_init",
     srcs = ["cmk/ccc/__init__.py"],
     imports = ["."],
+)
+
+py_library(
+    name = "cleanup",
+    srcs = ["cmk/ccc/cleanup.py"],
+    imports = ["."],
+    visibility = ["//visibility:public"],
+)
+
+py_library(
+    name = "resulttype",
+    srcs = ["cmk/ccc/resulttype.py"],
+    imports = ["."],
+    visibility = ["//visibility:public"],
+)
+
+py_library(
+    name = "validatedstr",
+    srcs = ["cmk/ccc/validatedstr.py"],
+    imports = ["."],
+    visibility = ["//visibility:public"],
+)
+
+py_library(
+    name = "cpu-tracking",
+    srcs = ["cmk/ccc/cpu_tracking.py"],
+    imports = ["."],
+    visibility = ["//visibility:public"],
 )
 
 py_library(
@@ -51,6 +78,14 @@ py_library(
 py_library(
     name = "exceptions",
     srcs = ["cmk/ccc/exceptions.py"],
+    imports = ["."],
+    visibility = ["//visibility:public"],
+    deps = ["_init"],
+)
+
+py_library(
+    name = "hostaddress",
+    srcs = ["cmk/ccc/hostaddress.py"],
     imports = ["."],
     visibility = ["//visibility:public"],
     deps = ["_init"],
@@ -110,6 +145,14 @@ py_library(
 )
 
 py_library(
+    name = "user",
+    srcs = ["cmk/ccc/user.py"],
+    imports = ["."],
+    visibility = ["//visibility:public"],
+    deps = ["_init"],
+)
+
+py_library(
     name = "version",
     srcs = ["cmk/ccc/version.py"],
     imports = ["."],
@@ -121,16 +164,31 @@ py_library(
     ],
 )
 
+py_library(
+    name = "tty",
+    srcs = ["cmk/ccc/tty.py"],
+    imports = ["."],
+    visibility = ["//visibility:public"],
+    deps = [],
+)
+
 _ALL = [
+    "cleanup",
+    "cpu-tracking",
     "crash-reporting",
     "daemon",
     "debug",
     "exceptions",
+    "hostaddress",
     "i18n",
     "plugin-registry",
     "profile",
+    "resulttype",
     "site",
     "store",
+    "tty",
+    "user",
+    "validatedstr",
     "version",
 ]
 
@@ -166,6 +224,21 @@ py_test(
 )
 
 py_test(
+    name = "hostaddress-tests",
+    size = "small",
+    srcs = [
+        "__test__.py",
+        "tests/test_hostaddress.py",
+    ],
+    main = "__test__.py",
+    deps = [
+        "__test__",
+        "hostaddress",
+        requirement("pytest"),
+    ],
+)
+
+py_test(
     name = "site-tests",
     size = "small",
     srcs = [
@@ -180,9 +253,80 @@ py_test(
     ],
 )
 
-format_multirun(
-    name = "format",
-    python = "@aspect_rules_lint//format:ruff",
+py_test(
+    name = "resulttype-tests",
+    size = "small",
+    srcs = [
+        "__test__.py",
+        "tests/test_resulttype.py",
+    ],
+    main = "__test__.py",
+    deps = [
+        "__test__",
+        "resulttype",
+        requirement("pytest"),
+    ],
+)
+
+py_test(
+    name = "validatedstr-tests",
+    size = "small",
+    srcs = [
+        "__test__.py",
+        "tests/test_validatedstr.py",
+    ],
+    main = "__test__.py",
+    deps = [
+        "__test__",
+        "validatedstr",
+        requirement("pytest"),
+    ],
+)
+
+py_test(
+    name = "tty-tests",
+    size = "small",
+    srcs = [
+        "__test__.py",
+        "tests/test_tty.py",
+    ],
+    main = "__test__.py",
+    deps = [
+        "__test__",
+        "tty",
+        requirement("pytest"),
+    ],
+)
+
+py_test(
+    name = "store-tests",
+    size = "small",
+    srcs = [
+        "__test__.py",
+        "tests/test_store.py",
+    ],
+    main = "__test__.py",
+    deps = [
+        "__test__",
+        "debug",
+        "store",
+        requirement("pytest"),
+    ],
+)
+
+py_test(
+    name = "cpu-tracking-tests",
+    size = "small",
+    srcs = [
+        "__test__.py",
+        "tests/test_cpu_tracking.py",
+    ],
+    main = "__test__.py",
+    deps = [
+        "__test__",
+        "cpu-tracking",
+        requirement("pytest"),
+    ],
 )
 
 py_wheel(

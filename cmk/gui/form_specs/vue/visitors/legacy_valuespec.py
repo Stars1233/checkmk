@@ -7,7 +7,7 @@ import uuid
 from typing import Any
 
 from cmk.gui.exceptions import MKUserError
-from cmk.gui.form_specs.private.definitions import LegacyValueSpec
+from cmk.gui.form_specs.private import LegacyValueSpec
 from cmk.gui.http import request
 from cmk.gui.i18n import _
 from cmk.gui.utils.output_funnel import output_funnel
@@ -54,9 +54,7 @@ class LegacyValuespecVisitor(FormSpecVisitor[LegacyValueSpec, _ParsedValueModel,
         return input_html, str(readonly_html)
 
     def _to_vue(
-        self,
-        raw_value: object,
-        parsed_value: _ParsedValueModel | InvalidValue[_FrontendModel],
+        self, parsed_value: _ParsedValueModel | InvalidValue[_FrontendModel]
     ) -> tuple[shared_type_defs.LegacyValuespec, _FrontendModel]:
         title, help_text = get_title_and_help(self.form_spec)
 
@@ -111,7 +109,7 @@ class LegacyValuespecVisitor(FormSpecVisitor[LegacyValueSpec, _ParsedValueModel,
         )
 
     def _validate(
-        self, raw_value: object, parsed_value: _ParsedValueModel
+        self, parsed_value: _ParsedValueModel
     ) -> list[shared_type_defs.ValidationMessage]:
         varprefix = ""
         with output_funnel.plugged():

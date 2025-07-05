@@ -4,19 +4,18 @@
 # conditions defined in the file COPYING, which is part of this source code package.
 
 from collections.abc import Iterator
-from pathlib import Path
 
 import pytest
 from pytest_mock import MockerFixture
 
 from tests.testlib.common.repo import repo_path
 
+from cmk.ccc.hostaddress import HostName
 from cmk.ccc.site import SiteId
+from cmk.ccc.user import UserId
 
 import cmk.utils.paths
 from cmk.utils.agentdatatype import AgentRawData
-from cmk.utils.hostaddress import HostName
-from cmk.utils.user import UserId
 
 from cmk.automations.results import GetAgentOutputResult
 
@@ -26,13 +25,14 @@ from cmk.gui.wato.pages.fetch_agent_output import (
     get_fetch_agent_output_file,
     start_fetch_agent_job,
 )
+from cmk.gui.watolib.automations import LocalAutomationConfig
 from cmk.gui.watolib.hosts_and_folders import folder_tree, Host
 
 
 @pytest.fixture(name="icon_dir")
 def fixture_icon_dir() -> None:
-    src_path = repo_path().joinpath("packages/cmk-frontend/src/themes")
-    target_path = Path(cmk.utils.paths.web_dir).joinpath("htdocs/themes")
+    src_path = repo_path() / "packages/cmk-frontend/src/themes"
+    target_path = cmk.utils.paths.web_dir / "htdocs/themes"
     target_path.parent.mkdir(parents=True, exist_ok=True)
     target_path.symlink_to(src_path)
 
@@ -44,7 +44,7 @@ def fixture_host(with_admin_login: UserId, load_config: None) -> Iterator[Host]:
 
     hostname = HostName("host1")
     root = folder_tree().root_folder()
-    root.create_hosts([(hostname, {"site": SiteId("site1")}, None)])
+    root.create_hosts([(hostname, {"site": SiteId("NO_SITE")}, None)], pprint_value=False)
     host = root.host(hostname)
     assert host, "Test setup failed, host not created"
     yield host
@@ -66,7 +66,9 @@ def test_fetch_agent_job(host: Host, mocker: MockerFixture) -> None:
     start_fetch_agent_job(request := FetchAgentOutputRequest(host, "agent"))
 
     # THEN
-    get_agent_output_mock.assert_called_once_with("site1", "host1", "agent", timeout=10)
+    get_agent_output_mock.assert_called_once_with(
+        LocalAutomationConfig(), "host1", "agent", timeout=10, debug=False
+    )
     job_status = get_fetch_agent_job_status(request)
     assert job_status.state == "finished", job_status
     assert get_fetch_agent_output_file(request) == b"y"

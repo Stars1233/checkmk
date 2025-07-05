@@ -60,7 +60,9 @@ def save_notification_parameter(
     registry: NotificationParameterRegistry,
     parameter_method: NotificationParameterMethod,
     data: object,
-    object_id: NotificationParameterID | None = None,
+    *,
+    object_id: NotificationParameterID | None,
+    pprint_value: bool,
 ) -> NotificationParameterDescription:
     """Save a notification parameter set.
 
@@ -82,7 +84,7 @@ def save_notification_parameter(
     config_file = NotificationParameterConfigFile()
     notification_parameter = config_file.load_for_modification()
     notification_parameter.setdefault(parameter_method, {})[parameter_id] = item
-    config_file.save(notification_parameter)
+    config_file.save(notification_parameter, pprint_value)
 
     return NotificationParameterDescription(
         ident=parameter_id, description=item["general"]["description"]

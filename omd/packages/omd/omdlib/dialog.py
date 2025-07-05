@@ -11,16 +11,11 @@ import sys
 import termios
 from re import Pattern
 from tty import setraw
-from typing import TYPE_CHECKING
 
 from omdlib.type_defs import ConfigChoiceHasError
 
+from cmk.ccc import tty
 from cmk.ccc.exceptions import MKTerminate
-
-from cmk.utils import tty
-
-if TYPE_CHECKING:
-    from omdlib.contexts import SiteContext
 
 DialogResult = tuple[bool, str]
 
@@ -138,7 +133,7 @@ def _run_dialog(args: list[str]) -> DialogResult:
 
 
 def user_confirms(
-    site: "SiteContext",
+    site_home: str,
     conflict_mode: str,
     title: str,
     message: str,
@@ -156,7 +151,7 @@ def user_confirms(
     if conflict_mode == "keepold":
         return True
 
-    user_path = site.dir + "/" + relpath
+    user_path = site_home + "/" + relpath
     options = [
         (yes_choice, yes_text),
         (no_choice, no_text),

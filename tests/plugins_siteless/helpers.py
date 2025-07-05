@@ -13,12 +13,12 @@ from pathlib import Path
 
 from tests.testlib.common.repo import qa_test_data_path
 
+import cmk.ccc.resulttype as result
 from cmk.ccc.exceptions import OnError
+from cmk.ccc.hostaddress import HostName
+from cmk.ccc.resulttype import OK
 
-import cmk.utils.resulttype as result
 from cmk.utils.everythingtype import EVERYTHING
-from cmk.utils.hostaddress import HostName
-from cmk.utils.resulttype import OK
 
 from cmk.fetchers import Mode
 from cmk.fetchers.filecache import AgentFileCache, FileCacheMode, MaxAge
@@ -167,7 +167,7 @@ def discover_services(
 
     commandline_discovery(
         hostname,
-        ruleset_matcher=config_cache.ruleset_matcher,
+        clear_ruleset_matcher_caches=config_cache.ruleset_matcher.clear_caches,
         parser=parser(config_cache.parser_factory()),
         fetcher=_fetcher(),
         section_plugins=SectionPluginMapper(

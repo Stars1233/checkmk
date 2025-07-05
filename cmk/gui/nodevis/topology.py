@@ -19,17 +19,18 @@ import livestatus
 
 import cmk.ccc.plugin_registry
 from cmk.ccc import store
+from cmk.ccc.hostaddress import HostName
 from cmk.ccc.site import SiteId
 from cmk.ccc.store import locked
+from cmk.ccc.user import UserId
 
 import cmk.utils.paths
-from cmk.utils.hostaddress import HostName
 from cmk.utils.tags import TagID
-from cmk.utils.user import UserId
 
 import cmk.gui.visuals
 from cmk.gui import sites
 from cmk.gui.breadcrumb import make_current_page_breadcrumb_item, make_topic_breadcrumb
+from cmk.gui.config import Config
 from cmk.gui.cron import CronJob, CronJobRegistry
 from cmk.gui.dashboard import get_topology_context_and_filters
 from cmk.gui.hooks import request_memoize
@@ -39,7 +40,7 @@ from cmk.gui.http import request
 from cmk.gui.i18n import _, _l
 from cmk.gui.log import logger
 from cmk.gui.logged_in import user
-from cmk.gui.main_menu import mega_menu_registry
+from cmk.gui.main_menu import main_menu_registry
 from cmk.gui.nodevis import frontend_texts
 from cmk.gui.nodevis.filters import FilterTopologyMaxNodes, FilterTopologyMeshDepth
 from cmk.gui.nodevis.type_defs import (
@@ -76,7 +77,7 @@ from cmk.gui.page_menu import (
     PageMenuSidePopup,
     PageMenuTopic,
 )
-from cmk.gui.pages import AjaxPage, Page, PageRegistry, PageResult
+from cmk.gui.pages import AjaxPage, Page, PageEndpoint, PageRegistry, PageResult
 from cmk.gui.pagetypes import PagetypeTopics
 from cmk.gui.theme.current_theme import theme
 from cmk.gui.type_defs import ColumnSpec, PainterParameters, Row, Visual, VisualLinkSpec
@@ -99,10 +100,12 @@ def register(
     icon_and_action_registry: IconRegistry,
     cron_job_registry: CronJobRegistry,
 ) -> None:
-    page_registry.register_page("parent_child_topology")(ParentChildTopologyPage)
-    page_registry.register_page("network_topology")(NetworkTopologyPage)
-    page_registry.register_page("ajax_initial_topology_filters")(AjaxInitialTopologyFilters)
-    page_registry.register_page("ajax_fetch_topology")(AjaxFetchTopology)
+    page_registry.register(PageEndpoint("parent_child_topology", ParentChildTopologyPage))
+    page_registry.register(PageEndpoint("network_topology", NetworkTopologyPage))
+    page_registry.register(
+        PageEndpoint("ajax_initial_topology_filters", AjaxInitialTopologyFilters)
+    )
+    page_registry.register(PageEndpoint("ajax_fetch_topology", AjaxFetchTopology))
     icon_and_action_registry.register(NetworkTopologyIcon)
     cron_job_registry.register(
         CronJob(
@@ -130,7 +133,9 @@ def _render_network_topology_icon(
         return None
 
     url = makeuri_contextless(
-        request, [("host_regex", f"{row['host_name']}$")], filename="network_topology.py"
+        request,
+        [("host_regex", f"{row['host_name']}$")],
+        filename="network_topology.py",
     )
     return "aggr", _("Network topology"), url
 
@@ -144,7 +149,9 @@ NetworkTopologyIcon = Icon(
 )
 
 
-def _delete_topology_configuration(topology_configuration: TopologyConfiguration) -> None:
+def _delete_topology_configuration(
+    topology_configuration: TopologyConfiguration,
+) -> None:
     query_identifier = TopologyQueryIdentifier(
         topology_configuration.type, topology_configuration.filter
     )
@@ -208,7 +215,7 @@ class ABCTopologyPage(Page):
     def visual_spec(cls):
         raise NotImplementedError
 
-    def page(self) -> None:
+    def page(self, config: Config) -> None:
         """Determines the hosts to be shown"""
         user.need_permission("general.parent_child_topology")
         self.show_topology()
@@ -216,7 +223,7 @@ class ABCTopologyPage(Page):
     def show_topology(self) -> None:
         visual_spec = self.visual_spec()
         breadcrumb = make_topic_breadcrumb(
-            mega_menu_registry.menu_monitoring(),
+            main_menu_registry.menu_monitoring(),
             PagetypeTopics.get_topic(visual_spec["topic"]).title(),
         )
         breadcrumb.append(make_current_page_breadcrumb_item(str(visual_spec["title"])))
@@ -300,7 +307,7 @@ class ParentChildTopologyPage(ABCTopologyPage):
             "link_from": {},
             "add_context_to_title": True,
             "packaged": False,
-            "megamenu_search_terms": [],
+            "main_menu_search_terms": [],
         }
 
     @classmethod
@@ -342,7 +349,7 @@ class NetworkTopologyPage(ABCTopologyPage):
             "link_from": {},
             "add_context_to_title": True,
             "packaged": False,
-            "megamenu_search_terms": [],
+            "main_menu_search_terms": [],
         }
 
     @classmethod
@@ -368,7 +375,7 @@ class AjaxInitialTopologyFilters(ABCAjaxInitialFilters):
 
 
 class AjaxFetchTopology(AjaxPage):
-    def page(self) -> PageResult:
+    def page(self, config: Config) -> PageResult:
         topology_type = request.get_str_input_mandatory("topology_type")
         if topology_type == "network_topology":
             default_overlays = NetworkTopologyPage.get_default_overlays_config()
@@ -508,7 +515,10 @@ class ABCTopologyNodeDataGenerator:
         if total_nodes > self._topology_configuration.filter.growth_auto_max_nodes:
             raise MKGrowthInterruption(
                 _("Growth interrupted %d/%d")
-                % (total_nodes, self._topology_configuration.filter.growth_auto_max_nodes)
+                % (
+                    total_nodes,
+                    self._topology_configuration.filter.growth_auto_max_nodes,
+                )
             )
 
     @abc.abstractmethod
@@ -577,11 +587,16 @@ class ParentChildDataGenerator(ABCTopologyNodeDataGenerator):
         if not node_ids:
             return response
 
-        for hostname in node_ids:
-            hostname_filters.append("Filter: host_name = %s" % livestatus.lqencode(hostname))
-        hostname_filters.append("Or: %d" % len(node_ids))
+        # If the host filter is going to be too large, simply query all hosts and do the
+        # filtering afterward. This reduces the load on the core.
+        # The amount of returned data is negligible
+        query_all_hosts = len(node_ids) > 500
+        if not query_all_hosts:
+            for hostname in node_ids:
+                hostname_filters.append("Filter: host_name = %s" % livestatus.lqencode(hostname))
+            hostname_filters.append("Or: %d" % len(node_ids))
 
-        with sites.prepend_site():
+        with sites.prepend_site(), sites.set_limit(self._topology_configuration.filter.max_nodes):
             columns = [
                 "name",
                 "state",
@@ -601,6 +616,10 @@ class ParentChildDataGenerator(ABCTopologyNodeDataGenerator):
             if entry["name"] in self._topology_nodes:
                 # Node already known
                 continue
+
+            if query_all_hosts and entry["name"] not in node_ids:
+                continue
+
             self._node_extra_info[entry["name"]] = {
                 "site": entry["site"],
                 "hostname": entry["name"],
@@ -761,7 +780,13 @@ class GenericNetworkDataGenerator(ABCTopologyNodeDataGenerator):
         result: dict[str, Any] = {}
         if extra_info:
             core_values = {}
-            for what in ("service", "hostname", "state", "num_services_warn", "num_services_crit"):
+            for what in (
+                "service",
+                "hostname",
+                "state",
+                "num_services_warn",
+                "num_services_crit",
+            ):
                 if (value := extra_info.get(what)) is not None:
                     core_values[what] = value
             if "state" in core_values and "service" not in core_values:
@@ -810,9 +835,10 @@ class GenericNetworkDataGenerator(ABCTopologyNodeDataGenerator):
                     name=network_object.get("name", node_id),
                     metadata=network_object.get("metadata", {}),
                 )
-                for (source, target), metadata in self._network_data.connections_by_id.get(
-                    node_id, []
-                ):
+                for (
+                    source,
+                    target,
+                ), metadata in self._network_data.connections_by_id.get(node_id, []):
                     if source == node_id:
                         topology_node.outgoing.add(target)
                     else:
@@ -876,7 +902,10 @@ class GenericNetworkDataGenerator(ABCTopologyNodeDataGenerator):
 
         # Depending on the configuration, remove service nodes and link hosts directly
         for node_id, node in list(self._topology_nodes.items()):
-            if node.type not in (NodeType.TOPOLOGY_SERVICE, NodeType.TOPOLOGY_UNKNOWN_SERVICE):
+            if node.type not in (
+                NodeType.TOPOLOGY_SERVICE,
+                NodeType.TOPOLOGY_UNKNOWN_SERVICE,
+            ):
                 continue
 
             visibility = general_service_visibility
@@ -1068,7 +1097,9 @@ class Topology:
         return computed_layers
 
     def _combine_results(
-        self, computed_layers: dict[str, ABCTopologyNodeDataGenerator], merge_nodes: bool
+        self,
+        computed_layers: dict[str, ABCTopologyNodeDataGenerator],
+        merge_nodes: bool,
     ) -> tuple[TopologyNodes, dict[str, Any]]:
         node_specific_infos: dict[str, Any] = {}
 
@@ -1426,7 +1457,7 @@ def _register_builtin_views():
                 "sort_index": 99,
                 "is_show_more": False,
                 "packaged": False,
-                "megamenu_search_terms": [],
+                "main_menu_search_terms": [],
             },
             "topology_hover_host": {
                 "browser_reload": 0,
@@ -1467,7 +1498,7 @@ def _register_builtin_views():
                 "sort_index": 99,
                 "is_show_more": False,
                 "packaged": False,
-                "megamenu_search_terms": [],
+                "main_menu_search_terms": [],
             },
             "topology_hover_service": {
                 "add_context_to_title": True,
@@ -1511,13 +1542,13 @@ def _register_builtin_views():
                 "title": "Service",
                 "topic": "other",
                 "user_sortable": True,
-                "megamenu_search_terms": [],
+                "main_menu_search_terms": [],
             },
         }
     )
 
 
-def cleanup_topology_layouts() -> None:
+def cleanup_topology_layouts(config: Config) -> None:
     """Topology layouts are currently restricted to a maximum number of 10000"""
     topology_configs_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1554,7 +1585,9 @@ def cleanup_topology_layouts() -> None:
         store.save_object_to_file(topology_settings_lookup, topology_settings)
 
 
-def _create_filter_configuration_from_hash(hash_value: str) -> TopologyFilterConfiguration | None:
+def _create_filter_configuration_from_hash(
+    hash_value: str,
+) -> TopologyFilterConfiguration | None:
     # Try to create filter- and frontend configuration from this hash
     # This is quite ugly and will vanish once we have a better mechanism to save layouts
     all_query_ids_by_hash = {y: x for x, y in _all_settings().items()}
@@ -1740,15 +1773,19 @@ def _get_dynamic_layer_ids(
     return list(dynamic_layer_ids)
 
 
-def _get_hostnames_from_core(topology_configuration: TopologyConfiguration) -> set[HostName]:
+def _get_hostnames_from_core(
+    topology_configuration: TopologyConfiguration,
+) -> set[HostName]:
     site_id = (
         SiteId(request.get_str_input_mandatory("site")) if request.get_str_input("site") else None
     )
-    with sites.only_sites(site_id):
+    with sites.only_sites(site_id), sites.set_limit(topology_configuration.filter.max_nodes):
         return {x[0] for x in sites.live().query(topology_configuration.filter.query)}
 
 
-def _compute_topology_response(topology_configuration: TopologyConfiguration) -> dict[str, Any]:
+def _compute_topology_response(
+    topology_configuration: TopologyConfiguration,
+) -> dict[str, Any]:
     # logger.warning(f"Initial topology {pprint.pformat(topology_configuration.frontend)}")
     ds_config = topology_configuration.frontend.datasource_configuration
     reference = Topology(topology_configuration, ds_config.reference)
@@ -1766,7 +1803,10 @@ def _compute_topology_response(topology_configuration: TopologyConfiguration) ->
     else:
         # Always reset classes used in frontend
         for node in reference.node_specific_infos.values():
-            node["topology_classes"] = [["only_in_ref", False], ["missing_in_ref", False]]
+            node["topology_classes"] = [
+                ["only_in_ref", False],
+                ["missing_in_ref", False],
+            ]
 
     result = _compute_topology_result(
         topology_configuration,

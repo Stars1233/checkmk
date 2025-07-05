@@ -3,14 +3,14 @@
 # This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
 # conditions defined in the file COPYING, which is part of this source code package.
 
-
 from collections.abc import Iterator, Sequence
+from pathlib import Path
 
 import pytest
 from pytest_mock import MockerFixture
 
 from cmk.gui import sidebar
-from cmk.gui.config import active_config
+from cmk.gui.config import active_config, Config
 from cmk.gui.http import request
 from cmk.gui.logged_in import user
 from cmk.gui.sidebar import UserSidebarSnapin
@@ -19,7 +19,7 @@ from cmk.gui.sidebar import UserSidebarSnapin
 @pytest.fixture(scope="function", autouse=True)
 def fixture_user(request_context: None, monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     with monkeypatch.context() as m:
-        m.setattr(user, "confdir", "")
+        m.setattr(user, "confdir", Path(""))
         m.setattr(user, "may", lambda x: True)
         yield
 
@@ -256,7 +256,7 @@ def test_ajax_fold(
     m_save = mocker.patch.object(user, "save_file")
 
     request.set_var("fold", fold_var)
-    sidebar.AjaxFoldSnapin().page()
+    sidebar.AjaxFoldSnapin().page(Config())
 
     m_config.assert_called_once()
     m_save.assert_called_once_with(
@@ -301,7 +301,7 @@ def test_ajax_openclose_close(mocker: MockerFixture, origin_state: str, set_stat
     )
     m_save = mocker.patch.object(user, "save_file")
 
-    sidebar.AjaxOpenCloseSnapin().page()
+    sidebar.AjaxOpenCloseSnapin().page(Config())
 
     snapins = [
         UserSidebarSnapin.from_snapin_type_id("views"),
@@ -330,7 +330,7 @@ def test_move_snapin_not_permitted(monkeypatch: pytest.MonkeyPatch, mocker: Mock
     with monkeypatch.context() as m:
         m.setattr(user, "may", lambda x: x != "general.configure_sidebar")
         m_load = mocker.patch.object(sidebar.UserSidebarConfig, "_load")
-        sidebar.move_snapin()
+        sidebar.move_snapin(Config())
         m_load.assert_not_called()
 
 
@@ -346,7 +346,7 @@ def test_move_snapin(mocker: MockerFixture, move: str, before: str, do_save: boo
     request.set_var("before", before)
     m_save = mocker.patch.object(sidebar.UserSidebarConfig, "save")
 
-    sidebar.move_snapin()
+    sidebar.move_snapin(Config())
 
     if do_save is None:
         m_save.assert_not_called()

@@ -10,15 +10,20 @@ from collections.abc import Sequence
 from contextlib import suppress
 from pathlib import Path
 
+import cmk.ccc.cleanup
 import cmk.ccc.debug
+from cmk.ccc.cpu_tracking import CPUTracker
 from cmk.ccc.exceptions import OnError
+from cmk.ccc.hostaddress import HostName
 
-import cmk.utils.cleanup
 import cmk.utils.password_store
 import cmk.utils.paths
-from cmk.utils.config_path import LATEST_CONFIG
-from cmk.utils.cpu_tracking import CPUTracker
-from cmk.utils.hostaddress import HostName
+from cmk.utils.config_path import VersionedConfigPath
+from cmk.utils.ip_lookup import (
+    ConfiguredIPLookup,
+    make_lookup_ip_address,
+    make_lookup_mgmt_board_ip_address,
+)
 from cmk.utils.log import console
 
 from cmk.fetchers import Mode as FetchMode
@@ -120,38 +125,49 @@ def main(
     return inventory_as_check(
         parameters,
         args.hostname,
-        load_plugins_from_index(Path(LATEST_CONFIG)) if args.use_indexed_plugins else load_checks(),
+        load_plugins_from_index(VersionedConfigPath.LATEST_CONFIG)
+        if args.use_indexed_plugins
+        else load_checks(),
     )
 
 
 def inventory_as_check(
     parameters: HWSWInventoryParameters, hostname: HostName, plugins: AgentBasedPlugins
 ) -> ServiceState:
-    config_cache = config.load(
-        discovery_rulesets=extract_known_discovery_rulesets(plugins)
-    ).config_cache
+    loading_result = config.load(discovery_rulesets=extract_known_discovery_rulesets(plugins))
+    config_cache = loading_result.config_cache
     config_cache.ruleset_matcher.ruleset_optimizer.set_all_processed_hosts({hostname})
-    hosts_config = config.make_hosts_config()
+    hosts_config = config.make_hosts_config(loading_result.loaded_config)
     service_name_config = config_cache.make_passive_service_name_config()
+    ip_lookup_config = config_cache.ip_lookup_config()
+    ip_address_of_bare = make_lookup_ip_address(ip_lookup_config)
+    ip_address_of = ConfiguredIPLookup(
+        ip_address_of_bare,
+        allow_empty=config_cache.hosts_config.clusters,
+        error_handler=config.handle_ip_lookup_failure,
+    )
     file_cache_options = FileCacheOptions()
 
     fetcher = CMKFetcher(
         config_cache,
         config_cache.fetcher_factory(
-            config_cache.make_service_configurer(plugins.check_plugins, service_name_config)
+            config_cache.make_service_configurer(plugins.check_plugins, service_name_config),
+            ip_address_of,
         ),
         plugins,
+        default_address_family=ip_lookup_config.default_address_family,
         file_cache_options=file_cache_options,
         force_snmp_cache_refresh=False,
-        ip_address_of=config.ConfiguredIPLookup(
-            config_cache, error_handler=config.handle_ip_lookup_failure
-        ),
+        get_ip_stack_config=ip_lookup_config.ip_stack_config,
+        ip_address_of=ip_address_of,
+        ip_address_of_mandatory=ip_address_of_bare,
+        ip_address_of_mgmt=make_lookup_mgmt_board_ip_address(ip_lookup_config),
         mode=FetchMode.INVENTORY,
         on_error=OnError.RAISE,
         selected_sections=NO_SELECTION,
         simulation_mode=config.simulation_mode,
         snmp_backend_override=None,
-        password_store_file=cmk.utils.password_store.core_password_store_path(LATEST_CONFIG),
+        password_store_file=cmk.utils.password_store.core_password_store_path(),
     )
     parser = CMKParser(
         config_cache.parser_factory(),
@@ -212,7 +228,7 @@ def inventory_as_check(
 
 
 def load_checks() -> AgentBasedPlugins:
-    plugins = config.load_all_plugins(cmk.utils.paths.checks_dir)
+    plugins = config.load_all_pluginX(cmk.utils.paths.checks_dir)
     if sys.stderr.isatty():
         for error_msg in plugins.errors:
             console.error(error_msg, file=sys.stderr)

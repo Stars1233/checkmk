@@ -20,7 +20,7 @@ import tty
 from collections.abc import Iterator, Sequence
 from functools import cache
 from pathlib import Path
-from typing import ClassVar, Literal, NamedTuple, NoReturn, override, Type, TypeVar
+from typing import ClassVar, Literal, NamedTuple, NoReturn, override, TypeVar
 
 from pydantic import BaseModel, Field
 
@@ -87,7 +87,7 @@ class Stash(BaseModel):
         self.ids_by_project[project].append(werk_id.id)
 
     @classmethod
-    def load_from_file(cls: Type[T]) -> T:
+    def load_from_file(cls: type[T]) -> T:
         if not cls.PATH.exists():
             return cls.model_validate({"ids_by_project": {}})
         content = cls.PATH.read_text(encoding="utf-8")
@@ -775,9 +775,9 @@ WERK_NOTES = """
     |                                                                             |
     |             The werk is intended for the user/admin!!                       |
     |                                                                             |
-    |    From the titel it should be obvious if the user/admin is affected.       |
+    |    It should be obvious from the title if a user/admin is affected.         |
     |    Describe what needs to be done in the details. You can also note if no   |
-    |    user interaction is required. If necessary add technical details.        |
+    |    user interaction is required. If necessary, add technical details.       |
     |                                                                             |
     '-----------------------------------------------------------------------------'
 
@@ -1055,7 +1055,12 @@ def current_branch() -> str:
 
 
 def current_repo() -> str:
-    return list(os.popen("git config --get remote.origin.url"))[0].strip().split("/")[-1]
+    return (
+        list(os.popen("git config --get remote.origin.url"))[0]
+        .strip()
+        .split("@")[-1]
+        .removesuffix(".git")
+    )
 
 
 def _reserve_werk_ids(
@@ -1091,13 +1096,16 @@ def main_fetch_ids(args: argparse.Namespace) -> None:
 
     if args.count is None:
         per_project = "\n".join(
-            "{project}: {len(ids)}" for project, ids in stash.ids_by_project.items()
+            f"{project}: {len(ids)}" for project, ids in stash.ids_by_project.items()
         )
         sys.stdout.write(f"You have {stash.count()} reserved IDs:\n{per_project}\n")
         sys.exit(0)
 
-    if current_branch() != "master" or current_repo() != "check_mk":
-        bail_out("Werk IDs can only be reserved on the master branch of the check_mk repository.")
+    if current_branch() != get_config().branch or current_repo() != get_config().repo:
+        bail_out(
+            f"Werk IDs can only be reserved on the '{get_config().branch}' branch on "
+            f"'{get_config().repo}', not '{current_branch()}' on '{current_repo()}'."
+        )
 
     # Get the start werk_id to reserve
     try:
@@ -1127,7 +1135,7 @@ def main_fetch_ids(args: argparse.Namespace) -> None:
     )
 
     if get_config().create_commit:
-        if os.system(f"git commit -m 'Reserved {args.count} Werk IDS' .") == 0:  # nosec
+        if os.system(f"git commit --no-verify -m 'Reserved {args.count} Werk IDS' .") == 0:  # nosec
             sys.stdout.write("--> Successfully committed reserved werk IDS. Please push it soon!\n")
         else:
             bail_out("Cannot commit.")

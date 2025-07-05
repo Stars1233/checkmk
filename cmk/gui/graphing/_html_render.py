@@ -7,21 +7,22 @@ import copy
 import json
 import time
 import traceback
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
 from livestatus import MKLivestatusNotFoundError
 
 from cmk.ccc.exceptions import MKGeneralException
+from cmk.ccc.hostaddress import HostName
 from cmk.ccc.site import SiteId
 
 import cmk.utils.render
-from cmk.utils.hostaddress import HostName
+from cmk.utils.jsontype import JsonSerializable
 from cmk.utils.paths import profile_dir
 from cmk.utils.servicename import ServiceName
 
-from cmk.gui.config import active_config
+from cmk.gui.config import active_config, Config
 from cmk.gui.exceptions import MKMissingDataError
 from cmk.gui.graphing._graph_templates import (
     get_template_graph_specification,
@@ -140,18 +141,7 @@ def host_service_graph_popup_cmk(
     )
 
 
-def _render_graph_or_error_html(
-    graph_artwork: GraphArtwork,
-    graph_data_range: GraphDataRange,
-    graph_render_config: GraphRenderConfig,
-) -> HTML:
-    try:
-        return _render_graph_html(graph_artwork, graph_data_range, graph_render_config)
-    except Exception as e:
-        return render_graph_error_html(e)
-
-
-def render_graph_error_html(msg_or_exc: Exception | str, title: str | None = None) -> HTML:
+def render_graph_error_html(*, title: str, msg_or_exc: Exception | str) -> HTML:
     if isinstance(msg_or_exc, MKGeneralException) and not active_config.debug:
         msg = "%s" % msg_or_exc
 
@@ -161,9 +151,6 @@ def render_graph_error_html(msg_or_exc: Exception | str, title: str | None = Non
         msg = traceback.format_exc()
     else:
         msg = msg_or_exc
-
-    if title is None:
-        title = _("Cannot display graph")
 
     return HTMLWriter.render_div(
         HTMLWriter.render_div(title, class_="title") + HTMLWriter.render_pre(msg),
@@ -185,7 +172,7 @@ def _render_graph_html(
     return HTMLWriter.render_javascript(
         "cmk.graphs.create_graph(%s, %s, %s, %s);"
         % (
-            json.dumps(html_code),
+            json.dumps(str(html_code)),
             json.dumps(graph_artwork.model_dump()),
             json.dumps(graph_render_config.model_dump()),
             json.dumps(_graph_ajax_context(graph_artwork, graph_data_range, graph_render_config)),
@@ -285,26 +272,6 @@ def _title_info_elements(
             yield service_description, service_url
 
 
-def _show_html_graph_title(
-    graph_artwork: GraphArtwork, graph_render_config: GraphRenderConfig
-) -> None:
-    title = text_with_links_to_user_translated_html(
-        _render_graph_title_elements(
-            graph_artwork,
-            graph_render_config,
-            explicit_title=graph_render_config.explicit_title,
-        ),
-        separator=HTML.without_escaping(" / "),
-    )
-    if not title:
-        return
-
-    html.div(
-        title,
-        class_=["title"] + (["inline"] if graph_render_config.show_title == "inline" else []),
-    )
-
-
 def _graph_legend_enabled(
     graph_render_config: GraphRenderConfig, graph_artwork: GraphArtwork
 ) -> bool:
@@ -330,7 +297,21 @@ def _show_graph_html_content(
     )
 
     if graph_render_config.show_controls:
-        _show_graph_add_to_icon_for_popup(graph_artwork, graph_data_range, graph_render_config)
+        # Data will be transferred via URL and Javascript magic eventually
+        # to our function popup_add_element (htdocs/reporting.py)
+        # argument report_name --> provided by popup system
+        # further arguments:
+        html.popup_trigger(
+            content=html.render_icon("menu", _("Add to ...")),
+            ident="add_visual",
+            method=MethodAjax(endpoint="add_visual", url_vars=[("add_type", "pnpgraph")]),
+            data=[
+                "pnpgraph",
+                None,
+                _graph_ajax_context(graph_artwork, graph_data_range, graph_render_config),
+            ],
+            style="z-index:2",
+        )  # Ensures that graph canvas does not cover it
 
     v_axis_label = graph_artwork.vertical_axis["axis_label"]
     if v_axis_label:
@@ -346,8 +327,28 @@ def _show_graph_html_content(
     if graph_render_config.show_controls and graph_render_config.resizable:
         html.img(src=theme.url("images/resize_graph.png"), class_="resize")
 
-    _show_html_graph_title(graph_artwork, graph_render_config)
-    _show_graph_canvas(graph_render_config.size)
+    if title := text_with_links_to_user_translated_html(
+        _render_graph_title_elements(
+            graph_artwork,
+            graph_render_config,
+            explicit_title=graph_render_config.explicit_title,
+        ),
+        separator=HTML.without_escaping(" / "),
+    ):
+        html.div(
+            title,
+            class_=["title"] + (["inline"] if graph_render_config.show_title == "inline" else []),
+        )
+
+    # Create canvas where actual graph will be rendered
+    graph_width: float = graph_render_config.size[0] * html_size_per_ex
+    graph_height: float = graph_render_config.size[1] * html_size_per_ex
+    html.canvas(
+        "",
+        style="position: relative; width: %dpx; height: %dpx;" % (graph_width, graph_height),
+        width=str(graph_width * 2),
+        height=str(graph_height * 2),
+    )
 
     # Note: due to "omit_zero_metrics" the graph might not have any curves
     if _graph_legend_enabled(graph_render_config, graph_artwork):
@@ -360,43 +361,6 @@ def _show_graph_html_content(
         html.close_div()
 
     html.close_div()
-
-
-def _show_graph_add_to_icon_for_popup(
-    graph_artwork: GraphArtwork,
-    graph_data_range: GraphDataRange,
-    graph_render_config: GraphRenderConfig,
-) -> None:
-    icon_html = html.render_icon("menu", _("Add to ..."))
-    element_type_name = "pnpgraph"
-
-    # Data will be transferred via URL and Javascript magic eventually
-    # to our function popup_add_element (htdocs/reporting.py)
-    # argument report_name --> provided by popup system
-    # further arguments:
-    html.popup_trigger(
-        content=icon_html,
-        ident="add_visual",
-        method=MethodAjax(endpoint="add_visual", url_vars=[("add_type", "pnpgraph")]),
-        data=[
-            element_type_name,
-            None,
-            _graph_ajax_context(graph_artwork, graph_data_range, graph_render_config),
-        ],
-        style="z-index:2",
-    )  # Ensures that graph canvas does not cover it
-
-
-def _show_graph_canvas(size: tuple[int, int]) -> None:
-    """Create canvas where actual graph will be rendered"""
-    graph_width: float = size[0] * html_size_per_ex
-    graph_height: float = size[1] * html_size_per_ex
-    html.canvas(
-        "",
-        style="position: relative; width: %dpx; height: %dpx;" % (graph_width, graph_height),
-        width=str(graph_width * 2),
-        height=str(graph_height * 2),
-    )
 
 
 def _show_pin_time(graph_artwork: GraphArtwork, config: GraphRenderConfig) -> bool:
@@ -434,33 +398,34 @@ def _get_scalars(
     return scalars
 
 
-def _show_graph_legend(graph_artwork: GraphArtwork, graph_render_config: GraphRenderConfig) -> None:
+def _compute_graph_legend_styles(graph_render_config: GraphRenderConfig) -> Iterator[str]:
     """Render legend that describe the metrics"""
     graph_width = graph_render_config.size[0] * html_size_per_ex
-    font_size_style = "font-size: %dpt;" % graph_render_config.font_size
-
-    scalars = _get_scalars(graph_artwork, graph_render_config)
 
     if graph_render_config.show_vertical_axis or graph_render_config.show_controls:
         legend_margin_left = 49
     else:
         legend_margin_left = 0
 
-    style = []
     legend_width = graph_width - legend_margin_left
 
     # In case there is no margin show: Add some to the legend since it looks
     # ugly when there is no space between the outer graph border and the legend
     if not graph_render_config.show_margin:
         legend_width -= 5 * 2
-        style.append("margin: 8px 5px 5px 5px")
+        yield "margin: 8px 5px 5px 5px"
 
-    style.append("width:%dpx" % legend_width)
+    yield "width:%dpx" % legend_width
 
     if legend_margin_left:
-        style.append("margin-left:%dpx" % legend_margin_left)
+        yield "margin-left:%dpx" % legend_margin_left
 
-    html.open_table(class_="legend", style=style)
+
+def _show_graph_legend(graph_artwork: GraphArtwork, graph_render_config: GraphRenderConfig) -> None:
+    font_size_style = "font-size: %dpt;" % graph_render_config.font_size
+    scalars = _get_scalars(graph_artwork, graph_render_config)
+
+    html.open_table(class_="legend", style=list(_compute_graph_legend_styles(graph_render_config)))
 
     # Render the title row
     html.open_tr()
@@ -589,30 +554,26 @@ def _graph_margin_ex(
 # of things, we keep it.
 # TODO: Migrate this to a real AjaxPage
 class AjaxGraph(cmk.gui.pages.Page):
-    @classmethod
-    def ident(cls) -> str:
-        return "ajax_graph"
-
-    def page(self) -> PageResult:
+    def page(self, config: Config) -> PageResult:
         """Registered as `ajax_graph`."""
         response.set_content_type("application/json")
         try:
             context_var = request.get_str_input_mandatory("context")
             context = json.loads(context_var)
-            response_data = _render_ajax_graph(context, metrics_from_api)
+            response_data = render_ajax_graph(context, metrics_from_api)
             response.set_data(json.dumps(response_data))
         except Exception as e:
             logger.error("Ajax call ajax_graph.py failed: %s\n%s", e, traceback.format_exc())
-            if active_config.debug:
+            if config.debug:
                 raise
             response.set_data("ERROR: %s" % e)
         return None
 
 
-def _render_ajax_graph(
+def render_ajax_graph(
     context: Mapping[str, Any],
     registered_metrics: Mapping[str, RegisteredMetric],
-) -> dict[str, Any]:
+) -> JsonSerializable:
     graph_data_range = GraphDataRange.model_validate(context["data_range"])
     graph_render_config = GraphRenderConfig.model_validate(context["render_config"])
     graph_recipe = GraphRecipe.model_validate(context["definition"])
@@ -678,7 +639,7 @@ def _render_ajax_graph(
         html_code = HTML.without_escaping(output_funnel.drain())
 
     return {
-        "html": html_code,
+        "html": str(html_code),
         "graph": graph_artwork.model_dump(),
         "context": {
             "graph_id": context["graph_id"],
@@ -724,27 +685,6 @@ class UserGraphDataRangeStore:
         ).unlink(missing_ok=True)
 
 
-def _resolve_graph_recipe_with_error_handling(
-    graph_specification: GraphSpecification,
-    registered_metrics: Mapping[str, RegisteredMetric],
-    registered_graphs: Mapping[str, graphs_api.Graph | graphs_api.Bidirectional],
-) -> Sequence[GraphRecipe] | HTML:
-    try:
-        return graph_specification.recipes(registered_metrics, registered_graphs)
-    except MKLivestatusNotFoundError:
-        return render_graph_error_html(
-            "%s\n\n%s: %r"
-            % (
-                _("Cannot fetch data via Livestatus"),
-                _("The graph specification is"),
-                graph_specification,
-            ),
-            _("Cannot calculate graph recipes"),
-        )
-    except Exception as e:
-        return render_graph_error_html(e, _("Cannot calculate graph recipes"))
-
-
 def render_graphs_from_specification_html(
     graph_specification: GraphSpecification,
     graph_data_range: GraphDataRange,
@@ -755,13 +695,22 @@ def render_graphs_from_specification_html(
     render_async: bool = True,
     graph_display_id: str = "",
 ) -> HTML:
-    graph_recipes = _resolve_graph_recipe_with_error_handling(
-        graph_specification,
-        registered_metrics,
-        registered_graphs,
-    )
-    if isinstance(graph_recipes, HTML):
-        return graph_recipes  # This is to html.write the exception
+    try:
+        graph_recipes = graph_specification.recipes(registered_metrics, registered_graphs)
+    except MKLivestatusNotFoundError:
+        return render_graph_error_html(
+            title=_("Cannot calculate graph recipes"),
+            msg_or_exc=(
+                "%s\n\n%s: %r"
+                % (
+                    _("Cannot fetch data via Livestatus"),
+                    _("The graph specification is"),
+                    graph_specification,
+                )
+            ),
+        )
+    except Exception as e:
+        return render_graph_error_html(title=_("Cannot calculate graph recipes"), msg_or_exc=e)
 
     return _render_graphs_from_definitions(
         graph_recipes,
@@ -849,11 +798,7 @@ def _render_graph_container_html(
 
 
 class AjaxRenderGraphContent(AjaxPage):
-    @classmethod
-    def ident(cls) -> str:
-        return "ajax_render_graph_content"
-
-    def page(self) -> PageResult:
+    def page(self, config: Config) -> PageResult:
         # Called from javascript code via JSON to initially render a graph
         """Registered as `ajax_render_graph_content`."""
         api_request = request.get_request()
@@ -874,8 +819,6 @@ def _render_graph_content_html(
     *,
     graph_display_id: str = "",
 ) -> HTML:
-    output = HTML.empty()
-
     try:
         graph_artwork = compute_graph_artwork(
             graph_recipe,
@@ -884,12 +827,10 @@ def _render_graph_content_html(
             registered_metrics,
             graph_display_id=graph_display_id,
         )
-        main_graph_html = _render_graph_or_error_html(
-            graph_artwork, graph_data_range, graph_render_config
-        )
+        main_graph_html = _render_graph_html(graph_artwork, graph_data_range, graph_render_config)
 
         if graph_render_config.show_time_range_previews:
-            output += HTMLWriter.render_div(
+            return HTMLWriter.render_div(
                 main_graph_html
                 + _render_time_range_selection(
                     graph_recipe,
@@ -899,19 +840,19 @@ def _render_graph_content_html(
                 ),
                 class_="graph_with_timeranges",
             )
-        else:
-            output += main_graph_html
+        return main_graph_html
 
     except MKLivestatusNotFoundError:
-        output += render_graph_error_html(
-            _("Cannot fetch data via Livestatus"), _("Cannot create graph")
+        return render_graph_error_html(
+            title=_("Cannot create graph"),
+            msg_or_exc=_("Cannot fetch data via Livestatus"),
         )
+
     except MKMissingDataError as e:
         return html.render_message(str(e))
 
     except Exception as e:
-        output += render_graph_error_html(e, _("Cannot create graph"))
-    return output
+        return render_graph_error_html(title=_("Cannot create graph"), msg_or_exc=e)
 
 
 def _render_time_range_selection(
@@ -1004,28 +945,25 @@ def estimate_graph_step_for_html(
 # of things, we keep it.
 # TODO: Migrate this to a real AjaxPage
 class AjaxGraphHover(cmk.gui.pages.Page):
-    @classmethod
-    def ident(cls) -> str:
-        return "ajax_graph_hover"
-
-    def page(self) -> PageResult:
+    def page(self, config: Config) -> PageResult:
         """Registered as `ajax_graph_hover`."""
         response.set_content_type("application/json")
         try:
             context_var = request.get_str_input_mandatory("context")
             context = json.loads(context_var)
             hover_time = request.get_integer_input_mandatory("hover_time")
-            response_data = _render_ajax_graph_hover(context, hover_time, metrics_from_api)
+            response_data = _render_ajax_graph_hover(config, context, hover_time, metrics_from_api)
             response.set_data(json.dumps(response_data))
         except Exception as e:
             logger.error("Ajax call ajax_graph_hover.py failed: %s\n%s", e, traceback.format_exc())
-            if active_config.debug:
+            if config.debug:
                 raise
             response.set_data("ERROR: %s" % e)
         return None
 
 
 def _render_ajax_graph_hover(
+    config: Config,
     context: Mapping[str, Any],
     hover_time: int,
     registered_metrics: Mapping[str, RegisteredMetric],
@@ -1047,7 +985,7 @@ def _render_ajax_graph_hover(
                 user_specific_unit(
                     graph_recipe.unit_spec,
                     user,
-                    active_config,
+                    config,
                 ).formatter.render,
                 hover_time,
             )
@@ -1110,7 +1048,7 @@ def host_service_graph_dashlet_cmk(
     registered_graphs: Mapping[str, graphs_api.Graph | graphs_api.Bidirectional],
     *,
     graph_display_id: str = "",
-) -> HTML | None:
+) -> HTML:
     width_var = request.get_float_input_mandatory("width", 0.0)
     width = int(width_var / html_size_per_ex)
 
@@ -1139,17 +1077,30 @@ def host_service_graph_dashlet_cmk(
 
     graph_data_range = make_graph_data_range((start_time, end_time), graph_render_config.size[1])
 
-    graph_recipes = _resolve_graph_recipe_with_error_handling(
-        graph_specification,
-        registered_metrics,
-        registered_graphs,
-    )
-    if isinstance(graph_recipes, HTML):
-        return graph_recipes  # This is to html.write the exception
+    try:
+        graph_recipes = graph_specification.recipes(registered_metrics, registered_graphs)
+    except MKLivestatusNotFoundError:
+        return render_graph_error_html(
+            title=_("Cannot calculate graph recipes"),
+            msg_or_exc=(
+                "%s\n\n%s: %r"
+                % (
+                    _("Cannot fetch data via Livestatus"),
+                    _("The graph specification is"),
+                    graph_specification,
+                )
+            ),
+        )
+    except Exception as e:
+        return render_graph_error_html(title=_("Cannot calculate graph recipes"), msg_or_exc=e)
+
     if graph_recipes:
         graph_recipe = graph_recipes[0]
     else:
-        raise MKGeneralException(_("Failed to calculate a graph recipe."))
+        return render_graph_error_html(
+            title=_("No graph recipe found"),
+            msg_or_exc=_("Failed to calculate a graph recipe."),
+        )
 
     # When the legend is enabled, we need to reduce the height by the height of the legend to
     # make the graph fit into the dashlet area.
@@ -1167,18 +1118,13 @@ def host_service_graph_dashlet_cmk(
                 graph_artwork,
             )
             if (graph_height := int(height - legend_height)) <= 0:
-                html.write_html(
-                    render_graph_error_html(
-                        title=_("Dashlet too short to render graph"),
-                        msg_or_exc=_(
-                            "Either increase the dashlet height or disable the graph legend."
-                        ),
-                    )
+                return render_graph_error_html(
+                    title=_("Dashlet too short to render graph"),
+                    msg_or_exc=_("Either increase the dashlet height or disable the graph legend."),
                 )
-                return None
             graph_render_config.size = (width, graph_height)
 
-    html_code = _render_graphs_from_definitions(
+    return _render_graphs_from_definitions(
         [graph_recipe],
         graph_data_range,
         graph_render_config,
@@ -1186,5 +1132,3 @@ def host_service_graph_dashlet_cmk(
         render_async=False,
         graph_display_id=graph_display_id,
     )
-    html.write_html(html_code)
-    return None

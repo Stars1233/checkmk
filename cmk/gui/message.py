@@ -4,29 +4,30 @@
 # conditions defined in the file COPYING, which is part of this source code package.
 
 import time
-from collections.abc import MutableSequence
+from collections.abc import Mapping, MutableSequence, Sequence
 from datetime import datetime
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from functools import partial
 from typing import Any, Literal, NotRequired, TypedDict
 
 from cmk.ccc import store
+from cmk.ccc.user import UserId
 
 import cmk.utils.paths
 from cmk.utils.mail import default_from_address, MailString, send_mail_sendmail, set_mail_headers
-from cmk.utils.user import UserId
 
 from cmk.gui import userdb, utils
 from cmk.gui.breadcrumb import Breadcrumb, make_simple_page_breadcrumb
-from cmk.gui.config import active_config
-from cmk.gui.default_permissions import PermissionSectionGeneral
+from cmk.gui.config import active_config, Config
+from cmk.gui.default_permissions import PERMISSION_SECTION_GENERAL
 from cmk.gui.exceptions import MKAuthException, MKInternalError, MKUserError
 from cmk.gui.htmllib.generator import HTMLWriter
 from cmk.gui.htmllib.header import make_header
 from cmk.gui.htmllib.html import html
 from cmk.gui.i18n import _, _l
 from cmk.gui.logged_in import user
-from cmk.gui.main_menu import mega_menu_registry
+from cmk.gui.main_menu import main_menu_registry
 from cmk.gui.page_menu import (
     make_simple_form_page_menu,
     make_simple_link,
@@ -35,8 +36,9 @@ from cmk.gui.page_menu import (
     PageMenuEntry,
     PageMenuTopic,
 )
-from cmk.gui.pages import PageRegistry
+from cmk.gui.pages import PageEndpoint, PageRegistry
 from cmk.gui.permissions import Permission, permission_registry
+from cmk.gui.type_defs import UserSpec
 from cmk.gui.utils.html import HTML
 from cmk.gui.utils.transaction_manager import transactions
 from cmk.gui.valuespec import (
@@ -90,7 +92,7 @@ class Message(TypedDict):
 
 
 def register(page_registry: PageRegistry) -> None:
-    page_registry.register_page_handler("message", page_message)
+    page_registry.register(PageEndpoint("message", page_message))
 
 
 def _parse_message(message: Message | MessageV0) -> Message:
@@ -147,7 +149,7 @@ def get_gui_messages(user_id: UserId | None = None) -> MutableSequence[Message]:
                 updated = True
 
     if updated:
-        save_gui_messages(messages)
+        save_gui_messages(messages, user_id)
 
     return messages
 
@@ -188,7 +190,7 @@ def save_gui_messages(messages: MutableSequence[Message], user_id: UserId | None
     if user_id is None:
         user_id = user.ident
     path = cmk.utils.paths.profile_dir / user_id / "messages.mk"
-    store.mkdir(path.parent)
+    path.parent.mkdir(mode=0o770, exist_ok=True)
     store.save_object_to_file(path, messages)
 
 
@@ -219,7 +221,7 @@ def _messaging_methods() -> dict[MessageMethod, dict[str, Any]]:
 
 permission_registry.register(
     Permission(
-        section=PermissionSectionGeneral,
+        section=PERMISSION_SECTION_GENERAL,
         name="message",
         title=_l("Send user message"),
         description=_l(
@@ -231,16 +233,16 @@ permission_registry.register(
 )
 
 
-def page_message() -> None:
+def page_message(config: Config) -> None:
     if not user.may("general.message"):
         raise MKAuthException(_("You are not allowed to use the message module."))
 
     title = _("Send user message")
-    breadcrumb = make_simple_page_breadcrumb(mega_menu_registry.menu_setup(), title)
+    breadcrumb = make_simple_page_breadcrumb(main_menu_registry.menu_setup(), title)
     menu = _page_menu(breadcrumb)
     make_header(html, title, breadcrumb, menu)
 
-    vs_message = _vs_message()
+    vs_message = _vs_message(config.multisite_users)
 
     if transactions.check_transaction():
         try:
@@ -252,7 +254,8 @@ def page_message() -> None:
                     dest=msg["dest"],
                     methods=msg["methods"],
                     valid_till=msg["valid_till"],
-                )
+                ),
+                all_user_ids=[UserId(s) for s in config.multisite_users],
             )
         except MKUserError as e:
             html.user_error(e)
@@ -296,7 +299,7 @@ def _page_menu(breadcrumb: Breadcrumb) -> PageMenu:
     return menu
 
 
-def _vs_message() -> Dictionary:
+def _vs_message(users: Mapping[str, UserSpec]) -> Dictionary:
     dest_choices: list[CascadingDropdownChoice] = [
         ("all_users", _("All users")),
         (
@@ -304,10 +307,7 @@ def _vs_message() -> Dictionary:
             _("A list of specific users"),
             DualListChoice(
                 choices=sorted(
-                    [
-                        (uid, u.get("alias", uid))
-                        for uid, u in active_config.multisite_users.items()
-                    ],
+                    [(uid, u.get("alias", uid)) for uid, u in users.items()],
                     key=lambda x: x[1].lower(),
                 ),
                 allow_empty=False,
@@ -368,12 +368,12 @@ def _vs_message() -> Dictionary:
                 ),
             ),
         ],
-        validate=_validate_msg,
+        validate=partial(_validate_msg, users=users),
         optional_keys=[],
     )
 
 
-def _validate_msg(msg: DictionaryModel, _varprefix: str) -> None:
+def _validate_msg(msg: DictionaryModel, _varprefix: str, users: Mapping[str, UserSpec]) -> None:
     if not msg.get("methods"):
         raise MKUserError("methods", _("Please select at least one messaging method."))
 
@@ -384,13 +384,16 @@ def _validate_msg(msg: DictionaryModel, _varprefix: str) -> None:
 
     # On manually entered list of users validate the names
     if isinstance(msg["dest"], tuple) and msg["dest"][0] == "list":
-        existing = set(active_config.multisite_users.keys())
+        existing = set(users.keys())
         for user_id in msg["dest"][1]:
             if user_id not in existing:
                 raise MKUserError("dest", _('A user with the id "%s" does not exist.') % user_id)
 
 
-def _process_message(msg_from_vs: MessageFromVS) -> None:  # pylint: disable=too-many-branches
+def _process_message(
+    msg_from_vs: MessageFromVS,
+    all_user_ids: Sequence[UserId],
+) -> None:  # pylint: disable=too-many-branches
     msg = Message(
         text=MessageText(content_type="text", content=msg_from_vs["text"]),
         dest=msg_from_vs["dest"],
@@ -402,36 +405,8 @@ def _process_message(msg_from_vs: MessageFromVS) -> None:  # pylint: disable=too
         acknowledged=False,
     )
 
-    if isinstance(msg["dest"], str):
-        dest_what = msg["dest"]
-    else:
-        dest_what = msg["dest"][0]
-
-    if dest_what == "all_users":
-        recipients = list(map(UserId, active_config.multisite_users.keys()))
-    elif dest_what == "online":
-        recipients = userdb.get_online_user_ids(datetime.now())
-    elif dest_what == "list":
-        recipients = list(map(UserId, msg["dest"][1]))
-    else:
-        recipients = []
-
+    recipients, num_success, errors = send_message(msg, all_user_ids)
     num_recipients = len(recipients)
-
-    num_success: dict[str, int] = {}
-    for method in msg["methods"]:
-        num_success[method] = 0
-
-    # Now loop all messaging methods to send the messages
-    errors: dict[MessageMethod, list[tuple]] = {}
-    for user_id in recipients:
-        for method in msg["methods"]:
-            try:
-                handler = _messaging_methods()[method]["handler"]
-                handler(user_id, msg)
-                num_success[method] = num_success[method] + 1
-            except MKInternalError as e:
-                errors.setdefault(method, []).append((user_id, e))
 
     message = HTML.with_escaping(_("The message has successfully been sent..."))
     message += HTMLWriter.render_br()
@@ -465,6 +440,42 @@ def _process_message(msg_from_vs: MessageFromVS) -> None:  # pylint: disable=too
                 )
             error_message += HTMLWriter.render_table(table_rows) + HTMLWriter.render_br()
         html.show_error(error_message)
+
+
+def send_message(
+    msg: Message,
+    all_user_ids: Sequence[UserId],
+) -> tuple[list[UserId], dict[str, int], dict[MessageMethod, list[tuple]]]:
+    if isinstance(msg["dest"], str):
+        dest_what = msg["dest"]
+    else:
+        dest_what = msg["dest"][0]
+
+    if dest_what == "all_users":
+        recipients = list(all_user_ids)
+    elif dest_what == "online":
+        recipients = userdb.get_online_user_ids(datetime.now())
+    elif dest_what == "list":
+        recipients = list(map(UserId, msg["dest"][1]))
+    else:
+        recipients = []
+
+    num_success: dict[str, int] = {}
+    for method in msg["methods"]:
+        num_success[method] = 0
+
+    # Now loop all messaging methods to send the messages
+    errors: dict[MessageMethod, list[tuple]] = {}
+    for user_id in recipients:
+        for method in msg["methods"]:
+            try:
+                handler = _messaging_methods()[method]["handler"]
+                handler(user_id, msg)
+                num_success[method] = num_success[method] + 1
+            except MKInternalError as e:
+                errors.setdefault(method, []).append((user_id, e))
+
+    return recipients, num_success, errors
 
 
 #   ---Message Plugins-------------------------------------------------------

@@ -625,6 +625,8 @@ export function reset_sidebar_scheduler() {
     execute_sidebar_scheduler();
 }
 
+let pending_changes_counter = 0;
+
 export function execute_sidebar_scheduler() {
     g_seconds_to_update =
         g_seconds_to_update !== null
@@ -638,6 +640,11 @@ export function execute_sidebar_scheduler() {
             execute_sidebar_scheduler();
         }, 250);
         return;
+    }
+
+    pending_changes_counter = (pending_changes_counter + 1) % 3;
+    if (pending_changes_counter === 0) {
+        update_pending_changes();
     }
 
     const to_be_updated: string[] = [];
@@ -1173,6 +1180,10 @@ export function init_messages_and_werks(
 ) {
     g_sidebar_notify_interval = interval;
     create_initial_ids("user", "messages", "user_message.py");
+    create_initial_ids("changes", "changes", "wato.py?mode=changelog");
+
+    update_pending_changes();
+
     // Are there pending messages? Render the initial state of
     // trigger button
     update_messages();
@@ -1183,7 +1194,7 @@ export function init_messages_and_werks(
     }
 
     create_initial_ids(
-        "help_links",
+        "help",
         "werks",
         "change_log.py?show_unack=1&wo_compatibility=3",
     );
@@ -1260,6 +1271,37 @@ function mark_message_read(msg_id: string) {
     call_ajax("sidebar_message_read.py?id=" + msg_id);
 }
 
+
+interface AjaxSidebarGetPendingChanges {
+    number_of_pending_changes: number;
+}
+
+function handle_pending_changes(_data: any, response_text: string) {
+    const response: CMKAjaxReponse<AjaxSidebarGetPendingChanges> =
+        JSON.parse(response_text);
+    if (response.result_code != 0) {
+        return;
+    }
+    const l = document.getElementById("changes_label");
+    if (l) {
+        if (response.result.number_of_pending_changes === 0) {
+            l.style.display = "none";
+            return;
+        }
+        l.innerText =
+            response.result.number_of_pending_changes > 10
+                ? "10+"
+                : response.result.number_of_pending_changes.toString();
+        l.style.display = "inline";
+    }
+}
+
+function update_pending_changes() {
+    call_ajax("ajax_sidebar_get_number_of_pending_changes.py", {
+        response_handler: handle_pending_changes,
+    });
+}
+
 interface AjaxSidebarGetUnackIncompWerks {
     count: number;
     text: string;
@@ -1304,15 +1346,15 @@ export function update_werks_trigger(
     }
 }
 function create_initial_ids(menu: string, what: string, start_url: string) {
-    const mega_menu_help_div = document.getElementById(
-        "popup_trigger_mega_menu_" + menu,
+    const main_menu_help_div = document.getElementById(
+        "popup_trigger_main_menu_" + menu,
     )!.firstChild;
-    const help_div = mega_menu_help_div!.childNodes[2];
+    const help_div = main_menu_help_div!.childNodes[2];
 
     const l = document.createElement("span");
     l.setAttribute("id", what + "_label");
     l.style.display = "none";
-    mega_menu_help_div?.insertBefore(l, help_div);
+    main_menu_help_div?.insertBefore(l, help_div);
 
     // Also update popup content
     const info_line_span = document.getElementById("info_line_" + menu);

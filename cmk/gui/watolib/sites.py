@@ -2,11 +2,13 @@
 # Copyright (C) 2019 Checkmk GmbH - License: GNU General Public License v2
 # This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
 # conditions defined in the file COPYING, which is part of this source code package.
+from __future__ import annotations
 
-import os
+import queue
 import re
 import time
-from pathlib import Path
+from collections.abc import Collection, Mapping
+from multiprocessing import JoinableQueue, Process
 from typing import Any, cast, NamedTuple
 
 from livestatus import (
@@ -24,21 +26,22 @@ from cmk.ccc.plugin_registry import Registry
 from cmk.ccc.site import omd_site, SiteId
 
 from cmk.utils import paths
+from cmk.utils.licensing.handler import LicenseState
 
 import cmk.gui.sites
 import cmk.gui.watolib.activate_changes
 import cmk.gui.watolib.changes
 import cmk.gui.watolib.sidebar_reload
-from cmk.gui import hooks
+from cmk.gui import hooks, log
 from cmk.gui.config import (
-    active_config,
-    default_single_site_configuration,
     load_config,
-    prepare_raw_site_config,
 )
 from cmk.gui.exceptions import MKUserError
+from cmk.gui.htmllib.html import html
 from cmk.gui.http import request
 from cmk.gui.i18n import _
+from cmk.gui.log import logger
+from cmk.gui.logged_in import user
 from cmk.gui.site_config import (
     has_wato_slave_sites,
     is_replication_enabled,
@@ -63,6 +66,12 @@ from cmk.gui.valuespec import (
     Tuple,
     ValueSpec,
 )
+from cmk.gui.watolib.automation_commands import OMDStatus
+from cmk.gui.watolib.automations import (
+    do_remote_automation,
+    parse_license_state,
+    RemoteAutomationConfig,
+)
 from cmk.gui.watolib.broker_connections import BrokerConnectionsConfigFile
 from cmk.gui.watolib.config_domain_name import ABCConfigDomain
 from cmk.gui.watolib.config_domains import (
@@ -71,33 +80,17 @@ from cmk.gui.watolib.config_domains import (
 )
 from cmk.gui.watolib.config_sync import create_distributed_wato_files
 from cmk.gui.watolib.global_settings import load_configuration_settings
+from cmk.gui.watolib.mode import mode_registry
 from cmk.gui.watolib.simple_config_file import ConfigFileRegistry, WatoSingleConfigFile
-from cmk.gui.watolib.utils import ldap_connections_are_configurable
 
 
 class SitesConfigFile(WatoSingleConfigFile[SiteConfigurations]):
     def __init__(self) -> None:
         super().__init__(
-            config_file_path=Path(cmk.utils.paths.default_config_dir + "/multisite.d/sites.mk"),
+            config_file_path=cmk.utils.paths.default_config_dir / "multisite.d/sites.mk",
             config_variable="sites",
             spec_class=SiteConfigurations,
         )
-
-    def _load_file(self, lock: bool) -> SiteConfigurations:
-        if not self._config_file_path.exists():
-            return default_single_site_configuration()
-
-        sites_from_file = store.load_from_mk_file(
-            self._config_file_path,
-            key=self._config_variable,
-            default={},
-            lock=lock,
-        )
-
-        if not sites_from_file:
-            return default_single_site_configuration()
-
-        return prepare_raw_site_config(sites_from_file)
 
 
 def register(config_file_registry: ConfigFileRegistry) -> None:
@@ -239,7 +232,11 @@ class SiteManagement:
         )
 
     @classmethod
-    def user_sync_valuespec(cls, site_id):
+    def user_sync_valuespec(
+        cls,
+        site_id: SiteId | None,
+        site_configuration: SiteConfiguration,
+    ) -> CascadingDropdown:
         return CascadingDropdown(
             title=_("Sync with LDAP connections"),
             orientation="horizontal",
@@ -255,7 +252,7 @@ class SiteManagement:
                     ),
                 ),
             ],
-            default_value="all" if site_is_local(active_config, site_id) else None,
+            default_value="all" if site_id is None or site_is_local(site_configuration) else None,
             help=_(
                 "By default the users are synchronized automatically in the interval configured "
                 "in the connection. For example the LDAP connector synchronizes the users every "
@@ -370,39 +367,46 @@ class SiteManagement:
 
     @classmethod
     def _save_broker_connection_config(
-        cls, save_id: str, connection: BrokerConnection
+        cls, save_id: str, connection: BrokerConnection, pprint_value: bool
     ) -> tuple[SiteId, SiteId]:
         broker_connections = cls.get_broker_connections()
         broker_connections[ConnectionId(save_id)] = connection
-        BrokerConnectionsConfigFile().save(broker_connections)
+        BrokerConnectionsConfigFile().save(broker_connections, pprint_value)
         return connection.connectee.site_id, connection.connecter.site_id
 
     @classmethod
     def validate_and_save_broker_connection(
-        cls, connection_id: ConnectionId, connection: BrokerConnection, is_new: bool
+        cls,
+        connection_id: ConnectionId,
+        connection: BrokerConnection,
+        *,
+        is_new: bool,
+        pprint_value: bool,
     ) -> tuple[SiteId, SiteId]:
         cls._validate_broker_connection(connection_id, connection, is_new)
-        return cls._save_broker_connection_config(connection_id, connection)
+        return cls._save_broker_connection_config(connection_id, connection, pprint_value)
 
     @classmethod
-    def delete_broker_connection(cls, connection_id: ConnectionId) -> tuple[SiteId, SiteId]:
+    def delete_broker_connection(
+        cls, connection_id: ConnectionId, pprint_value: bool
+    ) -> tuple[SiteId, SiteId]:
         broker_connections = cls.get_broker_connections()
         if connection_id not in broker_connections:
             raise MKUserError(None, _("Unable to delete unknown connection ID: %s") % connection_id)
 
         connection = broker_connections[connection_id]
         del broker_connections[connection_id]
-        BrokerConnectionsConfigFile().save(broker_connections)
+        BrokerConnectionsConfigFile().save(broker_connections, pprint_value)
 
         return connection.connectee.site_id, connection.connecter.site_id
 
     @classmethod
     def validate_configuration(
         cls,
-        site_id,
-        site_configuration,
-        all_sites,
-    ):
+        site_id: SiteId,
+        site_configuration: SiteConfiguration,
+        all_sites: SiteConfigurations,
+    ) -> None:
         if not re.match("^[-a-z0-9A-Z_]+$", site_id):
             raise MKUserError(
                 "id", _("The site id must consist only of letters, digit and the underscore.")
@@ -413,7 +417,7 @@ class SiteManagement:
                 "alias", _("Please enter an alias name or description for the site %s.") % site_id
             )
 
-        if site_configuration.get("url_prefix") and site_configuration.get("url_prefix")[-1] != "/":
+        if site_configuration["url_prefix"] and site_configuration["url_prefix"][-1] != "/":
             raise MKUserError("url_prefix", _("The URL prefix must end with a slash."))
 
         # Connection
@@ -452,8 +456,8 @@ class SiteManagement:
                 raise MKUserError("sh_host", _("Please specify the name of the status host."))
 
         if is_replication_enabled(site_configuration):
-            multisiteurl = site_configuration.get("multisiteurl")
-            if not site_configuration.get("multisiteurl"):
+            multisiteurl = site_configuration["multisiteurl"]
+            if not multisiteurl:
                 raise MKUserError(
                     "multisiteurl",
                     _("Please enter the graphical user interface (GUI) URL of the remote site."),
@@ -490,7 +494,7 @@ class SiteManagement:
 
         # User synchronization
         if ldap_connections_are_configurable():
-            user_sync_valuespec = cls.user_sync_valuespec(site_id)
+            user_sync_valuespec = cls.user_sync_valuespec(site_id, site_configuration)
             user_sync_valuespec.validate_value(site_configuration.get("user_sync"), "user_sync")
 
     @classmethod
@@ -498,11 +502,11 @@ class SiteManagement:
         return SitesConfigFile().load_for_reading()
 
     @classmethod
-    def save_sites(cls, sites: SiteConfigurations, activate: bool = True) -> None:
+    def save_sites(cls, sites: SiteConfigurations, *, activate: bool, pprint_value: bool) -> None:
         # TODO: Clean this up
         from cmk.gui.watolib.hosts_and_folders import folder_tree
 
-        SitesConfigFile().save(sites)
+        SitesConfigFile().save(sites, pprint_value)
 
         # Do not activate when just the site's global settings have
         # been edited
@@ -519,7 +523,7 @@ class SiteManagement:
             hooks.call("sites-saved", sites)
 
     @classmethod
-    def delete_site(cls, site_id: SiteId) -> None:
+    def delete_site(cls, site_id: SiteId, *, pprint_value: bool, use_git: bool) -> None:
         # TODO: Clean this up
         from cmk.gui.watolib.hosts_and_folders import folder_tree
 
@@ -567,16 +571,18 @@ class SiteManagement:
         )
 
         del all_sites[site_id]
-        cls.save_sites(all_sites)
+        cls.save_sites(all_sites, activate=True, pprint_value=pprint_value)
 
         cmk.gui.watolib.changes.add_change(
-            "edit-sites",
-            _("Deleted site %s") % site_id,
+            action_name="edit-sites",
+            text=_("Deleted site %s") % site_id,
+            user_id=user.id,
             domains=domains,
             # Exclude site which is about to be removed. The activation won't be executed for that
             # site anymore, so there is no point in adding a change for this site
             sites=list(connected_sites - {site_id}),
             need_restart=True,
+            use_git=use_git,
         )
         cmk.gui.watolib.activate_changes.clear_site_replication_status(site_id)
 
@@ -678,7 +684,7 @@ def _create_nagvis_backends(sites_config):
             cfg.append("verify_tls_ca_path=%s" % ConfigDomainCACertificates.trusted_cas_file)
 
     store.save_text_to_file(
-        "%s/etc/nagvis/conf.d/cmk_backends.ini.php" % cmk.utils.paths.omd_root, "\n".join(cfg)
+        cmk.utils.paths.omd_root / "etc/nagvis/conf.d/cmk_backends.ini.php", "\n".join(cfg)
     )
 
 
@@ -700,7 +706,7 @@ def _update_distributed_wato_file(sites):
     for siteid, site in sites.items():
         if is_replication_enabled(site):
             distributed = True
-        if site_is_local(active_config, siteid):
+        if site_is_local(site):
             create_distributed_wato_files(
                 base_dir=cmk.utils.paths.omd_root,
                 site_id=siteid,
@@ -724,7 +730,7 @@ def is_livestatus_encrypted(site: SiteConfiguration) -> bool:
     )
 
 
-def site_globals_editable(site_id: SiteId, site: SiteConfiguration) -> bool:
+def site_globals_editable(site: SiteConfiguration) -> bool:
     # Site is a remote site of another site. Allow to edit probably pushed site
     # specific globals when remote Setup is enabled
     if is_wato_slave_site():
@@ -734,15 +740,15 @@ def site_globals_editable(site_id: SiteId, site: SiteConfiguration) -> bool:
     if not has_wato_slave_sites():
         return False
 
-    return is_replication_enabled(site) or site_is_local(active_config, site_id)
+    return is_replication_enabled(site) or site_is_local(site)
 
 
 def _delete_distributed_wato_file():
-    p = cmk.utils.paths.check_mk_config_dir + "/distributed_wato.mk"
+    p = cmk.utils.paths.check_mk_config_dir / "distributed_wato.mk"
     # We do not delete the file but empty it. That way
     # we do not need write permissions to the conf.d
     # directory!
-    if os.path.exists(p):
+    if p.exists():
         store.save_text_to_file(p, "")
 
 
@@ -759,7 +765,7 @@ def get_effective_global_setting(site_id: SiteId, is_remote_site: bool, varname:
         current_settings = load_configuration_settings(site_specific=True)
     else:
         sites = site_management_registry["site_management"].load_sites()
-        current_settings = sites.get(site_id, SiteConfiguration({})).get("globals", {})
+        current_settings = sites[site_id].get("globals", {})
 
     if varname in current_settings:
         return current_settings[varname]
@@ -768,3 +774,123 @@ def get_effective_global_setting(site_id: SiteId, is_remote_site: bool, varname:
         return effective_global_settings[varname]
 
     return default_values[varname]
+
+
+class PingResult(NamedTuple):
+    version: str
+    edition: str
+    omd_status: OMDStatus
+    license_state: LicenseState | None
+
+
+class ReplicationStatus(NamedTuple):
+    site_id: SiteId
+    success: bool
+    response: PingResult | Exception
+
+
+class ReplicationStatusFetcher:
+    """Helper class to retrieve the replication status of all relevant sites"""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._logger = logger.getChild("replication-status")
+
+    def fetch(
+        self,
+        sites: Collection[tuple[SiteId, RemoteAutomationConfig]],
+        *,
+        debug: bool,
+    ) -> Mapping[SiteId, ReplicationStatus]:
+        self._logger.debug("Fetching replication status for %d sites" % len(sites))
+        results_by_site: dict[SiteId, ReplicationStatus] = {}
+
+        # Results are fetched simultaneously from the remote sites
+        result_queue: JoinableQueue[ReplicationStatus] = JoinableQueue()
+
+        processes = []
+        for site_id, automation_config in sites:
+            process = Process(
+                target=self._fetch_for_site, args=(site_id, automation_config, result_queue, debug)
+            )
+            process.start()
+            processes.append((site_id, process))
+
+        # Now collect the results from the queue until all processes are finished
+        while any(p.is_alive() for site_id, p in processes):
+            try:
+                result = result_queue.get_nowait()
+                result_queue.task_done()
+                results_by_site[result.site_id] = result
+
+            except queue.Empty:
+                time.sleep(0.5)  # wait some time to prevent CPU hogs
+
+            except Exception as e:
+                logger.exception(
+                    "error collecting replication results from site %s", result.site_id
+                )
+                html.show_error(f"{result.site_id}: {e}")
+
+        self._logger.debug("Got results")
+        return results_by_site
+
+    def _fetch_for_site(
+        self,
+        site_id: SiteId,
+        automation_config: RemoteAutomationConfig,
+        result_queue: JoinableQueue[ReplicationStatus],
+        debug: bool,
+    ) -> None:
+        """Executes the tests on the site. This method is executed in a dedicated
+        subprocess (One per site)"""
+        self._logger.debug("[%s] Starting" % site_id)
+        result = None
+        try:
+            # TODO: Would be better to clean all open fds that are not needed, but we don't
+            # know the FDs of the result_queue pipe. Can we find it out somehow?
+            # Cleanup resources of the apache
+            # TODO: Needs to be solved for analzye_configuration too
+            # for x in range(3, 256):
+            #    try:
+            #        os.close(x)
+            #    except OSError, e:
+            #        if e.errno == errno.EBADF:
+            #            pass
+            #        else:
+            #            raise
+
+            # Reinitialize logging targets
+            log.init_logging()  # NOTE: We run in a subprocess!
+
+            raw_result = do_remote_automation(automation_config, "ping", [], timeout=5, debug=debug)
+            assert isinstance(raw_result, dict)
+
+            result = ReplicationStatus(
+                site_id=site_id,
+                success=True,
+                response=PingResult(
+                    version=raw_result["version"],
+                    edition=raw_result["edition"],
+                    license_state=parse_license_state(raw_result.get("license_state", "")),
+                    omd_status=raw_result["omd_status"],
+                ),
+            )
+            self._logger.debug("[%s] Finished" % site_id)
+        except Exception as e:
+            self._logger.debug("[%s] Failed" % site_id, exc_info=True)
+            result = ReplicationStatus(
+                site_id=site_id,
+                success=False,
+                response=e,
+            )
+        finally:
+            if result:
+                result_queue.put(result)
+            result_queue.close()
+            result_queue.join_thread()
+            result_queue.join()
+
+
+def ldap_connections_are_configurable() -> bool:
+    return mode_registry.get("ldap_config") is not None

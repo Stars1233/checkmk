@@ -16,12 +16,12 @@ from cmk.ccc.site import SiteId
 
 from cmk.gui import query_filters
 from cmk.gui import sites as sites
-from cmk.gui.config import active_config
+from cmk.gui.config import active_config, Config
 from cmk.gui.exceptions import MKMissingDataError, MKUserError
 from cmk.gui.htmllib.html import html
 from cmk.gui.http import request
 from cmk.gui.i18n import _, _l
-from cmk.gui.pages import AjaxPage, PageRegistry, PageResult
+from cmk.gui.pages import AjaxPage, PageEndpoint, PageRegistry, PageResult
 from cmk.gui.type_defs import (
     Choices,
     ColumnName,
@@ -57,7 +57,7 @@ from .filter import filter_registry as global_filter_registry
 
 
 def register(page_registry: PageRegistry, filter_registry: FilterRegistry) -> None:
-    page_registry.register_page("ajax_validate_filter")(PageValidateFilter)
+    page_registry.register(PageEndpoint("ajax_validate_filter", PageValidateFilter))
     register_host_and_service_basic_filters(filter_registry)
     register_host_address_filters(filter_registry)
     register_host_and_service_group_filters(filter_registry)
@@ -106,7 +106,7 @@ class RegexAjaxDropdownFilter(AjaxDropdownFilter):
 
 
 class PageValidateFilter(AjaxPage):
-    def page(self) -> PageResult:
+    def page(self, config: Config) -> PageResult:
         api_request = self.webapi_request()
         varname = str(api_request.get("varname"))
         value = str(api_request.get("value"))
@@ -245,7 +245,7 @@ def register_host_and_service_basic_filters(filter_registry: FilterRegistry) -> 
 
     filter_registry.register(
         AjaxDropdownFilter(
-            title=_l("Host check command"),
+            title=_l("Host check command (regex)"),
             sort_index=110,
             info="host",
             autocompleter=AutocompleterConfig(ident="check_cmd"),
@@ -258,13 +258,41 @@ def register_host_and_service_basic_filters(filter_registry: FilterRegistry) -> 
 
     filter_registry.register(
         AjaxDropdownFilter(
-            title=_l("Service check command"),
+            title=_l("Host check command (exact match)"),
+            sort_index=110,
+            info="host",
+            autocompleter=AutocompleterConfig(ident="check_cmd"),
+            query_filter=query_filters.TextQuery(
+                ident="host_check_command_exact",
+                op="=",
+                column="host_check_command",
+            ),
+        )
+    )
+
+    filter_registry.register(
+        AjaxDropdownFilter(
+            title=_l("Service check command (regex)"),
             sort_index=210,
             info="service",
             autocompleter=AutocompleterConfig(ident="check_cmd"),
             query_filter=query_filters.CheckCommandQuery(
                 ident="check_command",
                 op="~",
+                column="service_check_command",
+            ),
+        )
+    )
+
+    filter_registry.register(
+        AjaxDropdownFilter(
+            title=_l("Service check command (exact match)"),
+            sort_index=210,
+            info="service",
+            autocompleter=AutocompleterConfig(ident="check_cmd"),
+            query_filter=query_filters.TextQuery(
+                ident="check_command_exact",
+                op="=",
                 column="service_check_command",
             ),
         )
@@ -391,7 +419,7 @@ def register_host_and_service_group_filters(filter_registry: FilterRegistry) -> 
             query_filter=query_filters.MultipleQuery(
                 ident="hostgroups", column="host_groups", op=">=", negateable=True
             ),
-            options=sites.all_groups,
+            options=sites.all_groups,  # type: ignore[arg-type]
         )
     )
 
@@ -404,7 +432,7 @@ def register_host_and_service_group_filters(filter_registry: FilterRegistry) -> 
             query_filter=query_filters.MultipleQuery(
                 ident="servicegroups", column="service_groups", op=">=", negateable=True
             ),
-            options=sites.all_groups,
+            options=sites.all_groups,  # type: ignore[arg-type]
         )
     )
     filter_registry.register(

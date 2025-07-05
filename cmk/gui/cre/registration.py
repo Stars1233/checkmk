@@ -10,7 +10,7 @@ from cmk.ccc.version import Edition
 
 import cmk.gui.graphing._graph_images as graph_images
 import cmk.gui.graphing._html_render as html_render
-import cmk.gui.pages
+import cmk.gui.wato._notification_parameter._mail as mail
 from cmk.gui import nagvis, sidebar, visuals
 from cmk.gui.background_job import job_registry
 from cmk.gui.backup.registration import backup_register
@@ -26,20 +26,21 @@ from cmk.gui.dashboard import (
 )
 from cmk.gui.data_source import data_source_registry
 from cmk.gui.features import Features, features_registry
+from cmk.gui.form_specs.vue.visitors.recomposers.unknown_form_spec import recompose_dictionary_spec
 from cmk.gui.graphing_main import PageGraphDashlet, PageHostServiceGraphPopup
 from cmk.gui.help_menu import (
-    default_about_checkmk_items,
-    default_developer_items,
+    default_about_checkmk_entries,
+    default_developer_entries,
     default_info_line,
-    default_learning_items,
+    default_learning_entries,
 )
-from cmk.gui.main_menu import mega_menu_registry
+from cmk.gui.main_menu import main_menu_registry
 from cmk.gui.mkeventd import registration as mkeventd_registration
 from cmk.gui.mkeventd.helpers import save_active_config
-from cmk.gui.openapi import endpoint_family_registry, endpoint_registry
+from cmk.gui.openapi import endpoint_family_registry, endpoint_registry, versioned_endpoint_registry
 from cmk.gui.openapi.endpoints import autocomplete
 from cmk.gui.openapi.endpoints import metric as metric_endpoint
-from cmk.gui.pages import page_registry
+from cmk.gui.pages import page_registry, PageEndpoint
 from cmk.gui.painter.v0 import painter_registry
 from cmk.gui.painter_options import painter_option_registry
 from cmk.gui.permissions import permission_registry, permission_section_registry
@@ -63,10 +64,7 @@ from cmk.gui.visuals import default_site_filter_heading_info
 from cmk.gui.visuals.filter import filter_registry
 from cmk.gui.visuals.info import visual_info_registry
 from cmk.gui.visuals.type import visual_type_registry
-from cmk.gui.wato import (
-    default_user_menu_topics,
-    NotificationParameterMail,
-)
+from cmk.gui.wato import default_user_menu_topics
 from cmk.gui.wato import registration as wato_registration
 from cmk.gui.wato.pages import ldap, roles
 from cmk.gui.watolib import network_scan
@@ -94,7 +92,10 @@ from cmk.gui.watolib.host_rename import rename_host_hook_registry
 from cmk.gui.watolib.hosts_and_folders import folder_validators_registry
 from cmk.gui.watolib.main_menu import main_module_registry, main_module_topic_registry
 from cmk.gui.watolib.mode import mode_registry
-from cmk.gui.watolib.notification_parameter import notification_parameter_registry
+from cmk.gui.watolib.notification_parameter import (
+    notification_parameter_registry,
+    NotificationParameter,
+)
 from cmk.gui.watolib.piggyback_hub import distribute_piggyback_hub_configs
 from cmk.gui.watolib.rulespecs import rulespec_group_registry, rulespec_registry
 from cmk.gui.watolib.sample_config import SampleConfigGeneratorGroups
@@ -103,20 +104,22 @@ from cmk.gui.watolib.simple_config_file import config_file_registry
 from cmk.gui.watolib.sites import site_management_registry, SiteManagement
 from cmk.gui.watolib.snapshots import make_cre_snapshot_manager
 from cmk.gui.watolib.timeperiods import timeperiod_usage_finder_registry
-from cmk.gui.watolib.users import (
-    default_sites,
-    user_features_registry,
-    UserFeatures,
-)
+from cmk.gui.watolib.users import default_sites, user_features_registry, UserFeatures
 
 
 def register_pages() -> None:
-    cmk.gui.pages.page_registry.register(PageGraphDashlet)
-    cmk.gui.pages.page_registry.register(PageHostServiceGraphPopup)
-    cmk.gui.pages.page_registry.register(html_render.AjaxRenderGraphContent)
-    cmk.gui.pages.page_registry.register(html_render.AjaxGraphHover)
-    cmk.gui.pages.page_registry.register(html_render.AjaxGraph)
-    cmk.gui.pages.page_registry.register(graph_images.AjaxGraphImagesForNotifications)
+    page_registry.register(PageEndpoint("graph_dashlet", PageGraphDashlet))
+    page_registry.register(PageEndpoint("host_service_graph_popup", PageHostServiceGraphPopup))
+
+    page_registry.register(
+        PageEndpoint("ajax_render_graph_content", html_render.AjaxRenderGraphContent)
+    )
+
+    page_registry.register(PageEndpoint("ajax_graph_hover", html_render.AjaxGraphHover))
+    page_registry.register(PageEndpoint("ajax_graph", html_render.AjaxGraph))
+    page_registry.register(
+        PageEndpoint("ajax_graph_images", graph_images.AjaxGraphImagesForNotifications)
+    )
 
 
 def register_painters() -> None:
@@ -126,14 +129,14 @@ def register_painters() -> None:
     painter_registry.register(graph.PainterHostPnpgraph)
 
 
-def register(edition: Edition) -> None:
+def register(edition: Edition, *, ignore_duplicate_endpoints: bool = False) -> None:
     sample_config_generator_registry.register(SampleConfigGeneratorGroups)
     network_scan.register(host_attribute_registry, automation_command_registry, cron_job_registry)
     nagvis.register(permission_section_registry, permission_registry, snapin_registry)
     ldap.register(mode_registry)
     roles.register(mode_registry)
     common_registration(
-        mega_menu_registry,
+        main_menu_registry,
         job_registry,
         crash_report_registry,
         permission_section_registry,
@@ -170,6 +173,7 @@ def register(edition: Edition) -> None:
         host_attribute_topic_registry,
         replication_path_registry,
         endpoint_registry,
+        versioned_endpoint_registry,
         endpoint_family_registry,
         user_connector_registry,
         layout_registry,
@@ -180,9 +184,10 @@ def register(edition: Edition) -> None:
         user_attribute_registry,
         quick_setup_registry,
         default_info_line,
-        default_learning_items,
-        default_developer_items,
-        default_about_checkmk_items,
+        default_learning_entries,
+        default_developer_entries,
+        default_about_checkmk_entries,
+        ignore_duplicate_endpoints=ignore_duplicate_endpoints,
     )
 
     features_registry.register(
@@ -205,7 +210,7 @@ def register(edition: Edition) -> None:
         permission_section_registry,
         snapin_registry,
         dashlet_registry,
-        mega_menu_registry,
+        main_menu_registry,
         view_menu_topics=sidebar.default_view_menu_topics,
     )
     wato_registration.register(
@@ -228,7 +233,7 @@ def register(edition: Edition) -> None:
         config_variable_group_registry,
         snapin_registry,
         match_item_generator_registry,
-        mega_menu_registry,
+        main_menu_registry,
         ac_test_registry,
         contact_group_usage_finder_registry,
         notification_parameter_registry,
@@ -253,7 +258,13 @@ def register(edition: Edition) -> None:
     broker_certificate_sync_registry.register(DefaultBrokerCertificateSync())
 
     site_management_registry.register(SiteManagement())
-    notification_parameter_registry.register(NotificationParameterMail)
+    notification_parameter_registry.register(
+        NotificationParameter(
+            ident="mail",
+            spec=lambda: recompose_dictionary_spec(mail.form_spec_mail),
+            form_spec=mail.form_spec_mail,
+        )
+    )
     register_pages()
     register_painters()
     backup_register(
@@ -286,13 +297,14 @@ def register(edition: Edition) -> None:
         endpoint_registry,
         replication_path_registry,
         save_active_config,
+        ignore_duplicate_endpoints=ignore_duplicate_endpoints,
     )
     custom_icons_register(
         mode_registry,
         main_module_registry,
         permission_registry,
     )
-    _openapi_registration()
+    _openapi_registration(ignore_duplicates=ignore_duplicate_endpoints)
     builtin_dashboard_extender_registry.register(
         BuiltinDashboardExtender(edition.short, noop_builtin_dashboard_extender)
     )
@@ -301,6 +313,6 @@ def register(edition: Edition) -> None:
     )
 
 
-def _openapi_registration() -> None:
-    autocomplete.register(endpoint_registry)
-    metric_endpoint.register(endpoint_registry)
+def _openapi_registration(*, ignore_duplicates: bool) -> None:
+    autocomplete.register(endpoint_registry, ignore_duplicates=ignore_duplicates)
+    metric_endpoint.register(endpoint_registry, ignore_duplicates=ignore_duplicates)

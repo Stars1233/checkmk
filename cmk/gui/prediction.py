@@ -20,19 +20,20 @@ from livestatus import (
 
 import cmk.ccc.debug
 from cmk.ccc.exceptions import MKGeneralException
+from cmk.ccc.hostaddress import HostName
 from cmk.ccc.site import SiteId
 
-from cmk.utils.hostaddress import HostName
 from cmk.utils.metrics import MetricName
 from cmk.utils.prediction import estimate_levels, PredictionData, PredictionQuerier
 from cmk.utils.servicename import ServiceName
 
 from cmk.gui import sites
+from cmk.gui.config import Config
 from cmk.gui.htmllib.header import make_header
 from cmk.gui.htmllib.html import html
 from cmk.gui.http import request as request_
 from cmk.gui.i18n import _
-from cmk.gui.pages import PageRegistry
+from cmk.gui.pages import PageEndpoint, PageRegistry
 from cmk.gui.sites import live
 from cmk.gui.view_breadcrumbs import make_service_breadcrumb
 
@@ -71,7 +72,7 @@ class PredictionCurves:
 
 
 def register(page_registry: PageRegistry) -> None:
-    page_registry.register_page_handler("prediction_graph", page_graph)
+    page_registry.register(PageEndpoint("prediction_graph", page_graph))
 
 
 @dataclass
@@ -160,7 +161,7 @@ def _available_predictions(
     return available
 
 
-def page_graph() -> None:
+def page_graph(config: Config) -> None:
     host_name = request_.get_validated_type_input_mandatory(HostName, "host")
     service_name = ServiceName(request_.get_str_input_mandatory("service"))
     metric_name = MetricName(request_.get_str_input_mandatory("dsname"))

@@ -40,9 +40,10 @@ from ._openapi import register as openapi_register
 from ._sidebar_snapin import SidebarSnapinEventConsole
 from .autocompleters import service_levels_autocompleter, syslog_facilities_autocompleter
 from .icon import MkeventdIcon
-from .permission_section import PermissionSectionEventConsole
 
 __all__ = ["register"]
+
+from .permission_section import PERMISSION_SECTION_EVENT_CONSOLE
 
 
 def register(
@@ -70,6 +71,8 @@ def register(
     endpoint_registry: EndpointRegistry,
     replication_path_registry: ReplicationPathRegistry,
     save_active_config: Callable[[], None],
+    *,
+    ignore_duplicate_endpoints: bool = False,
 ) -> None:
     views.register(
         data_source_registry,
@@ -94,7 +97,7 @@ def register(
         notification_parameter_registry,
         replication_path_registry,
     )
-    permission_section_registry.register(PermissionSectionEventConsole)
+    permission_section_registry.register(PERMISSION_SECTION_EVENT_CONSOLE)
     autocompleter_registry.register_autocompleter(
         "syslog_facilities", syslog_facilities_autocompleter
     )
@@ -106,4 +109,4 @@ def register(
         find_usages_of_contact_group_in_mkeventd_notify_contactgroup
     )
     timeperiod_usage_finder_registry.register(find_timeperiod_usage_in_ec_rules)
-    openapi_register(endpoint_registry)
+    openapi_register(endpoint_registry, ignore_duplicates=ignore_duplicate_endpoints)

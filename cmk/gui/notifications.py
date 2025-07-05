@@ -2,9 +2,8 @@
 # Copyright (C) 2019 Checkmk GmbH - License: GNU General Public License v2
 # This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
 # conditions defined in the file COPYING, which is part of this source code package.
-
 import time
-from typing import NamedTuple
+from typing import NamedTuple, override
 
 from livestatus import LivestatusResponse, MKLivestatusNotFoundError
 
@@ -13,7 +12,7 @@ import cmk.utils.render
 import cmk.gui.pages
 from cmk.gui import sites
 from cmk.gui.breadcrumb import Breadcrumb, make_simple_page_breadcrumb
-from cmk.gui.config import active_config
+from cmk.gui.config import active_config, Config
 from cmk.gui.ctx_stack import g
 from cmk.gui.exceptions import MKAuthException
 from cmk.gui.htmllib.header import make_header
@@ -21,7 +20,7 @@ from cmk.gui.htmllib.html import html
 from cmk.gui.http import request
 from cmk.gui.i18n import _
 from cmk.gui.logged_in import user
-from cmk.gui.main_menu import mega_menu_registry
+from cmk.gui.main_menu import main_menu_registry
 from cmk.gui.page_menu import (
     make_simple_link,
     PageMenu,
@@ -29,7 +28,7 @@ from cmk.gui.page_menu import (
     PageMenuEntry,
     PageMenuTopic,
 )
-from cmk.gui.pages import Page, PageRegistry
+from cmk.gui.pages import Page, PageEndpoint, PageRegistry
 from cmk.gui.permissions import (
     declare_dynamic_permissions,
     PermissionSection,
@@ -47,8 +46,8 @@ from cmk.gui.watolib.users import get_enabled_remote_sites_for_logged_in_user
 def register(
     page_registry: PageRegistry, permission_section_registry: PermissionSectionRegistry
 ) -> None:
-    page_registry.register_page("clear_failed_notifications")(ClearFailedNotificationPage)
-    permission_section_registry.register(PermissionSectionNotificationPlugins)
+    page_registry.register(PageEndpoint("clear_failed_notifications", ClearFailedNotificationPage))
+    permission_section_registry.register(PERMISSION_SECTION_NOTIFICATION_PLUGINS)
 
 
 class FailedNotificationTimes(NamedTuple):
@@ -65,19 +64,11 @@ g_columns: list[str] = [
     "comment",
 ]
 
-
-class PermissionSectionNotificationPlugins(PermissionSection):
-    @property
-    def name(self) -> str:
-        return "notification_plugin"
-
-    @property
-    def title(self) -> str:
-        return _("Notification plug-ins")
-
-    @property
-    def do_sort(self) -> bool:
-        return True
+PERMISSION_SECTION_NOTIFICATION_PLUGINS = PermissionSection(
+    name="notification_plugin",
+    title=_("Notification plug-ins"),
+    do_sort=True,
+)
 
 
 def load_plugins() -> None:
@@ -111,7 +102,7 @@ def acknowledged_time() -> float:
                 user.acknowledged_notifications, now
             )
 
-    return g.failed_notification_times.acknowledged_unitl
+    return g.failed_notification_times.acknowledged_unitl  # type: ignore[no-any-return]
 
 
 def number_of_failed_notifications(after: float | None) -> int:
@@ -203,7 +194,8 @@ class ClearFailedNotificationPage(Page):
         if not _may_see_failed_notifications():
             raise MKAuthException(_("You are not allowed to view the failed notifications."))
 
-    def page(self) -> None:
+    @override
+    def page(self, config: Config) -> None:
         acktime = request.get_float_input_mandatory("acktime", time.time())
         if request.var("_confirm"):
             _acknowledge_failed_notifications(acktime, time.time())
@@ -211,7 +203,7 @@ class ClearFailedNotificationPage(Page):
             if get_enabled_remote_sites_for_logged_in_user(user):
                 title = _("Replicate user profile")
                 breadcrumb = make_simple_page_breadcrumb(
-                    mega_menu_registry.menu_monitoring(), title
+                    main_menu_registry.menu_monitoring(), title
                 )
                 make_header(html, title, breadcrumb)
 
@@ -228,7 +220,7 @@ class ClearFailedNotificationPage(Page):
     # TODO: We should really recode this to use the view and a normal view command / action
     def _show_page(self, acktime: float, failed_notifications: LivestatusResponse) -> None:
         title = _("Confirm failed notifications")
-        breadcrumb = make_simple_page_breadcrumb(mega_menu_registry.menu_monitoring(), title)
+        breadcrumb = make_simple_page_breadcrumb(main_menu_registry.menu_monitoring(), title)
 
         page_menu = self._page_menu(acktime, failed_notifications, breadcrumb)
 
@@ -244,7 +236,8 @@ class ClearFailedNotificationPage(Page):
             for row in failed_notifications:
                 table.row()
                 table.cell(
-                    _("Time"), cmk.utils.render.approx_age(time.time() - row[header["time"]])
+                    _("Time"),
+                    cmk.utils.render.approx_age(time.time() - row[header["time"]]),
                 )
                 table.cell(_("Contact"), row[header["contact_name"]])
                 table.cell(_("Plug-in"), row[header["command_name"]])
@@ -253,12 +246,17 @@ class ClearFailedNotificationPage(Page):
                 table.cell(_("Output"), row[header["comment"]])
 
     def _page_menu(
-        self, acktime: float, failed_notifications: LivestatusResponse, breadcrumb: Breadcrumb
+        self,
+        acktime: float,
+        failed_notifications: LivestatusResponse,
+        breadcrumb: Breadcrumb,
     ) -> PageMenu:
         confirm_url = make_simple_link(
             make_confirm_delete_link(
                 url=makeactionuri(
-                    request, transactions, [("acktime", str(acktime)), ("_confirm", "1")]
+                    request,
+                    transactions,
+                    [("acktime", str(acktime)), ("_confirm", "1")],
                 ),
                 title=_("Acknowledge all failed notifications"),
                 message=("Up to: %s") % cmk.utils.render.date_and_time(acktime),

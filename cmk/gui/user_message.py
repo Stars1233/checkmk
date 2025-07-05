@@ -5,15 +5,17 @@
 
 import time
 from collections.abc import Iterator
+from typing import override
 
 from cmk.gui import forms, message
 from cmk.gui.breadcrumb import Breadcrumb, make_simple_page_breadcrumb
+from cmk.gui.config import Config
 from cmk.gui.htmllib.header import make_header
 from cmk.gui.htmllib.html import html
 from cmk.gui.http import request
 from cmk.gui.i18n import _, ungettext
 from cmk.gui.logged_in import user
-from cmk.gui.main_menu import mega_menu_registry
+from cmk.gui.main_menu import main_menu_registry
 from cmk.gui.page_menu import (
     make_simple_link,
     PageMenu,
@@ -21,7 +23,7 @@ from cmk.gui.page_menu import (
     PageMenuEntry,
     PageMenuTopic,
 )
-from cmk.gui.pages import Page, PageRegistry
+from cmk.gui.pages import Page, PageEndpoint, PageRegistry
 from cmk.gui.utils.csrf_token import check_csrf_token
 from cmk.gui.utils.flashed_messages import flash, get_flashed_messages
 from cmk.gui.utils.html import HTML
@@ -30,17 +32,14 @@ from cmk.gui.utils.urls import make_confirm_delete_link, makeactionuri
 
 
 def register(page_registry: PageRegistry) -> None:
-    page_registry.register_page("user_message")(PageUserMessage)
-    page_registry.register_page_handler("ajax_delete_user_message", ajax_delete_user_message)
-    page_registry.register_page_handler(
-        "ajax_acknowledge_user_message", ajax_acknowledge_user_message
+    page_registry.register(PageEndpoint("user_message", PageUserMessage))
+    page_registry.register(PageEndpoint("ajax_delete_user_message", ajax_delete_user_message))
+    page_registry.register(
+        PageEndpoint("ajax_acknowledge_user_message", ajax_acknowledge_user_message)
     )
 
 
 class PageUserMessage(Page):
-    def title(self) -> str:
-        return _("Your messages")
-
     def page_menu(self, breadcrumb: Breadcrumb) -> PageMenu:
         return PageMenu(
             dropdowns=[
@@ -68,9 +67,10 @@ class PageUserMessage(Page):
             breadcrumb=breadcrumb,
         )
 
-    def page(self) -> None:
-        breadcrumb = make_simple_page_breadcrumb(mega_menu_registry.menu_user(), _("Messages"))
-        make_header(html, self.title(), breadcrumb, self.page_menu(breadcrumb))
+    @override
+    def page(self, config: Config) -> None:
+        breadcrumb = make_simple_page_breadcrumb(main_menu_registry.menu_user(), _("Messages"))
+        make_header(html, _("Your messages"), breadcrumb, self.page_menu(breadcrumb))
 
         for flashed_msg in get_flashed_messages():
             html.show_message(flashed_msg.msg)
@@ -183,9 +183,11 @@ def show_user_messages() -> None:
             _("Sent on: %s, Expires on: %s")
             % (
                 time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(entry["time"])),
-                "-"
-                if (valid_till := entry["valid_till"]) is None
-                else time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(valid_till)),
+                (
+                    "-"
+                    if (valid_till := entry["valid_till"]) is None
+                    else time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(valid_till))
+                ),
             )
         )
         html.close_div()
@@ -228,13 +230,13 @@ def show_message_actions(
         )
 
 
-def ajax_delete_user_message() -> None:
+def ajax_delete_user_message(config: Config) -> None:
     check_csrf_token()
     msg_id = request.get_str_input_mandatory("id")
     message.delete_gui_message(msg_id)
 
 
-def ajax_acknowledge_user_message() -> None:
+def ajax_acknowledge_user_message(config: Config) -> None:
     check_csrf_token()
     msg_id = request.get_str_input_mandatory("id")
     message.acknowledge_gui_message(msg_id)

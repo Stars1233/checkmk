@@ -15,9 +15,9 @@ import time_machine
 from pytest_mock import MockerFixture
 
 from cmk.ccc.site import SiteId
+from cmk.ccc.user import UserId
 
 from cmk.utils.object_diff import make_diff_text
-from cmk.utils.user import UserId
 
 from cmk.gui.utils.html import HTML
 from cmk.gui.watolib.audit_log import AuditLogStore, log_audit
@@ -92,7 +92,6 @@ class TestAuditLogStore:
         store.append(entry)
         assert list(store.read()) == [entry, entry]
 
-    @pytest.mark.usefixtures("request_context")
     def test_transport_html(self, store: AuditLogStore) -> None:
         entry = AuditLogStore.Entry(
             int(time.time()),
@@ -189,7 +188,6 @@ class TestSiteChanges:
         assert not list(store.read())
 
 
-@pytest.mark.usefixtures("request_context")
 def test_log_audit_with_object_diff() -> None:
     old = {
         "a": "b",
@@ -201,10 +199,11 @@ def test_log_audit_with_object_diff() -> None:
 
     with time_machine.travel(datetime.datetime(2018, 4, 15, 16, 50, tzinfo=ZoneInfo("UTC"))):
         log_audit(
-            object_ref=None,
             action="bla",
             message="Message",
+            object_ref=None,
             user_id=UserId("calvin"),
+            use_git=False,
             diff_text=make_diff_text(old, new),
         )
 
@@ -221,14 +220,14 @@ def test_log_audit_with_object_diff() -> None:
     ]
 
 
-@pytest.mark.usefixtures("request_context")
 def test_log_audit_with_html_message() -> None:
     with time_machine.travel(datetime.datetime(2018, 4, 15, 16, 50, tzinfo=ZoneInfo("UTC"))):
         log_audit(
-            object_ref=None,
-            user_id=UserId("calvin"),
             action="bla",
             message=HTML.without_escaping("Message <b>bla</b>"),
+            object_ref=None,
+            user_id=UserId("calvin"),
+            use_git=False,
         )
 
     store = AuditLogStore()
@@ -244,17 +243,35 @@ def test_log_audit_with_html_message() -> None:
     ]
 
 
-def test_disable_activate_changes_writer(mocker: MockerFixture, request_context: None) -> None:
+def test_disable_activate_changes_writer(mocker: MockerFixture) -> None:
     add_to_site_mock = mocker.patch.object(ActivateChangesWriter, "_add_change_to_site")
 
-    add_change("ding", "dong", sites=[SiteId("a")])
+    add_change(
+        action_name="ding",
+        text="dong",
+        user_id=UserId("calvin"),
+        sites=[SiteId("a")],
+        use_git=False,
+    )
     add_to_site_mock.assert_called_once()
     add_to_site_mock.reset_mock()
 
     with ActivateChangesWriter.disable():
-        add_change("ding", "dong", sites=[SiteId("a")])
+        add_change(
+            action_name="ding",
+            text="dong",
+            user_id=UserId("calvin"),
+            sites=[SiteId("a")],
+            use_git=False,
+        )
     add_to_site_mock.assert_not_called()
     add_to_site_mock.reset_mock()
 
-    add_change("ding", "dong", sites=[SiteId("a")])
+    add_change(
+        action_name="ding",
+        text="dong",
+        user_id=UserId("calvin"),
+        sites=[SiteId("a")],
+        use_git=False,
+    )
     add_to_site_mock.assert_called_once()

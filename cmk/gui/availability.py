@@ -3,11 +3,12 @@
 # This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
 # conditions defined in the file COPYING, which is part of this source code package.
 
+# mypy: disable-error-code="no-any-return, no-untyped-call, no-untyped-def"
+
 from __future__ import annotations
 
 import functools
 import itertools
-import os
 import time
 from collections.abc import Callable, Generator, Iterator, Sequence
 from typing import Any, Literal, NamedTuple
@@ -24,12 +25,12 @@ from livestatus import (
 
 import cmk.ccc.version as cmk_version
 from cmk.ccc import store
+from cmk.ccc.cpu_tracking import CPUTracker
+from cmk.ccc.hostaddress import HostName
 from cmk.ccc.site import SiteId
 
 import cmk.utils.paths
 from cmk.utils import dateutils
-from cmk.utils.cpu_tracking import CPUTracker
-from cmk.utils.hostaddress import HostName
 from cmk.utils.servicename import ServiceName
 
 from cmk.gui import sites
@@ -824,7 +825,7 @@ def prepare_avo_timeformats(timeformat: AVTimeformatSpec) -> AVTimeFormats:
 
     """
     this_timeformat = [("percentage_2", render_number_function("percentage_2"))]
-    if isinstance(timeformat, (list, tuple)):
+    if isinstance(timeformat, list | tuple):
         if timeformat[0] == "both":
             this_timeformat = [
                 (timeformat[1], render_number_function(timeformat[1])),
@@ -1587,15 +1588,14 @@ def melt_short_intervals(entries: AVTimelineRows, duration: int, dont_merge: boo
 
 
 def save_annotations(annotations: AVAnnotations) -> None:
-    path = cmk.utils.paths.var_dir + "/availability_annotations.mk"
-    store.save_object_to_file(path, annotations)
+    store.save_object_to_file(cmk.utils.paths.var_dir / "availability_annotations.mk", annotations)
 
 
 def load_annotations(lock: bool = False) -> AVAnnotations:
-    path = cmk.utils.paths.var_dir + "/availability_annotations.mk"
-    if not os.path.exists(path):
+    path = cmk.utils.paths.var_dir / "availability_annotations.mk"
+    if not path.exists():
         # Support legacy old wrong name-clashing path
-        path = cmk.utils.paths.var_dir + "/web/statehist_annotations.mk"
+        path = cmk.utils.paths.var_dir / "web/statehist_annotations.mk"
 
     return store.load_object_from_file(path, default={}, lock=lock)
 

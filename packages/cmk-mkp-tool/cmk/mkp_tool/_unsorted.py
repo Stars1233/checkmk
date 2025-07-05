@@ -8,6 +8,7 @@ Don't add new stuff here!
 """
 
 import logging
+import shutil
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from itertools import groupby
@@ -17,7 +18,11 @@ from typing import Final, Protocol, Self
 
 from pydantic import BaseModel
 
-from ._installed import Installer
+from ._installed import (
+    cleanup_legacy_linked_lib_check_mk_path,
+    Installer,
+    replace_legacy_linked_lib_check_mk_path,
+)
 from ._mkp import (
     create_mkp,
     extract_manifest,
@@ -102,7 +107,7 @@ class PackageStore:
     def store(
         self,
         file_content: bytes,
-        persisting_function: Callable[[str, bytes], object],
+        persisting_function: Callable[[Path, bytes], object],
         overwrite: bool = False,
     ) -> Manifest:
         package = extract_manifest(file_content)
@@ -115,7 +120,7 @@ class PackageStore:
             raise PackageError(f"Package {package.name} {package.version} exists on the site!")
 
         local_package_path.parent.mkdir(parents=True, exist_ok=True)
-        persisting_function(str(local_package_path), file_content)
+        persisting_function(local_package_path, file_content)
 
         return package
 
@@ -214,7 +219,7 @@ def create(
     manifest: Manifest,
     path_config: PathConfig,
     package_store: PackageStore,
-    persisting_function: Callable[[str, bytes], object],
+    persisting_function: Callable[[Path, bytes], object],
     *,
     version_packaged: str,
 ) -> None:
@@ -239,7 +244,7 @@ def edit(
     new_manifest: Manifest,
     path_config: PathConfig,
     package_store: PackageStore,
-    persisting_function: Callable[[str, bytes], object],
+    persisting_function: Callable[[Path, bytes], object],
     *,
     version_packaged: str,
 ) -> None:
@@ -276,7 +281,7 @@ def _create_enabled_mkp_from_installed_package(
     package_store: PackageStore,
     manifest: Manifest,
     path_config: PathConfig,
-    persisting_function: Callable[[str, bytes], object],
+    persisting_function: Callable[[Path, bytes], object],
     *,
     version_packaged: str,
 ) -> None:
@@ -326,7 +331,8 @@ def _install(
     parse_version: Callable[[str], ComparableVersion],
     version_check: bool,
 ) -> Manifest:
-    manifest = extract_manifest(mkp)
+    original_manifest = extract_manifest(mkp)
+    manifest = replace_legacy_linked_lib_check_mk_path(original_manifest)
 
     if old_manifest := installer.get_installed_manifest(manifest.name):
         _logger.info(
@@ -348,7 +354,10 @@ def _install(
         parse_version,
     )
 
-    extract_mkp(manifest, mkp, path_config.get_path)
+    extract_mkp(original_manifest, mkp, path_config.get_path)
+    cleanup_legacy_linked_lib_check_mk_path(
+        path_config.get_path(PackagePart.LIB), original_manifest
+    )
 
     _fix_files_permissions(manifest, path_config)
 
@@ -374,22 +383,52 @@ def _install(
     return manifest
 
 
+def _remove_pycache(manifest: Manifest, folder: Path) -> None:
+    pycache_folder = folder / "__pycache__"
+    shutil.rmtree(pycache_folder, ignore_errors=True)
+    _logger.debug("[%s %s]: Removed folder %s", manifest.name, manifest.version, pycache_folder)
+
+
+def _clear_remove_folders(manifest: Manifest, part: Path, folder: Path) -> None:
+    folder_path = part / folder
+    _remove_pycache(manifest, folder_path)
+    try:
+        folder_path.rmdir()
+        _logger.debug(
+            "[%s %s]: Removed empty directory %s",
+            manifest.name,
+            manifest.version,
+            folder,
+        )
+    except OSError:
+        return  # no point in recursing further
+
+    if folder.parent.name:  # at the end, folder.parent is "." and folder.name is empty
+        _clear_remove_folders(manifest, part, folder.parent)
+
+
 def remove_files(
     manifest: Manifest,
     keep_files: Mapping[PackagePart, Iterable[Path]],
     path_config: PathConfig,
 ) -> tuple[str, ...]:
     errors = []
+    paths_to_clean = set()
     for part, files in manifest.files.items():
         _logger.debug("  Part '%s':", part.ident)
         for fn in set(files) - set(keep_files.get(part, [])):
-            path = path_config.get_path(part) / fn
+            paths_to_clean.add((part_path := path_config.get_path(part), fn.parent))
+            path = part_path / fn
             try:
                 path.unlink(missing_ok=True)
             except OSError as e:
                 errors.append(f"[{manifest.name} {manifest.version}]: Error removing {path}: {e}")
             else:
                 _logger.info("[%s %s]: Removed file %s", manifest.name, manifest.version, path)
+
+    for part_path, folder in paths_to_clean:
+        _clear_remove_folders(manifest, part_path, folder)
+
     return tuple(errors)
 
 

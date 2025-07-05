@@ -6,19 +6,14 @@
 from cmk.gui.i18n import _, _l
 from cmk.gui.permissions import Permission, PermissionSection
 
-
-class PermissionSectionBI(PermissionSection):
-    @property
-    def name(self) -> str:
-        return "bi"
-
-    @property
-    def title(self) -> str:
-        return _("BI - Checkmk Business Intelligence")
+PERMISSION_SECTION_BI = PermissionSection(
+    name="bi",
+    title=_("BI - Checkmk Business Intelligence"),
+)
 
 
 PermissionBISeeAll = Permission(
-    section=PermissionSectionBI,
+    section=PERMISSION_SECTION_BI,
     name="see_all",
     title=_l("See all hosts and services"),
     description=_l(

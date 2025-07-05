@@ -8,10 +8,10 @@ from pathlib import Path
 
 from pytest import MonkeyPatch
 
+from cmk.ccc.hostaddress import HostName
 from cmk.ccc.site import SiteId
 
 import cmk.utils.paths
-from cmk.utils.hostaddress import HostName
 from cmk.utils.tags import TagGroupID
 
 import cmk.gui.watolib.hosts_and_folders
@@ -23,7 +23,7 @@ from cmk.post_rename_site.plugins.actions.hosts_and_folders import update_hosts_
 
 
 def _write_folder_attributes(folder_attributes: dict) -> Path:
-    dot_wato = Path(cmk.utils.paths.default_config_dir, "conf.d/wato/.wato")
+    dot_wato = cmk.utils.paths.default_config_dir / "conf.d/wato/.wato"
     dot_wato.parent.mkdir(parents=True, exist_ok=True)
     with dot_wato.open("w") as f:
         f.write(repr(folder_attributes))
@@ -31,7 +31,7 @@ def _write_folder_attributes(folder_attributes: dict) -> Path:
 
 
 def _write_hosts_mk(content: str) -> Path:
-    path = Path(cmk.utils.paths.default_config_dir, "conf.d/wato/hosts.mk")
+    path = cmk.utils.paths.default_config_dir / "conf.d/wato/hosts.mk"
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w") as f:
         f.write(content)

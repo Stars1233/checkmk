@@ -2,7 +2,7 @@
 # Copyright (C) 2019 Checkmk GmbH - License: GNU General Public License v2
 # This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
 # conditions defined in the file COPYING, which is part of this source code package.
-
+# mypy: disable-error-code="no-untyped-def, no-untyped-call, no-any-return"
 
 # Coords:
 # 0,0 is at the *bottom* left of the page. When you specify
@@ -25,7 +25,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from textwrap import wrap
-from typing import Literal, NewType, overload, Protocol, TypedDict
+from typing import Literal, NewType, overload, override, Protocol, TypedDict
 
 from reportlab.lib.units import mm
 from reportlab.lib.utils import ImageReader
@@ -67,7 +67,7 @@ def from_mm(dim: Sequence[float]) -> Sequence[float]: ...
 
 
 def from_mm(dim: float | Sequence[float]) -> float | Sequence[float]:
-    if isinstance(dim, (int, float)):
+    if isinstance(dim, int | float):
         return dim * mm
     return [x * mm for x in dim]
 
@@ -452,10 +452,15 @@ class Document:
 
     # Functions for adding floating text
 
-    def add_paragraph(self, txt: str) -> None:
+    def add_paragraph(
+        self,
+        txt: str,
+        bold: bool = False,
+        color: tuple[float, float, float] = black,
+    ) -> None:
         lines = self.wrap_text(txt, width=self._right - self._left)
         for line in lines:
-            self.add_text_line(line)
+            self.add_text_line(l=line, bold=bold, color=color)
 
     def debug(self, *args: object) -> None:
         for arg in args:
@@ -580,10 +585,15 @@ class Document:
 
     # Add one line of text. This line may include horizontal tabulators ('\t').
     # You can set the width of the tabulators with set_tabstops()
-    def add_text_line(self, l: str, bold: bool = False) -> None:
+    def add_text_line(
+        self,
+        l: str,
+        bold: bool = False,
+        color: tuple[float, float, float] = black,
+    ) -> None:
         self.check_pagebreak()
 
-        def aligned_string(x, y, t, alignment):
+        def aligned_string(x: float, y: float, t: str, alignment: str) -> None:
             if alignment == "l":
                 self._canvas.drawString(x, y, t)
             elif alignment == "r":
@@ -597,6 +607,8 @@ class Document:
 
         for part in l.split("\t"):
             self.save_state()
+            self.set_font_color(color)
+            self.set_font_bold(bold)
 
             if tab >= 0:
                 format_chars, x_position = self._tabstops[tab]  # added extra tab stop every 20 mm
@@ -636,7 +648,7 @@ class Document:
         # all this here to a pair ( "bc", 17.2 ) of the alignment
         # characters and the tabstop in *internal* dimensions.
         def convert_tabstop(t: SizeMM | str) -> tuple[str, SizeInternal]:
-            if isinstance(t, (int, float)):
+            if isinstance(t, int | float):
                 return "", float(t) * mm
             if isinstance(t, str):
                 formatchars = ""
@@ -1454,18 +1466,22 @@ class TextCell(CellRenderer):
 
         self._narrow = "narrow" in csses or state_in_css
 
+    @override
     def get_render_steps(
         self, pdfdoc: Document, headers: Sequence[CellRenderer], y_padding: SizeMM
     ) -> Sequence[TextCell]:
         return []
 
+    @override
     def minimal_width(self, pdfdoc: Document) -> SizeMM:  # without padding
         # TODO: consider bold here!
         return max([pdfdoc.text_width(word) for word in self._text.split()] + [0])
 
+    @override
     def maximal_width(self, pdfdoc: Document) -> SizeMM:  # without padding
         return pdfdoc.text_width(self._text)
 
+    @override
     def can_add_dynamic_width(self) -> bool:
         return not self._narrow
 
@@ -1474,14 +1490,17 @@ class TextCell(CellRenderer):
 
     # Do wrapping of text to actual width. width() and height()
     # can be called only after this has run.
+    @override
     def set_width(self, pdfdoc: Document, width: SizeMM) -> None:
         self._width = width
         self._lines = pdfdoc.wrap_text(self._text, width, wrap_long_words=not self._narrow)
 
+    @override
     def height(self, pdfdoc: Document) -> SizeMM:
         return max(1, len(self._lines)) * pdfdoc.get_line_skip()
 
     # Render itself at left/top into direction right/down by width/height
+    @override
     def render(
         self,
         pdfdoc: Document,
@@ -1526,29 +1545,36 @@ class IconCell(CellRenderer):
         self.supports_stepwise_rendering = False
         self._image_path = path
 
+    @override
     def get_render_steps(
         self, pdfdoc: Document, headers: Sequence[CellRenderer], y_padding: SizeMM
     ) -> Sequence[TextCell]:
         return []
 
+    @override
     def minimal_width(self, pdfdoc: Document) -> SizeMM:
         return self.height(pdfdoc)
 
+    @override
     def maximal_width(self, pdfdoc: Document) -> SizeMM:
         return self.height(pdfdoc)
 
+    @override
     def can_add_dynamic_width(self) -> bool:
         return False
 
+    @override
     def set_width(self, pdfdoc: Document, width: SizeMM) -> None:
         pass
 
     def width(self, pdfdoc: Document) -> SizeMM:
         return self.height(pdfdoc)
 
+    @override
     def height(self, pdfdoc: Document) -> SizeMM:
         return pdfdoc.get_line_skip()
 
+    @override
     def render(
         self,
         pdfdoc: Document,

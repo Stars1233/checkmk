@@ -31,6 +31,7 @@ from cmk.gui.htmllib.generator import HTMLWriter
 from cmk.gui.htmllib.html import html
 from cmk.gui.http import request
 from cmk.gui.i18n import _
+from cmk.gui.logged_in import user
 from cmk.gui.page_menu import (
     get_search_expression,
     make_simple_form_page_menu,
@@ -119,16 +120,24 @@ class ModeRoles(WatoMode):
 
         if request.var("_delete"):
             role_id = RoleID(request.get_ascii_input_mandatory("_delete"))
-            userroles.delete_role(role_id)
+            userroles.delete_role(role_id, pprint_value=active_config.wato_pprint_config)
             _changes.add_change(
-                "edit-roles", _("Deleted role '%s'") % role_id, sites=get_login_sites()
+                action_name="edit-roles",
+                text=_("Deleted role '%s'") % role_id,
+                user_id=user.id,
+                sites=get_login_sites(),
+                use_git=active_config.wato_use_git,
             )
 
         elif request.var("_clone"):
             role_id = RoleID(request.get_ascii_input_mandatory("_clone"))
-            userroles.clone_role(role_id)
+            userroles.clone_role(role_id, pprint_value=active_config.wato_pprint_config)
             _changes.add_change(
-                "edit-roles", _("Created new role '%s'") % role_id, sites=get_login_sites()
+                action_name="edit-roles",
+                text=_("Created new role '%s'") % role_id,
+                user_id=user.id,
+                sites=get_login_sites(),
+                use_git=active_config.wato_use_git,
             )
 
         return redirect(self.mode_url())
@@ -260,10 +269,19 @@ class ModeRoleTwoFactor(WatoMode):
 
         self._role.two_factor = True
 
-        userroles.update_role(role=self._role, old_roleid=self._role_id, new_roleid=self._role_id)
+        userroles.update_role(
+            role=self._role,
+            old_roleid=self._role_id,
+            new_roleid=self._role_id,
+            pprint_value=active_config.wato_pprint_config,
+        )
         userroles.logout_users_with_role(self._role_id)
         _changes.add_change(
-            "edit-roles", _("Modified user role '%s'") % self._role_id, sites=get_login_sites()
+            action_name="edit-roles",
+            text=_("Modified user role '%s'") % self._role_id,
+            user_id=user.id,
+            sites=get_login_sites(),
+            use_git=active_config.wato_use_git,
         )
         return redirect(mode_url(ModeRoles.name()))
 
@@ -341,11 +359,20 @@ class ModeEditRole(WatoMode):
             self._role.two_factor = bool(html.get_checkbox("two_factor"))
 
         userroles.update_permissions(self._role, request.itervars(prefix="perm_"))
-        userroles.update_role(role=self._role, old_roleid=self._role_id, new_roleid=RoleID(new_id))
+        userroles.update_role(
+            role=self._role,
+            old_roleid=self._role_id,
+            new_roleid=RoleID(new_id),
+            pprint_value=active_config.wato_pprint_config,
+        )
         self._role_id = RoleID(new_id)
 
         _changes.add_change(
-            "edit-roles", _("Modified user role '%s'") % new_id, sites=get_login_sites()
+            action_name="edit-roles",
+            text=_("Modified user role '%s'") % new_id,
+            user_id=user.id,
+            sites=get_login_sites(),
+            use_git=active_config.wato_use_git,
         )
         return url
 
@@ -498,7 +525,11 @@ class ModeRoleMatrix(WatoMode):
                     table.row()
                     table.cell(_("Permission"), perm.title, css=["wide"])
 
-                    html.help(perm.description)
+                    html.help(
+                        HTML.without_escaping("<br />").join(
+                            (perm.description, _("Internal name: %s") % perm.name)
+                        )
+                    )
 
                     for role in sorted(
                         userroles.get_all_roles().values(), key=lambda a: (a.alias, a.name)

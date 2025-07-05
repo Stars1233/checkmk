@@ -3,29 +3,37 @@
 # This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
 # conditions defined in the file COPYING, which is part of this source code package.
 
-from collections.abc import Callable, Mapping
+import sys
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from io import StringIO
 from unittest.mock import patch
 
 import pytest
 from pytest import FixtureRequest
 
-from tests.unit.cmk.web_test_app import SetConfig
+from tests.testlib.unit.base_configuration_scenario import Scenario
 
 from cmk.ccc import version
 from cmk.ccc.exceptions import MKGeneralException
+from cmk.ccc.hostaddress import HostName
+from cmk.ccc.user import UserId
 
 from cmk.utils import paths
 from cmk.utils.global_ident_type import PROGRAM_ID_QUICK_SETUP
 from cmk.utils.redis import disable_redis
-from cmk.utils.rulesets import ruleset_matcher
 from cmk.utils.rulesets.definition import RuleGroup
 from cmk.utils.rulesets.ruleset_matcher import RuleOptionsSpec, RulesetName, RuleSpec
-from cmk.utils.tags import TagGroupID, TagID
-from cmk.utils.user import UserId
+from cmk.utils.tags import get_tag_to_group_map, TagGroupID, TagID
+
+from cmk.automations.results import AnalyzeHostRuleEffectivenessResult
+
+from cmk.base.automations.check_mk import AutomationAnalyzeHostRuleEffectiveness
+from cmk.base.config import LoadingResult
 
 import cmk.gui.utils
 from cmk.gui.config import active_config
+from cmk.gui.logged_in import user
 from cmk.gui.plugins.wato.check_parameters.local import _parameter_valuespec_local
 from cmk.gui.plugins.wato.check_parameters.ps import _valuespec_inventory_processes_rules
 from cmk.gui.utils.rule_specs import legacy_converter
@@ -37,7 +45,7 @@ from cmk.gui.watolib.rulesets import Rule, RuleOptions, Ruleset, RuleValue
 
 
 def _ruleset(ruleset_name: RulesetName) -> rulesets.Ruleset:
-    return rulesets.Ruleset(ruleset_name, ruleset_matcher.get_tag_to_group_map(active_config.tags))
+    return rulesets.Ruleset(ruleset_name, get_tag_to_group_map(active_config.tags))
 
 
 GEN_ID_COUNT = {"c": 0}
@@ -414,38 +422,37 @@ checkgroup_parameters['local'] = [
     ],
 )
 def test_ruleset_to_config(
-    monkeypatch: pytest.MonkeyPatch,
     wato_use_git: bool,
     expected_result: str,
-    set_config: SetConfig,
 ) -> None:
-    with set_config(wato_use_git=wato_use_git):
-        ruleset = rulesets.Ruleset(
-            RuleGroup.CheckgroupParameters("local"),
-            ruleset_matcher.get_tag_to_group_map(active_config.tags),
-        )
-        ruleset.replace_folder_config(
-            folder_tree().root_folder(),
-            [
-                {
-                    "id": "1",
-                    "value": "VAL",
-                    "condition": {
-                        "host_name": ["HOSTLIST"],
-                        "service_description": [{"$regex": "SVC"}, {"$regex": "LIST"}],
-                    },
+    ruleset = rulesets.Ruleset(
+        RuleGroup.CheckgroupParameters("local"),
+        get_tag_to_group_map(active_config.tags),
+    )
+    ruleset.replace_folder_config(
+        folder_tree().root_folder(),
+        [
+            {
+                "id": "1",
+                "value": "VAL",
+                "condition": {
+                    "host_name": ["HOSTLIST"],
+                    "service_description": [{"$regex": "SVC"}, {"$regex": "LIST"}],
                 },
-                {
-                    "id": "2",
-                    "value": "VAL2",
-                    "condition": {
-                        "host_name": ["HOSTLIST"],
-                        "service_description": [{"$regex": "SVC"}, {"$regex": "LIST"}],
-                    },
+            },
+            {
+                "id": "2",
+                "value": "VAL2",
+                "condition": {
+                    "host_name": ["HOSTLIST"],
+                    "service_description": [{"$regex": "SVC"}, {"$regex": "LIST"}],
                 },
-            ],
-        )
-        assert ruleset.to_config(folder_tree().root_folder()) == expected_result
+            },
+        ],
+    )
+    assert (
+        ruleset.to_config(folder_tree().root_folder(), pprint_value=wato_use_git) == expected_result
+    )
 
 
 @pytest.mark.parametrize(
@@ -475,42 +482,39 @@ checkgroup_parameters['local'] = [
 )
 def test_ruleset_to_config_sub_folder(
     with_admin_login: UserId,
-    monkeypatch: pytest.MonkeyPatch,
     wato_use_git: bool,
     expected_result: str,
-    set_config: SetConfig,
 ) -> None:
-    with set_config(wato_use_git=wato_use_git):
-        ruleset = rulesets.Ruleset(
-            RuleGroup.CheckgroupParameters("local"),
-            ruleset_matcher.get_tag_to_group_map(active_config.tags),
-        )
+    ruleset = rulesets.Ruleset(
+        RuleGroup.CheckgroupParameters("local"),
+        get_tag_to_group_map(active_config.tags),
+    )
 
-        folder_tree().create_missing_folders("abc")
-        folder = folder_tree().folder("abc")
+    folder_tree().create_missing_folders("abc", pprint_value=False)
+    folder = folder_tree().folder("abc")
 
-        ruleset.replace_folder_config(
-            folder,
-            [
-                {
-                    "id": "1",
-                    "value": "VAL",
-                    "condition": {
-                        "host_name": ["HOSTLIST"],
-                        "service_description": [{"$regex": "SVC"}, {"$regex": "LIST"}],
-                    },
+    ruleset.replace_folder_config(
+        folder,
+        [
+            {
+                "id": "1",
+                "value": "VAL",
+                "condition": {
+                    "host_name": ["HOSTLIST"],
+                    "service_description": [{"$regex": "SVC"}, {"$regex": "LIST"}],
                 },
-                {
-                    "id": "2",
-                    "value": "VAL2",
-                    "condition": {
-                        "host_name": ["HOSTLIST"],
-                        "service_description": [{"$regex": "SVC"}, {"$regex": "LIST"}],
-                    },
+            },
+            {
+                "id": "2",
+                "value": "VAL2",
+                "condition": {
+                    "host_name": ["HOSTLIST"],
+                    "service_description": [{"$regex": "SVC"}, {"$regex": "LIST"}],
                 },
-            ],
-        )
-        assert ruleset.to_config(folder) == expected_result
+            },
+        ],
+    )
+    assert ruleset.to_config(folder, pprint_value=wato_use_git) == expected_result
 
 
 def test_rule_clone() -> None:
@@ -581,6 +585,10 @@ def _setup_rules(rule_a_locked: bool, rule_b_locked: bool) -> tuple[Ruleset, Fol
             "program_id": program_id,
         },
         entities=CreateBundleEntities(),
+        user_id=user.id,
+        pprint_value=False,
+        use_git=False,
+        debug=False,
     )
 
     folder = folder_tree().root_folder()
@@ -780,13 +788,106 @@ def test_matches_search_with_rules(
     folder_name: str,
     expected_result: bool,
 ) -> None:
-    folder_tree().create_missing_folders(folder_name)
+    folder_tree().create_missing_folders(folder_name, pprint_value=False)
     folder = folder_tree().folder(folder_name)
     ruleset = _ruleset("host_contactgroups")
     rule = rulesets.Rule.from_config(folder, ruleset, rule_config)
     ruleset.append_rule(folder, rule)
 
-    assert ruleset.matches_search_with_rules(search_options) == expected_result
+    assert ruleset.matches_search_with_rules(search_options, debug=False) == expected_result
+
+
+@pytest.fixture(name="inline_analyze_host_rule_effectiveness_automation")
+def fixture_inline_analyze_host_rule_effectiveness_automation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Inline rule matching automation call"""
+
+    def analyze_host_rule_effectiveness(
+        r: Sequence[Sequence[RuleSpec]], *, debug: bool
+    ) -> AnalyzeHostRuleEffectivenessResult:
+        ts = Scenario()
+        ts.add_host(HostName("ding"))
+        config_cache = ts.apply(monkeypatch)
+        loading_result = LoadingResult(
+            loaded_config=config_cache._loaded_config,
+            config_cache=config_cache,
+        )
+
+        with monkeypatch.context() as m:
+            m.setattr(sys, "stdin", StringIO(repr(r)))
+            return AutomationAnalyzeHostRuleEffectiveness().execute([], None, loading_result)
+
+    monkeypatch.setattr(
+        rulesets, "analyze_host_rule_effectiveness", analyze_host_rule_effectiveness
+    )
+
+
+@pytest.mark.usefixtures("inline_analyze_host_rule_effectiveness_automation")
+def test_matches_search_with_rules_negate_is_ineffective_finds_matching(
+    with_admin_login: UserId,
+) -> None:
+    (ruleset := _ruleset("host_contactgroups")).append_rule(
+        (folder := folder_tree().root_folder()),
+        rulesets.Rule.from_config(
+            folder,
+            ruleset,
+            {
+                "id": "2a983a0a-7fab-4403-ab9d-5922fd8be529",
+                "value": "all",
+                "condition": {
+                    "host_name": ["ding"],
+                },
+                "options": {"disabled": False, "description": "foo"},
+            },
+        ),
+    )
+
+    assert ruleset.matches_search_with_rules({"rule_ineffective": False}, debug=False) is True
+
+
+@pytest.mark.usefixtures("inline_analyze_host_rule_effectiveness_automation")
+def test_matches_search_with_rules_is_ineffective_finds_matching(with_admin_login: UserId) -> None:
+    (ruleset := _ruleset("host_contactgroups")).append_rule(
+        (folder := folder_tree().root_folder()),
+        rulesets.Rule.from_config(
+            folder,
+            ruleset,
+            {
+                "id": "2a983a0a-7fab-4403-ab9d-5922fd8be529",
+                "value": "all",
+                "condition": {
+                    "host_name": ["ding"],
+                },
+                "options": {"disabled": False, "description": "foo"},
+            },
+        ),
+    )
+
+    assert ruleset.matches_search_with_rules({"rule_ineffective": True}, debug=False) is False
+
+
+@pytest.mark.usefixtures("inline_analyze_host_rule_effectiveness_automation")
+def test_matches_search_with_rules_is_ineffective_finds_not_matching(
+    with_admin_login: UserId,
+) -> None:
+    (ruleset := _ruleset("host_contactgroups")).append_rule(
+        (folder := folder_tree().root_folder()),
+        rulesets.Rule.from_config(
+            folder,
+            ruleset,
+            {
+                "id": "2a983a0a-7fab-4403-ab9d-5922fd8be529",
+                "value": "all",
+                "condition": {
+                    "host_name": ["dong"],
+                },
+                "options": {"disabled": False, "description": "foo"},
+            },
+        ),
+    )
+
+    assert ruleset.matches_search_with_rules({"rule_ineffective": True}, debug=False) is True
 
 
 @dataclass

@@ -9,7 +9,6 @@ import urllib.parse
 import uuid
 from ast import literal_eval
 from collections.abc import Sequence
-from pathlib import Path
 
 import pytest
 
@@ -18,9 +17,9 @@ from tests.testlib.unit.rest_api_client import ClientRegistry
 from tests.unit.cmk.web_test_app import WebTestAppForCMK
 
 from cmk.ccc import version
+from cmk.ccc.user import UserId
 
 from cmk.utils import paths
-from cmk.utils.user import UserId
 
 from cmk.gui.fields import FOLDER_PATTERN, FolderField
 from cmk.gui.fields.utils import BaseSchema
@@ -797,7 +796,7 @@ def test_openapi_folder_config_folders_with_duplicate_names_allowed_regression(
     resp = clients.Folder.create(folder_name=None, title="a_duplicate", parent="~")
     assert resp.json["id"] == "~a_duplicate-3"
 
-    wato_dir = Path(paths.omd_root, paths.check_mk_config_dir, "wato")
+    wato_dir = paths.check_mk_config_dir / "wato"
     assert (wato_dir / "a_duplicate").exists()
     assert (wato_dir / "a_duplicate-2").exists()
     assert (wato_dir / "a_duplicate-3").exists()
@@ -1064,6 +1063,7 @@ def test_openapi_delete_folder_with_predefined_conditions(clients: ClientRegistr
                 "shared_with": [],
             },
         },
+        pprint_value=False,
     )
 
     no_force_delete_subfolder_result = clients.Folder.delete(

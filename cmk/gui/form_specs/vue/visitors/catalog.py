@@ -8,7 +8,7 @@ from typing import Any, Self
 
 from cmk.ccc.exceptions import MKGeneralException
 
-from cmk.gui.form_specs.private.catalog import Catalog, Topic, TopicElement, TopicGroup
+from cmk.gui.form_specs.private import Catalog, Topic, TopicElement, TopicGroup
 from cmk.gui.i18n import _
 
 from cmk.rulesets.v1 import Title
@@ -18,7 +18,7 @@ from cmk.shared_typing import vue_formspec_components as shared_type_defs
 
 from ._base import FormSpecVisitor
 from ._registry import get_visitor
-from ._type_defs import DEFAULT_VALUE, DefaultValue, InvalidValue
+from ._type_defs import DataOrigin, DEFAULT_VALUE, DefaultValue, InvalidValue, VisitorOptions
 from ._utils import (
     base_i18n_form_spec,
     create_validation_error,
@@ -83,31 +83,37 @@ class CatalogVisitor(FormSpecVisitor[Catalog, _ParsedValueModel, _FrontendModel]
 
         return raw_value
 
-    def _compute_topic_group_spec(self, topic_group: TopicGroup) -> shared_type_defs.TopicGroup:
+    def _compute_topic_group_spec(
+        self,
+        topic_group: TopicGroup,
+        element_lookup: dict[str, tuple[shared_type_defs.FormSpec, object]],
+    ) -> shared_type_defs.TopicGroup:
         vue_topic_group = shared_type_defs.TopicGroup(
             title=localize(topic_group.title),
             elements=[],
         )
         for element_name, element in topic_group.elements.items():
-            element_spec = self._compute_topic_element_spec(element, element_name)
+            spec, value = element_lookup[element_name]
+            element_spec = self._compute_topic_element_spec(element, element_name, spec, value)
             vue_topic_group.elements.append(element_spec)
         return vue_topic_group
 
     def _compute_topic_element_spec(
-        self, element: TopicElement, element_name: str
+        self,
+        element: TopicElement,
+        element_name: str,
+        element_spec: shared_type_defs.FormSpec,
+        element_value: object,
     ) -> shared_type_defs.TopicElement:
-        element_visitor = get_visitor(element.parameter_form, self.options)
-        element_spec, element_default_value = element_visitor.to_vue(DEFAULT_VALUE)
-
         return shared_type_defs.TopicElement(
             name=element_name,
             required=element.required,
             parameter_form=element_spec,
-            default_value=element_default_value,
+            default_value=element_value,
         )
 
     def _to_vue(
-        self, raw_value: object, parsed_value: _ParsedValueModel | InvalidValue[_FrontendModel]
+        self, parsed_value: _ParsedValueModel | InvalidValue[_FrontendModel]
     ) -> tuple[shared_type_defs.Catalog, _FrontendModel]:
         title, help_text = get_title_and_help(self.form_spec)
         if isinstance(parsed_value, InvalidValue):
@@ -128,14 +134,16 @@ class CatalogVisitor(FormSpecVisitor[Catalog, _ParsedValueModel, _FrontendModel]
             # Compute vue value
             topic_values = parsed_value.get(topic_name, {})
 
+            element_lookup: dict[str, tuple[shared_type_defs.FormSpec, object]] = {}
             for element_name, element in actual_elements.items():
                 element_visitor = get_visitor(element.parameter_form, self.options)
                 is_active = element_name in topic_values
-                element_vue_value = element_visitor.to_vue(
+                spec, value = element_visitor.to_vue(
                     topic_values[element_name] if is_active else DEFAULT_VALUE
-                )[1]
+                )
+                element_lookup[element_name] = (spec, value)
                 if is_active or element.required:
-                    vue_value[topic_name][element_name] = element_vue_value
+                    vue_value[topic_name][element_name] = value
 
             # Compute vue spec, either a list of TopicElements or a list of TopicGroup
             vue_topic = shared_type_defs.Topic(
@@ -147,13 +155,16 @@ class CatalogVisitor(FormSpecVisitor[Catalog, _ParsedValueModel, _FrontendModel]
             if isinstance(topic.elements, list):
                 tmp_group_elements: list[shared_type_defs.TopicGroup] = []
                 for topic_group in topic.elements:
-                    vue_topic_group = self._compute_topic_group_spec(topic_group)
+                    vue_topic_group = self._compute_topic_group_spec(topic_group, element_lookup)
                     tmp_group_elements.append(vue_topic_group)
                 vue_topic.elements = tmp_group_elements
             else:
                 tmp_elements: list[shared_type_defs.TopicElement] = []
                 for element_name, element in topic.elements.items():
-                    element_spec = self._compute_topic_element_spec(element, element_name)
+                    spec, value = element_lookup[element_name]
+                    element_spec = self._compute_topic_element_spec(
+                        element, element_name, spec, value
+                    )
                     tmp_elements.append(element_spec)
                 vue_topic.elements = tmp_elements
 
@@ -162,22 +173,26 @@ class CatalogVisitor(FormSpecVisitor[Catalog, _ParsedValueModel, _FrontendModel]
         return vue_catalog, vue_value
 
     def _validate(
-        self, raw_value: object, parsed_value: _ParsedValueModel
+        self, parsed_value: _ParsedValueModel
     ) -> list[shared_type_defs.ValidationMessage]:
         element_validations: list[shared_type_defs.ValidationMessage] = []
         for topic_name, topic in self.form_spec.elements.items():
             topic_values = parsed_value[topic_name]
             for element_name, element in self._resolve_topic_to_elements(topic).items():
+                element_visitor = get_visitor(element.parameter_form, self.options)
                 if element_name not in topic_values:
                     if element.required:
+                        default_value_visitor = get_visitor(
+                            element.parameter_form, VisitorOptions(DataOrigin.DISK)
+                        )
+                        _spec, element_default_value = default_value_visitor.to_vue(DEFAULT_VALUE)
                         return create_validation_error(
-                            raw_value,
+                            element_default_value,
                             f"Required element {element_name} missing in topic {topic_name}",
                             location=[topic_name, element_name],
                         )
                     continue
 
-                element_visitor = get_visitor(element.parameter_form, self.options)
                 for validation in element_visitor.validate(topic_values[element_name]):
                     element_validations.append(
                         shared_type_defs.ValidationMessage(

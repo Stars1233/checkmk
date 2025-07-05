@@ -2,10 +2,12 @@
 # Copyright (C) 2019 Checkmk GmbH - License: GNU General Public License v2
 # This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
 # conditions defined in the file COPYING, which is part of this source code package.
+
+import pprint
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import cast, Generic, TypeAlias, TypeVar
+from typing import cast, Generic, override, TypeAlias, TypeVar
 
 from pydantic import TypeAdapter, ValidationError
 
@@ -15,9 +17,7 @@ from cmk.ccc.plugin_registry import Registry
 from cmk.utils.config_validation_layer.validation_utils import ConfigValidationError
 from cmk.utils.paths import omd_root
 
-from cmk.gui.config import active_config
 from cmk.gui.watolib.config_domain_name import wato_fileheader
-from cmk.gui.watolib.utils import format_config_value
 
 _G = TypeVar("_G")
 _T = TypeVar("_T")
@@ -59,18 +59,17 @@ class WatoConfigFile(ABC, Generic[_G]):
         return self._load_file(lock=True)
 
     @abstractmethod
-    def _load_file(self, lock: bool) -> _G: ...
+    def _load_file(self, *, lock: bool) -> _G: ...
 
     @abstractmethod
-    def save(self, cfg: _G) -> None: ...
+    def save(self, cfg: _G, pprint_value: bool) -> None: ...
 
     @property
     def name(self) -> str:
         return self._config_file_path.relative_to(omd_root).as_posix()
 
     def read_file_and_validate(self) -> None:
-        cfg = self._load_file(lock=False)
-        self.validate(cfg)
+        self.validate(self.load_for_reading())
 
 
 # NOTE: Variance is wrong, we confuse list <=> Sequence below.
@@ -86,7 +85,8 @@ class WatoListConfigFile(WatoConfigFile[list[_G]], Generic[_G]):
         super().__init__(config_file_path, list[spec_class])
         self._config_variable = config_variable
 
-    def _load_file(self, lock: bool) -> list[_G]:
+    @override
+    def _load_file(self, *, lock: bool) -> list[_G]:
         return store.load_from_mk_file(
             self._config_file_path,
             key=self._config_variable,
@@ -94,13 +94,14 @@ class WatoListConfigFile(WatoConfigFile[list[_G]], Generic[_G]):
             lock=lock,
         )
 
-    def save(self, cfg: list[_G]) -> None:
+    @override
+    def save(self, cfg: list[_G], pprint_value: bool) -> None:
         self._config_file_path.parent.mkdir(mode=0o770, exist_ok=True, parents=True)
         store.save_to_mk_file(
-            str(self._config_file_path),
-            self._config_variable,
-            cfg,
-            pprint_value=active_config.wato_pprint_config,
+            self._config_file_path,
+            key=self._config_variable,
+            value=cfg,
+            pprint_value=pprint_value,
         )
 
 
@@ -116,27 +117,34 @@ class WatoSingleConfigFile(WatoConfigFile[_D], Generic[_D]):
         super().__init__(config_file_path, spec_class)
         self._config_variable = config_variable
 
-    def _load_file(self, lock: bool) -> _D:
+    @override
+    def _load_file(self, *, lock: bool) -> _D:
+        # NOTE: The typing is a lie...
         return store.load_from_mk_file(
             self._config_file_path,
             key=self._config_variable,
-            default={},
+            default={},  # type: ignore[return-value]
             lock=lock,
         )
 
-    def save_for_snapshot(self, omd_root_path: Path, work_dir: Path, cfg: _D) -> None:
-        self._save_to_path(work_dir / self._config_file_path.relative_to(omd_root_path), cfg)
+    def save_for_snapshot(
+        self, omd_root_path: Path, work_dir: Path, cfg: _D, pprint_value: bool
+    ) -> None:
+        self._save_to_path(
+            work_dir / self._config_file_path.relative_to(omd_root_path), cfg, pprint_value
+        )
 
-    def save(self, cfg: _D) -> None:
-        self._save_to_path(self._config_file_path, cfg)
+    @override
+    def save(self, cfg: _D, pprint_value: bool) -> None:
+        self._save_to_path(self._config_file_path, cfg, pprint_value)
 
-    def _save_to_path(self, target_path: Path, cfg: _D) -> None:
+    def _save_to_path(self, target_path: Path, cfg: _D, pprint_value: bool) -> None:
         target_path.parent.mkdir(mode=0o770, exist_ok=True, parents=True)
         store.save_to_mk_file(
-            str(target_path),
-            self._config_variable,
-            cfg,
-            pprint_value=active_config.wato_pprint_config,
+            target_path,
+            key=self._config_variable,
+            value=cfg,
+            pprint_value=pprint_value,
         )
 
 
@@ -177,7 +185,8 @@ class WatoMultiConfigFile(WatoConfigFile[_D], Generic[_D]):
         )
         self.load_default = load_default
 
-    def _load_file(self, lock: bool) -> _D:
+    @override
+    def _load_file(self, *, lock: bool) -> _D:
         cfg = store.load_mk_file(
             self._config_file_path,
             default=self.load_default(),
@@ -185,18 +194,19 @@ class WatoMultiConfigFile(WatoConfigFile[_D], Generic[_D]):
         )
         return cast(_D, cfg)
 
-    def save(self, cfg: _D) -> None:
+    @override
+    def save(self, cfg: _D, pprint_value: bool) -> None:
         self._config_file_path.parent.mkdir(mode=0o770, exist_ok=True, parents=True)
         output = wato_fileheader()
         for field, value in cfg.items():
-            output += f"{field} = \\\n{format_config_value(value)}\n\n"
+            output += f"{field} = \\\n{pprint.pformat(value) if pprint_value else repr(value)}\n\n"
         store.save_mk_file(self._config_file_path, output, add_header=False)
 
-    def validate_and_save(self, raw: Mapping[str, object]) -> None:
+    def validate_and_save(self, raw: Mapping[str, object], pprint_value: bool) -> None:
         with_defaults = dict(self.load_default())
         with_defaults.update(raw)
         cfg = self.validate(with_defaults)
-        self.save(cfg)
+        self.save(cfg, pprint_value)
 
 
 class ConfigFileRegistry(Registry[WatoConfigFile]):

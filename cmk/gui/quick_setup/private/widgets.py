@@ -3,6 +3,7 @@
 # This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
 # conditions defined in the file COPYING, which is part of this source code package.
 from dataclasses import dataclass, field
+from typing import Literal
 
 from cmk.gui.quick_setup.v0_unstable.widgets import Widget
 
@@ -27,3 +28,9 @@ class ConditionalNotificationServiceEventStageWidget(ConditionalNotificationStag
 @dataclass(frozen=True, kw_only=True)
 class ConditionalNotificationECAlertStageWidget(ConditionalNotificationStageWidget):
     widget_type: str = field(default="conditional_notification_ec_alert_stage_widget", init=False)
+
+
+@dataclass(frozen=True, kw_only=True)
+class ConditionalNotificationDialogWidget(ConditionalNotificationStageWidget):
+    widget_type: str = field(default="conditional_notification_dialog_widget", init=False)
+    target: Literal["svc_filter", "recipient"]

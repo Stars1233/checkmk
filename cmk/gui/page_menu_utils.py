@@ -6,9 +6,9 @@
 from collections.abc import Iterator
 
 import cmk.ccc.version as cmk_version
+from cmk.ccc.user import UserId
 
 from cmk.utils import paths
-from cmk.utils.user import UserId
 
 from cmk.gui import pagetypes, visuals
 from cmk.gui.bi import is_part_of_aggregation
@@ -572,7 +572,6 @@ def page_menu_entries_host_setup(host_name: str) -> Iterator[PageMenuEntry]:
                 [
                     ("mode", "test_notifications"),
                     ("host_name", host_name),
-                    ("_test_host_notifications", 1),
                 ],
                 filename="wato.py",
             )
@@ -591,7 +590,7 @@ def page_menu_entries_service_setup(host_name: str, serivce_name: str) -> Iterat
                     ("mode", "test_notifications"),
                     ("host_name", host_name),
                     ("service_name", serivce_name),
-                    ("_test_service_notifications", 1),
+                    ("test_type", "svc_test"),
                 ],
                 filename="wato.py",
             )

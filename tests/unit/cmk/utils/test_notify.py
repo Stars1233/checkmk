@@ -8,9 +8,10 @@ from pathlib import Path
 import pytest
 from pytest import MonkeyPatch
 
+from cmk.ccc.hostaddress import HostName
+
 import cmk.utils.notify
 from cmk.utils.config_path import VersionedConfigPath
-from cmk.utils.hostaddress import HostName
 from cmk.utils.notify import NotificationHostConfig, read_notify_host_file, write_notify_host_file
 from cmk.utils.tags import TagGroupID, TagID
 
@@ -19,7 +20,7 @@ from cmk.utils.tags import TagGroupID, TagID
     "versioned_config_path, host_name, config, expected",
     [
         pytest.param(
-            VersionedConfigPath(1),
+            Path(VersionedConfigPath(1)),
             "horsthost",
             NotificationHostConfig(
                 host_labels={"owe": "owe"},
@@ -42,23 +43,20 @@ from cmk.utils.tags import TagGroupID, TagID
     ],
 )
 def test_write_and_read_notify_host_file(
-    versioned_config_path: VersionedConfigPath,
+    versioned_config_path: Path,
     host_name: HostName,
     config: NotificationHostConfig,
     expected: NotificationHostConfig,
     monkeypatch: MonkeyPatch,
 ) -> None:
-    notify_labels_path: Path = Path(versioned_config_path) / "notify" / "host_config"
+    notify_labels_path: Path = versioned_config_path / "notify" / "host_config"
     monkeypatch.setattr(
         cmk.utils.notify,
         "_get_host_file_path",
         lambda *args, **kw: notify_labels_path,
     )
 
-    write_notify_host_file(
-        versioned_config_path,
-        {host_name: config},
-    )
+    write_notify_host_file(versioned_config_path, {host_name: config})
 
     assert notify_labels_path.exists()
 

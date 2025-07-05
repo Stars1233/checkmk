@@ -5,18 +5,22 @@
 """Modes for managing folders"""
 
 import abc
+import json
 import re
 from collections.abc import Collection, Iterator, Mapping, Sequence
 from typing import override, TypeVar
 
-from cmk.utils.hostaddress import HostName
+from cmk.ccc.hostaddress import HostName
+
 from cmk.utils.labels import Labels
+from cmk.utils.livestatus_helpers.queries import Query
+from cmk.utils.livestatus_helpers.tables.hosts import Hosts
 from cmk.utils.tags import TagGroupID, TagID
 
 import cmk.gui.view_utils
-from cmk.gui import forms
+from cmk.gui import forms, sites
 from cmk.gui.breadcrumb import Breadcrumb, BreadcrumbItem
-from cmk.gui.config import active_config
+from cmk.gui.config import active_config, Config
 from cmk.gui.exceptions import MKUserError
 from cmk.gui.groups import GroupSpecs
 from cmk.gui.htmllib.generator import HTMLWriter
@@ -25,6 +29,7 @@ from cmk.gui.http import mandatory_parameter, request
 from cmk.gui.i18n import _, ungettext
 from cmk.gui.logged_in import user
 from cmk.gui.page_menu import (
+    confirmed_form_submit_options,
     make_checkbox_selection_topic,
     make_confirmed_form_submit_link,
     make_display_options_dropdown,
@@ -38,7 +43,7 @@ from cmk.gui.page_menu import (
     PageMenuSearch,
     PageMenuTopic,
 )
-from cmk.gui.pages import AjaxPage, PageRegistry, PageResult
+from cmk.gui.pages import AjaxPage, PageEndpoint, PageRegistry, PageResult
 from cmk.gui.quick_setup.html import quick_setup_source_cell
 from cmk.gui.table import show_row_count, Table, table_element
 from cmk.gui.type_defs import ActionResult, Choices, HTTPVariables, PermissionName
@@ -72,6 +77,7 @@ from cmk.gui.valuespec import (
 )
 from cmk.gui.watolib.agent_registration import remove_tls_registration
 from cmk.gui.watolib.audit_log_url import make_object_audit_log_url
+from cmk.gui.watolib.automations import make_automation_config
 from cmk.gui.watolib.check_mk_automations import delete_hosts
 from cmk.gui.watolib.configuration_bundle_store import is_locked_by_quick_setup
 from cmk.gui.watolib.groups_io import load_contact_group_information
@@ -105,8 +111,8 @@ TagsOrLabels = TypeVar("TagsOrLabels", Mapping[TagGroupID, TagID], Labels)
 
 
 def register(page_registry: PageRegistry, mode_registry: ModeRegistry) -> None:
-    page_registry.register_page("ajax_popup_move_to_folder")(PageAjaxPopupMoveToFolder)
-    page_registry.register_page("ajax_set_foldertree")(PageAjaxSetFoldertree)
+    page_registry.register(PageEndpoint("ajax_popup_move_to_folder", PageAjaxPopupMoveToFolder))
+    page_registry.register(PageEndpoint("ajax_set_foldertree", PageAjaxSetFoldertree))
     mode_registry.register(ModeFolder)
     mode_registry.register(ModeEditFolder)
     mode_registry.register(ModeCreateFolder)
@@ -115,7 +121,7 @@ def register(page_registry: PageRegistry, mode_registry: ModeRegistry) -> None:
     )
 
 
-def wato_folder_choices_autocompleter(value: str, params: dict) -> Choices:
+def wato_folder_choices_autocompleter(config: Config, value: str, params: dict) -> Choices:
     validate_regex(value, varname=None)
     match_pattern = re.compile(value, re.IGNORECASE)
     matching_folders: Choices = []
@@ -158,9 +164,11 @@ class ModeFolder(WatoMode):
 
     def __init__(self) -> None:
         super().__init__()
-        self._folder = disk_or_search_folder_from_request(
-            request.var("folder"), request.get_ascii_input("host")
-        )
+        try:
+            host_name = request.get_ascii_input("host")
+        except MKUserError:
+            host_name = None
+        self._folder = disk_or_search_folder_from_request(request.var("folder"), host_name)
 
         if request.has_var("_show_host_tags"):
             user.wato_folders_show_tags = request.get_ascii_input("_show_host_tags") == "1"
@@ -619,7 +627,9 @@ class ModeFolder(WatoMode):
                 target_folder = tree.folder(
                     mandatory_parameter("_move_folder_to", request.var("_move_folder_to"))
                 )
-                self._folder.move_subfolder_to(what_folder, target_folder)
+                self._folder.move_subfolder_to(
+                    what_folder, target_folder, pprint_value=active_config.wato_pprint_config
+                )
             return redirect(folder_url)
 
         # Operations on current FOLDER
@@ -627,7 +637,15 @@ class ModeFolder(WatoMode):
         if request.has_var("_remove_tls_registration_from_folder"):
             if isinstance(self._folder, SearchFolder):
                 raise MKUserError(None, _("This action can not be performed on search results"))
-            remove_tls_registration(self._folder.get_hosts_by_site(list(self._folder.hosts())))
+            remove_tls_registration(
+                [
+                    (make_automation_config(active_config.sites[site_id]), hosts)
+                    for site_id, hosts in self._folder.get_hosts_by_site(
+                        list(self._folder.hosts())
+                    ).items()
+                ],
+                debug=active_config.debug,
+            )
             return None
 
         # Operations on HOSTS
@@ -638,14 +656,23 @@ class ModeFolder(WatoMode):
             delname = HostName(delname)
 
         if delname and self._folder.has_host(delname):
-            self._folder.delete_hosts([delname], automation=delete_hosts)
+            self._folder.delete_hosts(
+                [delname],
+                automation=delete_hosts,
+                pprint_value=active_config.wato_pprint_config,
+                debug=active_config.debug,
+            )
             return redirect(folder_url)
 
         # Move single hosts to other folders
         if (target_folder_str := request.var("_move_host_to")) is not None:
             hostname = request.get_validated_type_input_mandatory(HostName, "_ident")
             if self._folder.has_host(hostname):
-                self._folder.move_hosts([hostname], folder_tree().folder(target_folder_str))
+                self._folder.move_hosts(
+                    [hostname],
+                    folder_tree().folder(target_folder_str),
+                    pprint_value=active_config.wato_pprint_config,
+                )
                 return redirect(folder_url)
 
         # bulk operation on hosts
@@ -669,7 +696,9 @@ class ModeFolder(WatoMode):
             if target_folder_path is None:
                 raise MKUserError("_bulk_moveto", _("Please select the destination folder"))
             target_folder = folder_tree().folder(target_folder_path)
-            self._folder.move_hosts(selected_host_names, target_folder)
+            self._folder.move_hosts(
+                selected_host_names, target_folder, pprint_value=active_config.wato_pprint_config
+            )
             flash(_("Moved %d hosts to %s") % (len(selected_host_names), target_folder.title()))
             return redirect(folder_url)
 
@@ -698,7 +727,15 @@ class ModeFolder(WatoMode):
         if request.var("_remove_tls_registration_from_selection"):
             if isinstance(self._folder, SearchFolder):
                 raise MKUserError(None, _("This action can not be performed on search results"))
-            remove_tls_registration(self._folder.get_hosts_by_site(selected_host_names))
+            remove_tls_registration(
+                [
+                    (make_automation_config(active_config.sites[site_id]), hosts)
+                    for site_id, hosts in self._folder.get_hosts_by_site(
+                        selected_host_names
+                    ).items()
+                ],
+                debug=active_config.debug,
+            )
 
         return None
 
@@ -1183,7 +1220,39 @@ class ModeFolder(WatoMode):
             if user.may("wato.edit_hosts") and user.may("wato.move_hosts"):
                 self._show_move_to_folder_action(host)
 
-        self._show_host_actions_menu(host)
+            if host.permissions.may("write"):
+                delete_host_options: dict[str, str | dict[str, str]] = (
+                    confirmed_form_submit_options(
+                        title=_("Delete host"),
+                        message=_(
+                            "This change must be activated via <a href='https://docs.checkmk.com"
+                            "/latest/en/wato.html#activate_changes' target='_blank'>Activate cha"
+                            "nges</a> before it becomes effective in monitoring."
+                        )
+                        if host.name()
+                        in [h["name"] for h in Query([Hosts.name]).fetchall(sites=sites.live())]
+                        else None,
+                        confirm_text=_("Yes, delete host"),
+                        cancel_text=_("No, keep host"),
+                        suffix=host.name(),
+                    )
+                )
+                html.icon_button(
+                    url=None,
+                    onclick="cmk.selection.execute_bulk_action_for_single_host(this,"
+                    " cmk.page_menu.confirmed_form_submit, %s); cmk.popup_menu.close_popup()"
+                    % json.dumps(
+                        [
+                            "hosts",
+                            "_bulk_delete",
+                            delete_host_options,
+                        ],
+                    ),
+                    title=_("Delete host"),
+                    icon="delete",
+                )
+
+            self._show_host_actions_menu(host)
 
     def _show_host_actions_menu(self, host: Host) -> None:
         action_menu_show_flags: list[str] = []
@@ -1212,7 +1281,12 @@ class ModeFolder(WatoMode):
             )
 
     def _delete_hosts(self, host_names: Sequence[HostName]) -> ActionResult:
-        self._folder.delete_hosts(host_names, automation=delete_hosts)
+        self._folder.delete_hosts(
+            host_names,
+            automation=delete_hosts,
+            pprint_value=active_config.wato_pprint_config,
+            debug=active_config.debug,
+        )
         flash(_("Successfully deleted %d hosts") % len(host_names))
         return redirect(self._folder.url())
 
@@ -1244,11 +1318,11 @@ class PageAjaxPopupMoveToFolder(AjaxPage):
     # TODO: Better use AjaxPage.handle_page() for standard AJAX call error handling. This
     # would need larger refactoring of the generic html.popup_trigger() mechanism.
     @override
-    def handle_page(self) -> None:
-        self._handle_exc(self.page)
+    def handle_page(self, config: Config) -> None:
+        self._handle_exc(config, self.page)
 
     @override
-    def page(self) -> PageResult:
+    def page(self, config: Config) -> PageResult:
         html.span(self._move_title())
 
         choices = self._get_choices()
@@ -1442,7 +1516,7 @@ class ModeEditFolder(ABCFolderMode):
 
     @override
     def _save(self, title: str, attributes: HostAttributes) -> None:
-        self._folder.edit(title, attributes)
+        self._folder.edit(title, attributes, pprint_value=active_config.wato_pprint_config)
 
 
 class ModeCreateFolder(ABCFolderMode):
@@ -1476,12 +1550,14 @@ class ModeCreateFolder(ABCFolderMode):
         else:
             name = find_available_folder_name(title, parent_folder)
 
-        parent_folder.create_subfolder(name, title, attributes)
+        parent_folder.create_subfolder(
+            name, title, attributes, pprint_value=active_config.wato_pprint_config
+        )
 
 
 class PageAjaxSetFoldertree(AjaxPage):
     @override
-    def page(self) -> PageResult:
+    def page(self, config: Config) -> PageResult:
         check_csrf_token()
         api_request = self.webapi_request()
         user.save_file("foldertree", (api_request.get("topic"), api_request.get("target")))

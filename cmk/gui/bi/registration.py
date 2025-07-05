@@ -5,7 +5,7 @@
 
 from cmk.gui.data_source import DataSourceRegistry
 from cmk.gui.openapi.restful_objects.registry import EndpointRegistry
-from cmk.gui.pages import PageRegistry
+from cmk.gui.pages import PageEndpoint, PageRegistry
 from cmk.gui.painter.v0 import PainterRegistry
 from cmk.gui.painter_options import PainterOptionRegistry
 from cmk.gui.permissions import PermissionRegistry, PermissionSectionRegistry
@@ -20,7 +20,7 @@ from cmk.gui.watolib.mode import ModeRegistry
 from . import _config, _filters, _icons, _openapi, _snapins, _valuespecs
 from ._host_rename import rename_host_in_bi
 from .ajax_endpoints import ajax_render_tree, ajax_save_treestate, ajax_set_assumption
-from .permissions import PermissionBISeeAll, PermissionSectionBI
+from .permissions import PERMISSION_SECTION_BI, PermissionBISeeAll
 from .view import (
     CommandFreezeAggregation,
     CommandGroupAggregations,
@@ -67,6 +67,8 @@ def register(
     endpoint_registry: EndpointRegistry,
     command_registry: CommandRegistry,
     command_group_registry: CommandGroupRegistry,
+    *,
+    ignore_duplicate_endpoints: bool = False,
 ) -> None:
     data_source_registry.register(DataSourceBIAggregations)
     data_source_registry.register(DataSourceBIHostAggregations)
@@ -89,20 +91,20 @@ def register(
     painter_registry.register(PainterAggrTreestateFrozenDiff)
     painter_registry.register(PainterAggrTreestateBoxed)
 
-    painter_option_registry.register(PainterOptionAggrExpand)
-    painter_option_registry.register(PainterOptionAggrOnlyProblems)
-    painter_option_registry.register(PainterOptionAggrTreeType)
-    painter_option_registry.register(PainterOptionAggrWrap)
+    painter_option_registry.register(PainterOptionAggrExpand())
+    painter_option_registry.register(PainterOptionAggrOnlyProblems())
+    painter_option_registry.register(PainterOptionAggrTreeType())
+    painter_option_registry.register(PainterOptionAggrWrap())
 
-    permission_section_registry.register(PermissionSectionBI)
+    permission_section_registry.register(PERMISSION_SECTION_BI)
     permission_registry.register(PermissionBISeeAll)
 
     command_group_registry.register(CommandGroupAggregations)
     command_registry.register(CommandFreezeAggregation)
 
-    page_registry.register_page_handler("bi_set_assumption", ajax_set_assumption)
-    page_registry.register_page_handler("bi_save_treestate", ajax_save_treestate)
-    page_registry.register_page_handler("bi_render_tree", ajax_render_tree)
+    page_registry.register(PageEndpoint("bi_set_assumption", ajax_set_assumption))
+    page_registry.register(PageEndpoint("bi_save_treestate", ajax_save_treestate))
+    page_registry.register(PageEndpoint("bi_render_tree", ajax_render_tree))
 
     _filters.register(filter_registry)
     _config.register(
@@ -119,4 +121,4 @@ def register(
     rename_host_hook_registry.register(
         RenameHostHook(RenamePhase.SETUP, "BI aggregations", rename_host_in_bi)
     )
-    _openapi.register(endpoint_registry)
+    _openapi.register(endpoint_registry, ignore_duplicates=ignore_duplicate_endpoints)

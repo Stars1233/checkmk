@@ -35,14 +35,13 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, UTC
 from pathlib import Path
-from typing import assert_never, NamedTuple, TypeAlias
+from typing import assert_never, NamedTuple
 
-import cryptography
-import cryptography.hazmat.primitives.asymmetric as asym
-from cryptography import x509
-from cryptography.hazmat.primitives import serialization
+from cryptography import exceptions as pyca_exceptions
+from cryptography import x509 as pyca_x509
+from cryptography.hazmat import primitives as pyca_primitives
 from dateutil.relativedelta import relativedelta
 
 from . import MKCryptoException
@@ -58,6 +57,10 @@ from .keys import (
 )
 from .password import Password
 from .pem import _PEMData, PEMDecodingError
+from .x509 import (
+    SubjectAlternativeNames,
+    X509Name,
+)
 
 
 class CertificatePEM(_PEMData):
@@ -81,7 +84,8 @@ class CertificateWithPrivateKey(NamedTuple):
         common_name: str,
         organization: str,
         organizational_unit: str | None = None,
-        subject_alt_dns_names: list[str] | None = None,
+        subject_alternative_names: SubjectAlternativeNames
+        | None = None,  # None means no SAN extension is added
         expiry: relativedelta = relativedelta(years=2),
         key_size: int = 4096,
         is_ca: bool = False,
@@ -96,16 +100,13 @@ class CertificateWithPrivateKey(NamedTuple):
             organization_name=organization,
             organizational_unit=organizational_unit,
         )
-        alt_names = (
-            [x509.DNSName(san) for san in subject_alt_dns_names] if subject_alt_dns_names else None
-        )
 
         certificate = Certificate._create(  # noqa: SLF001
             subject_public_key=private_key.public_key,
             subject_name=name,
-            subject_alt_dns_names=alt_names,
+            subject_alternative_names=subject_alternative_names,
             expiry=expiry,
-            start_date=datetime.now(tz=timezone.utc),
+            start_date=datetime.now(tz=UTC),
             is_ca=is_ca,
             issuer_signing_key=private_key,
             issuer_name=name,
@@ -165,7 +166,7 @@ class CertificateWithPrivateKey(NamedTuple):
         common_name: str,
         organization: str,
         organizational_unit: str | None = None,
-        subject_alt_dns_names: list[str] | None = None,
+        subject_alternative_names: SubjectAlternativeNames | None = None,
         expiry: relativedelta = relativedelta(years=2),
         key_size: int = 4096,
         is_ca: bool = False,
@@ -181,16 +182,13 @@ class CertificateWithPrivateKey(NamedTuple):
             organization_name=organization,
             organizational_unit=organizational_unit,
         )
-        issued_alt_names = (
-            [x509.DNSName(san) for san in subject_alt_dns_names] if subject_alt_dns_names else None
-        )
 
         issued_certificate = Certificate._create(  # noqa: SLF001
             subject_public_key=issued_key.public_key,
             subject_name=issued_name,
-            subject_alt_dns_names=issued_alt_names,
+            subject_alternative_names=subject_alternative_names,
             expiry=expiry,
-            start_date=datetime.now(tz=timezone.utc),
+            start_date=datetime.now(tz=UTC),
             is_ca=is_ca,
             issuer_signing_key=self.private_key,
             issuer_name=self.certificate.subject,
@@ -198,12 +196,19 @@ class CertificateWithPrivateKey(NamedTuple):
 
         return CertificateWithPrivateKey(issued_certificate, issued_key)
 
-    def sign_csr(self, csr: CertificateSigningRequest, expiry: relativedelta) -> Certificate:
+    def sign_csr(
+        self,
+        csr: CertificateSigningRequest,
+        expiry: relativedelta,
+        subject_alternative_names: SubjectAlternativeNames | None = None,
+    ) -> Certificate:
         """
         Create a certificate by signing a certificate signing request.
 
         Note that the resulting certificate is NOT a CA. This means we don't do intermediate
         certificates at the moment.
+
+        If subject_alternative_names is given, it will be preferred over the SANs in the CSR.
         """
         if not self.certificate.may_sign_certificates():
             raise ValueError("This certificate is not suitable for signing CSRs (not a CA)")
@@ -211,17 +216,17 @@ class CertificateWithPrivateKey(NamedTuple):
         if not csr.is_signature_valid:
             raise ValueError("CSR signature is not valid")
 
-        # Add the DNS name of the subject CN as alternative name.
-        # Our root CA has always done this, so for now this behavior is hardcoded.
-        if (cn := csr.subject.common_name) is None:
-            raise ValueError("common name is expected for CSRs")
+        if not csr.subject.common_name:
+            raise ValueError("CSR subject must have a common name")
+
+        effective_sans = subject_alternative_names or csr.subject_alternative_names
 
         return Certificate._create(  # noqa: SLF001
             subject_public_key=csr.public_key,
             subject_name=csr.subject,
-            subject_alt_dns_names=[x509.DNSName(cn)],
+            subject_alternative_names=effective_sans,
             expiry=expiry,
-            start_date=datetime.now(tz=timezone.utc),
+            start_date=datetime.now(tz=UTC),
             is_ca=False,
             issuer_signing_key=self.private_key,
             issuer_name=self.certificate.subject,
@@ -314,7 +319,7 @@ class PersistedCertificateWithPrivateKey(CertificateWithPrivateKey):
 class Certificate:
     """An X.509 RSA certificate"""
 
-    def __init__(self, certificate: x509.Certificate) -> None:
+    def __init__(self, certificate: pyca_x509.Certificate) -> None:
         """Wrap a cryptography.x509.Certificate"""
         self._cert = certificate
 
@@ -325,7 +330,7 @@ class Certificate:
         # subject info
         subject_public_key: PublicKey,
         subject_name: X509Name,
-        subject_alt_dns_names: list[x509.DNSName] | None,
+        subject_alternative_names: SubjectAlternativeNames | None,
         # cert properties
         expiry: relativedelta,
         start_date: datetime,
@@ -343,17 +348,17 @@ class Certificate:
         )
 
         builder = (
-            x509.CertificateBuilder()
+            pyca_x509.CertificateBuilder()
             .subject_name(subject_name.name)
             .issuer_name(issuer_name.name)
             .not_valid_before(start_date)
             .not_valid_after(start_date + expiry)
-            .serial_number(x509.random_serial_number())
+            .serial_number(pyca_x509.random_serial_number())
             .public_key(subject_public_key._key)  # noqa: SLF001
         )
 
         # RFC 5280 4.2.1.9.  Basic Constraints
-        basic_constraints = x509.BasicConstraints(ca=is_ca, path_length=0 if is_ca else None)
+        basic_constraints = pyca_x509.BasicConstraints(ca=is_ca, path_length=0 if is_ca else None)
         builder = builder.add_extension(basic_constraints, critical=True)
 
         # RFC 5280 4.2.1.2.  Subject Key Identifier
@@ -361,7 +366,7 @@ class Certificate:
         #     ...
         #     this extension SHOULD be included in all end entity certificates
         builder = builder.add_extension(
-            x509.SubjectKeyIdentifier.from_public_key(subject_public_key._key),  # noqa: SLF001
+            pyca_x509.SubjectKeyIdentifier.from_public_key(subject_public_key._key),  # noqa: SLF001
             critical=False,
         )
 
@@ -380,7 +385,7 @@ class Certificate:
         # - key_cert_sign MUST only be set for CAs, so non-CA self-signed certs don't set this.
         #
         builder = builder.add_extension(
-            x509.KeyUsage(
+            pyca_x509.KeyUsage(
                 digital_signature=not is_ca,  # signing data
                 content_commitment=False,  # aka non_repudiation
                 key_encipherment=False,
@@ -394,9 +399,9 @@ class Certificate:
             critical=True,
         )
 
-        if subject_alt_dns_names is not None:
+        if subject_alternative_names is not None:
             builder = builder.add_extension(
-                x509.SubjectAlternativeName(subject_alt_dns_names), critical=False
+                subject_alternative_names.to_extension(), critical=False
             )
 
         hash_algo = (
@@ -410,12 +415,12 @@ class Certificate:
     @classmethod
     def load_pem(cls, pem_data: CertificatePEM) -> Certificate:
         try:
-            return cls(x509.load_pem_x509_certificate(pem_data.bytes))
+            return cls(pyca_x509.load_pem_x509_certificate(pem_data.bytes))
         except ValueError as exc:
             raise PEMDecodingError("Unable to load certificate.") from exc
 
     def dump_pem(self) -> CertificatePEM:
-        return CertificatePEM(self._cert.public_bytes(serialization.Encoding.PEM))
+        return CertificatePEM(self._cert.public_bytes(pyca_primitives.serialization.Encoding.PEM))
 
     @property
     def serial_number(self) -> int:
@@ -489,8 +494,8 @@ class Certificate:
             )
 
         try:
-            self._cert.verify_directly_issued_by(signer._cert)  # noqa: SLF001
-        except cryptography.exceptions.InvalidSignature as e:
+            self._cert.verify_directly_issued_by(signer._cert)
+        except pyca_exceptions.InvalidSignature as e:
             raise InvalidSignatureError(str(e)) from e
 
     def may_sign_certificates(self) -> bool:
@@ -501,16 +506,20 @@ class Certificate:
         Note that self-signed, non-CA end entity certificates may self-sign without this.
         """
         try:
-            if not self._cert.extensions.get_extension_for_class(x509.BasicConstraints).value.ca:
+            if not self._cert.extensions.get_extension_for_class(
+                pyca_x509.BasicConstraints
+            ).value.ca:
                 return False
-        except x509.ExtensionNotFound:
+        except pyca_x509.ExtensionNotFound:
             # This extension and flag MUST be set for a CA
             return False
 
         try:
-            if not self._cert.extensions.get_extension_for_class(x509.KeyUsage).value.key_cert_sign:
+            if not self._cert.extensions.get_extension_for_class(
+                pyca_x509.KeyUsage
+            ).value.key_cert_sign:
                 return False
-        except x509.ExtensionNotFound:
+        except pyca_x509.ExtensionNotFound:
             # If key usage is not restricted, that's ok
             pass
 
@@ -532,11 +541,11 @@ class Certificate:
         if allowed_drift is None:
             allowed_drift = relativedelta(hours=+2)
 
-        if self._is_not_valid_before(datetime.now(tz=timezone.utc) + allowed_drift):
+        if self._is_not_valid_before(datetime.now(tz=UTC) + allowed_drift):
             raise InvalidExpiryError(
                 f"Certificate is not yet valid (not_valid_before: {self.not_valid_before})"
             )
-        if self._is_expired_after(datetime.now(tz=timezone.utc) - allowed_drift):
+        if self._is_expired_after(datetime.now(tz=UTC) - allowed_drift):
             raise InvalidExpiryError(
                 f"Certificate is expired (not_valid_after: {self.not_valid_after})"
             )
@@ -559,7 +568,7 @@ class Certificate:
         If the certificate's "not_valid_after" time lies in the past, a negative value will be
         returned.
         """
-        return (self.not_valid_after - datetime.now(tz=timezone.utc)).days
+        return (self.not_valid_after - datetime.now(tz=UTC)).days
 
     def fingerprint(self, algorithm: HashAlgorithm) -> bytes:
         """return the fingerprint
@@ -582,17 +591,13 @@ class Certificate:
         """
         return self._cert.fingerprint(algorithm.value)
 
-    def get_subject_alt_names(self) -> list[str]:
-        try:
-            ext = self._cert.extensions.get_extension_for_oid(
-                x509.oid.ExtensionOID.SUBJECT_ALTERNATIVE_NAME
-            ).value
-            assert isinstance(ext, x509.extensions.SubjectAlternativeName)
-            sans = ext.get_values_for_type(x509.DNSName)
-        except x509.ExtensionNotFound:
-            return []
+    @property
+    def subject_alternative_names(self) -> SubjectAlternativeNames | None:
+        """Get the subject alternative names from the certificate.
 
-        return sans
+        Returns None if the extension is not present.
+        """
+        return SubjectAlternativeNames.find_extension(self._cert.extensions)
 
     @staticmethod
     def _is_timezone_aware(dt: datetime) -> bool:
@@ -605,101 +610,18 @@ class Certificate:
         Some keys (Ed25519 and Ed448) must use 'None'.
         """
         match key:
-            case asym.ed25519.Ed25519PrivateKey() | asym.ed448.Ed448PrivateKey():
+            case (
+                pyca_primitives.asymmetric.ed25519.Ed25519PrivateKey()
+                | pyca_primitives.asymmetric.ed448.Ed448PrivateKey()
+            ):
                 return None
-            case asym.rsa.RSAPrivateKey() | asym.ec.EllipticCurvePrivateKey():
+            case (
+                pyca_primitives.asymmetric.rsa.RSAPrivateKey()
+                | pyca_primitives.asymmetric.ec.EllipticCurvePrivateKey()
+            ):
                 return HashAlgorithm.Sha512
             case unreachable:
                 assert_never(unreachable)
-
-
-X509NameOid: TypeAlias = x509.oid.NameOID
-
-
-@dataclass
-class X509Name:
-    """Thin wrapper for X509 Name objects"""
-
-    name: x509.Name
-
-    @classmethod
-    def create(
-        cls,
-        *,
-        common_name: str,
-        organization_name: str | None = None,
-        organizational_unit: str | None = None,
-    ) -> X509Name:
-        if common_name == "":
-            raise ValueError("common name must not be empty")
-
-        attributes = [x509.NameAttribute(X509NameOid.COMMON_NAME, common_name)]
-        if organization_name is not None:
-            attributes.append(x509.NameAttribute(X509NameOid.ORGANIZATION_NAME, organization_name))
-        if organizational_unit is not None:
-            attributes.append(
-                x509.NameAttribute(X509NameOid.ORGANIZATIONAL_UNIT_NAME, organizational_unit)
-            )
-
-        return cls(x509.Name(attributes))
-
-    def get_single_name_attribute(self, attribute: x509.oid.ObjectIdentifier) -> str | None:
-        """
-        Get an attribute, returning only the first if multiple are found.
-
-        Use an OID from X509NameOid.
-        """
-        return attrs[0] if (attrs := self._get_name_attributes(attribute)) else None
-
-    def _get_name_attributes(self, attribute: x509.oid.ObjectIdentifier) -> list[str]:
-        return [
-            val.decode("utf-8") if isinstance(val := attr.value, bytes) else val
-            for attr in self.name.get_attributes_for_oid(attribute)
-        ]
-
-    @property
-    def common_name(self) -> str | None:
-        """Get the common name
-        >>> print(X509Name.create(common_name="john", organizational_unit="corp").common_name)
-        john
-        """
-        return self.get_single_name_attribute(X509NameOid.COMMON_NAME)
-
-    @property
-    def organization_name(self) -> str | None:
-        """Get the organization name, if set
-        >>> print(X509Name.create(common_name="john", organizational_unit="unit").organization_name)
-        None
-        >>> print(
-        ...     X509Name.create(
-        ...         common_name="john", organization_name="corp", organizational_unit="unit"
-        ...     ).organization_name
-        ... )
-        corp
-        """
-        return self.get_single_name_attribute(X509NameOid.ORGANIZATION_NAME)
-
-    @property
-    def organizational_unit(self) -> str | None:
-        """Get the organizational unit name, if set
-        >>> print(
-        ...     X509Name.create(
-        ...         common_name="john", organization_name="corp"
-        ...     ).organizational_unit
-        ... )
-        None
-        >>> print(
-        ...     X509Name.create(
-        ...         common_name="john", organization_name="corp", organizational_unit="unit"
-        ...     ).organizational_unit
-        ... )
-        unit
-        """
-        return self.get_single_name_attribute(X509NameOid.ORGANIZATIONAL_UNIT_NAME)
-
-    def rfc4514_string(self) -> str:
-        """Return the name in RFC4514 format like "CN=John Doe,O=Example Corp,OU=Unit"."""
-        return self.name.rfc4514_string()
 
 
 class CertificateSigningRequestPEM(_PEMData):
@@ -713,11 +635,14 @@ class CertificateSigningRequest:
     to prove its ownership of that public key.
     """
 
-    csr: x509.CertificateSigningRequest
+    csr: pyca_x509.CertificateSigningRequest
 
     @classmethod
     def create(
-        cls, subject_name: X509Name, subject_private_key: PrivateKey
+        cls,
+        subject_name: X509Name,
+        subject_private_key: PrivateKey,
+        subject_alternative_names: SubjectAlternativeNames | None = None,
     ) -> CertificateSigningRequest:
         """Create a new Certificate Signing Request
 
@@ -734,7 +659,13 @@ class CertificateSigningRequest:
             is not None
             else None
         )
-        builder = x509.CertificateSigningRequestBuilder().subject_name(subject_name.name)
+        builder = pyca_x509.CertificateSigningRequestBuilder().subject_name(subject_name.name)
+
+        if subject_alternative_names is not None:
+            builder = builder.add_extension(
+                subject_alternative_names.to_extension(), critical=False
+            )
+
         return cls(builder.sign(subject_private_key._key, hash_algo))  # noqa: SLF001
 
     @property
@@ -751,14 +682,21 @@ class CertificateSigningRequest:
     def is_signature_valid(self) -> bool:
         return self.csr.is_signature_valid
 
+    @property
+    def subject_alternative_names(self) -> SubjectAlternativeNames | None:
+        """Get the subject alternative names from the CSR, if present."""
+        return SubjectAlternativeNames.find_extension(self.csr.extensions)
+
     def dump_pem(self) -> CertificateSigningRequestPEM:
         """Return the CSR in PEM format"""
-        return CertificateSigningRequestPEM(self.csr.public_bytes(serialization.Encoding.PEM))
+        return CertificateSigningRequestPEM(
+            self.csr.public_bytes(pyca_primitives.serialization.Encoding.PEM)
+        )
 
     @classmethod
     def load_pem(cls, pem_data: CertificateSigningRequestPEM) -> CertificateSigningRequest:
         """Load a CSR from PEM format"""
         try:
-            return cls(x509.load_pem_x509_csr(pem_data.bytes))
+            return cls(pyca_x509.load_pem_x509_csr(pem_data.bytes))
         except ValueError as exc:
             raise PEMDecodingError("Unable to load CSR.") from exc

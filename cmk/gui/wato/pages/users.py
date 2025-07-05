@@ -10,10 +10,10 @@ import traceback
 from collections.abc import Collection, Iterable, Iterator
 from typing import cast, Literal, overload
 
+from cmk.ccc.user import UserId
 from cmk.ccc.version import Edition, edition
 
 from cmk.utils import paths, render
-from cmk.utils.user import UserId
 
 from cmk.gui import background_job, forms, gui_background_job, userdb
 from cmk.gui.background_job import JobTarget
@@ -82,6 +82,7 @@ from cmk.gui.watolib.audit_log_url import make_object_audit_log_url
 from cmk.gui.watolib.groups_io import load_contact_group_information
 from cmk.gui.watolib.hosts_and_folders import folder_preserving_link, make_action_link
 from cmk.gui.watolib.mode import mode_registry, mode_url, ModeRegistry, redirect, WatoMode
+from cmk.gui.watolib.sites import ldap_connections_are_configurable
 from cmk.gui.watolib.timeperiods import load_timeperiods
 from cmk.gui.watolib.user_scripts import load_notification_scripts
 from cmk.gui.watolib.users import (
@@ -92,7 +93,6 @@ from cmk.gui.watolib.users import (
     user_features_registry,
     verify_password_policy,
 )
-from cmk.gui.watolib.utils import ldap_connections_are_configurable
 
 from cmk.crypto.password import Password
 
@@ -675,7 +675,7 @@ class ModeEditUser(WatoMode):
         self._can_edit_users = edition(paths.omd_root) != Edition.CSE
 
     def _from_vars(self):
-        # TODO: Should we turn the both fields below into Optional[UserId]?
+        # TODO: Should we turn the both fields below into UserId | None?
         try:
             self._user_id = request.get_validated_type_input(UserId, "edit", empty_is_none=True)
         except ValueError as e:
@@ -920,7 +920,7 @@ class ModeEditUser(WatoMode):
                 user_attrs["last_pw_change"] = int(time.time())
                 user_attrs.pop("enforce_pw_change", None)
 
-            elif "automation_secret" not in user_attrs and "password" in user_attrs:
+            elif not user_attrs.get("is_automation_user", False) and "password" in user_attrs:
                 del user_attrs["password"]
 
         else:  # password
@@ -941,8 +941,9 @@ class ModeEditUser(WatoMode):
                 raise MKUserError(password2_field_name, _("Passwords don't match"))
 
             # Detect switch from automation to password
-            if "automation_secret" in user_attrs:
-                del user_attrs["automation_secret"]
+            if user_attrs.get("is_automation_user", False):
+                user_attrs.pop("automation_secret", None)
+                user_attrs.pop("store_automation_secret", None)
                 if "password" in user_attrs:
                     del user_attrs["password"]  # which was the hashed automation secret!
             user_attrs["is_automation_user"] = False

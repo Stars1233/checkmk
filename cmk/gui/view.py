@@ -5,9 +5,9 @@
 
 from collections.abc import Iterable, Mapping, Sequence
 
+from cmk.ccc.hostaddress import HostName
 from cmk.ccc.site import SiteId
 
-from cmk.utils.hostaddress import HostName
 from cmk.utils.servicename import ServiceName
 
 from cmk.gui import pagetypes, visuals
@@ -19,7 +19,7 @@ from cmk.gui.exceptions import MKUserError
 from cmk.gui.http import request
 from cmk.gui.i18n import _
 from cmk.gui.logged_in import user
-from cmk.gui.main_menu import mega_menu_registry
+from cmk.gui.main_menu import main_menu_registry
 from cmk.gui.painter.v0 import all_painters, Cell, JoinCell, Painter
 from cmk.gui.type_defs import (
     ColumnSpec,
@@ -136,7 +136,8 @@ class View:
         """Returns the list of effective sorters to be used to sort the rows of this view"""
         registered_sorters = all_sorters(active_config)
         return self._get_sorter_entries(
-            self.user_sorters if self.user_sorters else self.spec["sorters"], registered_sorters
+            self.user_sorters if self.user_sorters else self.spec["sorters"],
+            registered_sorters,
         )
 
     def _compute_sort_url_parameter(
@@ -160,7 +161,9 @@ class View:
         )
 
     def _get_sorter_entries(
-        self, sorter_list: Iterable[SorterSpec], registered_sorters: Mapping[str, Sorter]
+        self,
+        sorter_list: Iterable[SorterSpec],
+        registered_sorters: Mapping[str, Sorter],
     ) -> list[SorterEntry]:
         sorters: list[SorterEntry] = []
         for entry in sorter_list:
@@ -176,13 +179,13 @@ class View:
                     sorter=sorter,
                     negate=entry.negate,
                     join_key=entry.join_key,
-                    parameters=sorter_spec[1] if isinstance(sorter_spec, tuple) else None,
+                    parameters=(sorter_spec[1] if isinstance(sorter_spec, tuple) else None),
                 )
             )
         return sorters
 
     @property
-    def row_limit(self):
+    def row_limit(self) -> int | None:
         return self._row_limit
 
     @row_limit.setter
@@ -295,7 +298,7 @@ class View:
             )
 
             breadcrumb = make_topic_breadcrumb(
-                mega_menu_registry.menu_monitoring(),
+                main_menu_registry.menu_monitoring(),
                 pagetypes.PagetypeTopics.get_topic(self.spec["topic"]).title(),
             )
             breadcrumb.append(

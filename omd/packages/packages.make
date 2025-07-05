@@ -37,8 +37,8 @@ $(DEPS_INSTALL_BAZEL):
 	    $(if $(filter sles15%,$(DISTRO_CODE)),--define git-ssl-no-verify=true) \
 	    --execution_log_json_file="$(REPO_PATH)/deps_install.json" \
 	    //omd:deps_install_$(EDITION_SHORT)
-	$(MKDIR) $(DESTDIR)$(OMD_ROOT)
-	tar -C $(DESTDIR)$(OMD_ROOT) -xf $(BAZEL_BIN)/omd/deps_install_$(EDITION_SHORT).tar.gz
+	$(MKDIR) $(DESTDIR)
+	tar -C $(DESTDIR) -xf $(BAZEL_BIN)/omd/deps_install_$(EDITION_SHORT).tar.xz
 
 	#TODO: The following code should be executed by Bazel instead of make
 	# Fix sysconfigdata
@@ -181,27 +181,10 @@ debug:
 
 # Include rules to make packages
 include \
-    packages/erlang/erlang.make \
     packages/apache-omd/apache-omd.make \
-    packages/xinetd/xinetd.make \
-    packages/cpp-libs/cpp-libs.make \
     packages/check_mk/check_mk.make \
-    packages/libgsf/libgsf.make \
-    packages/monitoring-plugins/monitoring-plugins.make \
-    packages/check-cert/check-cert.make \
-    packages/lcab/lcab.make \
-    packages/msitools/msitools.make \
-    packages/nagios/nagios.make \
-    packages/heirloom-mailx/heirloom-mailx.make \
-    packages/nrpe/nrpe.make \
-    packages/pnp4nagios/pnp4nagios.make \
     packages/omd/omd.make \
     packages/appliance/appliance.make \
-    packages/livestatus/livestatus.make \
-    packages/neb/neb.make \
-    packages/xmlsec1/xmlsec1.make \
-    packages/robotmk/robotmk.make \
-    packages/rabbitmq/rabbitmq.make
 
 ifeq ($(EDITION),enterprise)
 include \
@@ -225,8 +208,4 @@ include \
     packages/enterprise/enterprise.make \
     packages/cloud/cloud.make \
     packages/saas/saas.make
-else
-# Ship nagvis for all but saas edition: CMK-14926
-include \
-    packages/nagvis/nagvis.make
 endif

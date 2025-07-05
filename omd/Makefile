@@ -25,26 +25,9 @@ include $(BUILD_BASE_DIR)/build-helper-files.make
 # PACKAGES variable there to customzie the list of packages.
 
 PACKAGES := \
-    erlang \
-    libgsf \
-    cpp-libs \
-    lcab \
-    msitools \
     apache-omd \
-    xinetd \
     check_mk \
-    nagios \
-    monitoring-plugins \
-    check-cert \
-    nrpe \
-    omd \
-    pnp4nagios \
-    heirloom-mailx \
-    livestatus \
-    neb \
-    robotmk \
-    xmlsec1 \
-    rabbitmq
+    omd
 
 ifeq ($(EDITION),enterprise)
 PACKAGES += enterprise
@@ -64,8 +47,6 @@ ifeq ($(EDITION),saas)
 PACKAGES += enterprise
 PACKAGES += cloud
 PACKAGES += saas
-else
-PACKAGES += nagvis
 endif
 
 BUILD_TARGET_VARS := $(call package_target_prefix,$(PACKAGES))
@@ -119,10 +100,7 @@ BOM := bill-of-materials.json
 
 # Called while building the .rpm/.deb packages
 install: $(INSTALL_GLOBAL) $(DEPS_INSTALL_BAZEL)
-	bazel run :venv
-	source .venv/bin/activate \
-	&& python3 ./strip_binaries --exclude cmk-agent-ctl --exclude mk-sql --exclude cmc --exclude waitmax --exclude agent_modbus $(DESTDIR)$(OMD_ROOT)/ \
-	&& deactivate
+	python3 ./strip_binaries --exclude cmk-agent-ctl --exclude mk-sql --exclude cmc --exclude waitmax --exclude agent_modbus $(DESTDIR)$(OMD_ROOT)/
 
 # Called by our release system to build appliance packages
 cma: $(CMA_PACKAGE)

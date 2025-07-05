@@ -6,6 +6,7 @@
 
 import dataclasses
 import logging
+import socket
 from collections.abc import Sequence
 from functools import partial
 from typing import NoReturn
@@ -16,8 +17,8 @@ from pytest import MonkeyPatch
 from tests.testlib.unit.base_configuration_scenario import Scenario
 
 from cmk.ccc.exceptions import MKSNMPError
+from cmk.ccc.hostaddress import HostAddress, HostName
 
-from cmk.utils.hostaddress import HostAddress, HostName
 from cmk.utils.log import logger
 from cmk.utils.sectionname import SectionName
 
@@ -146,6 +147,7 @@ def test_use_advanced_snmp_version(monkeypatch: MonkeyPatch) -> None:
     assert (
         config_cache.make_snmp_config(
             HostName("abc"),
+            socket.AddressFamily.AF_INET,
             HostAddress("1.2.3.4"),
             SourceType.HOST,
             backend_override=None,
@@ -155,6 +157,7 @@ def test_use_advanced_snmp_version(monkeypatch: MonkeyPatch) -> None:
     assert (
         config_cache.make_snmp_config(
             HostName("localhost"),
+            socket.AddressFamily.AF_INET,
             HostAddress("1.2.3.4"),
             SourceType.HOST,
             backend_override=None,
@@ -246,7 +249,6 @@ def test_walk_raises_on_timeout_without_snmpv3_context_stop_on_timeout() -> None
             backend=Backend(
                 dataclasses.replace(
                     SNMPConfig,
-                    credentials=(),  # for `is_snmpv3_host`
                     snmpv3_contexts=[
                         SNMPContextConfig(
                             section=section_name,

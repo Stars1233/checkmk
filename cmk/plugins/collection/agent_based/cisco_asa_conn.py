@@ -3,9 +3,8 @@
 # This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
 # conditions defined in the file COPYING, which is part of this source code package.
 
-# example output
-
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
+from dataclasses import dataclass
 
 from cmk.agent_based.v2 import (
     any_of,
@@ -23,30 +22,45 @@ from cmk.agent_based.v2 import (
     StringTable,
 )
 
-Section = Mapping
+
+@dataclass()
+class NetworkInterfaceData:
+    if_name: str | None = None
+    admin_status: str | None = None
+    oper_status: str | None = None
+    ip_address: str | None = None
+
+
+Section = dict[str, NetworkInterfaceData]
 
 
 def parse_cisco_asa_conn(string_table: Sequence[StringTable]) -> Section:
-    parsed = {}
-    for line in string_table[0]:
-        parsed[line[0]] = [line[1]]
-    for line in string_table[2]:
-        parsed[line[0]].append(line[1])
-        parsed[line[0]].append(line[2])
-    for line in string_table[1]:
-        parsed[line[0]].append(line[1])
+    network_interfaces: Section = {}
 
-    return parsed
+    for line in string_table[0]:
+        network_interfaces[line[0]] = NetworkInterfaceData(if_name=line[1])
+
+    for line in string_table[2]:
+        network_interfaces[line[0]].admin_status = line[1]
+        network_interfaces[line[0]].oper_status = line[2]
+
+    for line in string_table[1]:
+        if line[0] not in network_interfaces:
+            # this is an IP but without network interface
+            network_interfaces[line[0]] = NetworkInterfaceData(admin_status="1")
+        network_interfaces[line[0]].ip_address = line[1]
+
+    return network_interfaces
 
 
 def inventory_cisco_asa_conn(section: Section) -> DiscoveryResult:
-    for key, values in section.items():
-        if values[1] == "1" and len(values) == 4:
-            yield Service(item=key)
+    for if_index, if_data in section.items():
+        if if_data.admin_status == "1" and if_data.ip_address is not None:
+            yield Service(item=if_index)
 
 
 def check_cisco_asa_conn(item: str, section: Section) -> CheckResult:
-    translate_status = {
+    translate_oper_status = {
         "1": (State.OK, "up"),
         "2": (State.CRIT, "down"),
         "3": (State.UNKNOWN, "testing"),
@@ -56,22 +70,29 @@ def check_cisco_asa_conn(item: str, section: Section) -> CheckResult:
         "7": (State.CRIT, "lower layer down"),
     }
 
-    for key, values in section.items():
-        if item == key:
-            yield Result(state=State.OK, summary="Name: %s" % values[0])
+    if_data = section.get(item)
+    if if_data is None:
+        return
 
-            try:
-                ip_address = values[3]
-            except IndexError:
-                ip_address = None
+    if if_data.if_name:
+        yield Result(state=State.OK, summary=f"Name: {if_data.if_name}")
 
-            if ip_address:
-                yield Result(state=State.OK, summary="IP: %s" % ip_address)
-            else:  # CRIT if no IP is assigned
-                yield Result(state=State.CRIT, summary="IP: Not found!")
+    if if_data.ip_address:
+        if if_data.if_name:
+            yield Result(state=State.OK, summary=f"IP: {if_data.ip_address}")
+        else:
+            yield Result(
+                state=State.UNKNOWN,
+                summary=f"IP: {if_data.ip_address} - No network device associated",
+            )
+    else:  # CRIT if no IP is assigned
+        yield Result(state=State.CRIT, summary="IP: Not found!")
 
-            state, state_readable = translate_status.get(values[2], (State.UNKNOWN, "N/A"))
-            yield Result(state=state, summary="Status: %s" % state_readable)
+    if if_data.oper_status:
+        state, state_readable = translate_oper_status.get(
+            if_data.oper_status, (State.UNKNOWN, "N/A")
+        )
+        yield Result(state=state, summary=f"Status: {state_readable}")
 
 
 snmp_section_cisco_asa_conn = SNMPSection(
@@ -84,15 +105,25 @@ snmp_section_cisco_asa_conn = SNMPSection(
     fetch=[
         SNMPTree(
             base=".1.3.6.1.2.1.31.1.1.1",
-            oids=[OIDEnd(), "1"],
+            oids=[
+                OIDEnd(),  # IP-MIB::ipAdEntIfIndex
+                "1",  # IF-MIB::ifName
+            ],
         ),
         SNMPTree(
             base=".1.3.6.1.2.1.4.20.1",
-            oids=["2", "1"],
+            oids=[
+                "2",  # IP-MIB::ipAdEntIfIndex
+                "1",  # IP-MIB::ipAdEntAddr
+            ],
         ),
         SNMPTree(
             base=".1.3.6.1.2.1.2.2.1",
-            oids=[OIDEnd(), "7", "8"],
+            oids=[
+                OIDEnd(),  # IP-MIB::ipAdEntIfIndex
+                "7",  # IF-MIB::ifAdminStatus
+                "8",  # IF-MIB::ifOperStatus
+            ],
         ),
     ],
     parse_function=parse_cisco_asa_conn,

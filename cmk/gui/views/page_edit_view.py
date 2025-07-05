@@ -13,18 +13,17 @@ from collections.abc import Iterator, Mapping, Sequence
 from typing import Any, Literal, NamedTuple, overload, TypedDict
 
 from cmk.ccc.exceptions import MKGeneralException
+from cmk.ccc.user import UserId
 
 from cmk.utils.structured_data import SDPath
-from cmk.utils.user import UserId
 
 from cmk.gui import visuals
-from cmk.gui.config import active_config
+from cmk.gui.config import active_config, Config
 from cmk.gui.data_source import ABCDataSource, data_source_registry
 from cmk.gui.display_options import display_options
 from cmk.gui.exceptions import MKInternalError, MKUserError
 from cmk.gui.http import request, response
 from cmk.gui.i18n import _
-from cmk.gui.logged_in import user
 from cmk.gui.pages import AjaxPage, PageResult
 from cmk.gui.painter.v0 import all_painters, Cell, Painter
 from cmk.gui.painter.v0.helpers import RenderLink
@@ -71,7 +70,7 @@ from .store import get_all_views
 from .view_choices import view_choices
 
 
-def page_edit_view() -> None:
+def page_edit_view(config: Config) -> None:
     def get_view_infos(view: ViewSpec) -> SingleInfos:
         """Return list of available datasources (used to render filters)"""
         # In create mode "datasource" is mandatory, in other mode it's not
@@ -735,7 +734,7 @@ def view_editor_sorter_specs(
 
 
 class PageAjaxCascadingRenderPainterParameters(AjaxPage):
-    def page(self) -> PageResult:
+    def page(self, config: Config) -> PageResult:
         api_request = request.get_request()
 
         if api_request["painter_type"] == "painter":
@@ -949,7 +948,7 @@ def _dummy_view_spec() -> ViewSpec:
             "add_context_to_title": True,
             "is_show_more": False,
             "packaged": False,
-            "megamenu_search_terms": [],
+            "main_menu_search_terms": [],
         }
     )
 
@@ -1032,7 +1031,6 @@ def _allowed_for_datasource(
             plugin = instance
         elif issubclass(instance, Painter):
             plugin = instance(
-                user=user,
                 config=active_config,
                 request=request,
                 painter_options=PainterOptions.get_instance(),

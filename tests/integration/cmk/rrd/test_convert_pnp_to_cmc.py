@@ -9,17 +9,15 @@ import pytest
 
 from tests.integration.linux_test_host import create_linux_test_host
 
-from tests.testlib.pytest_helpers.marks import skip_if_raw_edition, skip_if_saas_edition
 from tests.testlib.site import Site
 
-from cmk.utils.hostaddress import HostAddress
+from cmk.ccc.hostaddress import HostAddress
 
 _RELATIVE_PATH_PNP_RRDS = Path("var", "pnp4nagios", "perfdata")
 _RELATIVE_PATH_CMC_RRDS = Path("var", "check_mk", "rrd")
 
 
-@skip_if_raw_edition
-@skip_if_saas_edition
+@pytest.mark.skip_if_edition("raw", "saas")
 def test_convert_pnp_to_cmc(request: pytest.FixtureRequest, site: Site) -> None:
     hostname = HostAddress("test-pnp-to-cmc")
     rule_id_host_rrd_config = rule_id_service_rrd_config = None
@@ -60,7 +58,9 @@ def test_convert_pnp_to_cmc(request: pytest.FixtureRequest, site: Site) -> None:
             site.read_file(_RELATIVE_PATH_CMC_RRDS / hostname / "Temperature_Zone_0.info")
             == f"HOST {hostname}\nSERVICE Temperature Zone 0\nMETRICS temp\n"
         )
-        assert site.read_binary_file(_RELATIVE_PATH_CMC_RRDS / hostname / "Temperature_Zone_0.rrd")
+        assert site.read_file(
+            _RELATIVE_PATH_CMC_RRDS / hostname / "Temperature_Zone_0.rrd", encoding=None
+        )
 
     finally:
         site.delete_dir(_RELATIVE_PATH_PNP_RRDS / hostname)
@@ -91,5 +91,5 @@ def _deploy_pnp_temperature_zone_0_files(
     raw_rrd = (our_location / filename_rrd).read_bytes()
 
     site.makedirs(_RELATIVE_PATH_PNP_RRDS / hostname)
-    site.write_text_file(_RELATIVE_PATH_PNP_RRDS / hostname / filename_xml, raw_xml)
-    site.write_binary_file(_RELATIVE_PATH_PNP_RRDS / hostname / filename_rrd, raw_rrd)
+    site.write_file(_RELATIVE_PATH_PNP_RRDS / hostname / filename_xml, raw_xml)
+    site.write_file(_RELATIVE_PATH_PNP_RRDS / hostname / filename_rrd, raw_rrd)

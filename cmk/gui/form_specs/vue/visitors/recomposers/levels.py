@@ -4,6 +4,7 @@
 # conditions defined in the file COPYING, which is part of this source code package.
 import dataclasses
 import enum
+from collections.abc import Callable
 from typing import Any, assert_never, Literal, TypeVar
 
 from cmk.ccc.exceptions import MKGeneralException
@@ -81,18 +82,34 @@ def _transform_from_disk(
     raise ValueError(value)
 
 
-def _transform_to_disk(
-    value: object,
-) -> _LevelsConfigModel[_NumberT]:
-    match value:
-        case "no_levels", None:
-            return "no_levels", None
-        case "fixed", tuple(fixed_levels):
-            return "fixed", fixed_levels
-        case "predictive", predictive_levels:
-            return "cmk_postprocessed", "predictive_levels", predictive_levels
+def _wrapped_transform_to_disk(
+    form_spec: Levels[_NumberT] | SimpleLevels[_NumberT],
+) -> Callable[[object], _LevelsConfigModel[_NumberT]]:
+    def _transform_to_disk(
+        value: object,
+    ) -> _LevelsConfigModel[_NumberT]:
+        match value:
+            case "no_levels", None:
+                return "no_levels", None
+            case "fixed", tuple(fixed_levels):
+                return "fixed", fixed_levels
+            case "predictive", dict(predictive_levels):
+                # The new prediction needs some more info that is hardcoded in the FormSpec
+                # to do the prediction in the post-processing in cmk.base.checker
+                assert isinstance(form_spec, Levels)
+                return (
+                    "cmk_postprocessed",
+                    "predictive_levels",
+                    {
+                        "__reference_metric__": form_spec.predictive.reference_metric,
+                        "__direction__": form_spec.level_direction.value,
+                        **predictive_levels,
+                    },
+                )
 
-    raise ValueError(value)
+        raise ValueError(value)
+
+    return _transform_to_disk
 
 
 def _force_replace_prefill_and_title(
@@ -358,7 +375,7 @@ def _predictive_levels(
 
 
 def recompose(form_spec: FormSpec[Any]) -> TransformDataForLegacyFormatOrRecomposeFunction:
-    if not isinstance(form_spec, (Levels, SimpleLevels)):
+    if not isinstance(form_spec, Levels | SimpleLevels):
         raise MKGeneralException(
             f"Cannot recompose form spec. Expected a Levels/SimpleLevels form spec, got {type(form_spec)}"
         )
@@ -390,7 +407,7 @@ def recompose(form_spec: FormSpec[Any]) -> TransformDataForLegacyFormatOrRecompo
         )
 
     # Make typing happy
-    assert isinstance(form_spec, (Levels, SimpleLevels))
+    assert isinstance(form_spec, Levels | SimpleLevels)
 
     prefill_ident = {
         LevelsType.NONE: _LevelDynamicChoice.NO_LEVELS.value,
@@ -406,5 +423,5 @@ def recompose(form_spec: FormSpec[Any]) -> TransformDataForLegacyFormatOrRecompo
             prefill=DefaultValue(prefill_ident),
         ),
         from_disk=_transform_from_disk,
-        to_disk=_transform_to_disk,
+        to_disk=_wrapped_transform_to_disk(form_spec),
     )

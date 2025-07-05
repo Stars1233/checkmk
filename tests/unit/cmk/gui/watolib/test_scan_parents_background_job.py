@@ -10,10 +10,9 @@ from unittest.mock import MagicMock
 import pytest
 from pytest_mock import MockerFixture
 
+from cmk.ccc.hostaddress import HostAddress, HostName
 from cmk.ccc.site import SiteId
-
-from cmk.utils.hostaddress import HostAddress, HostName
-from cmk.utils.user import UserId
+from cmk.ccc.user import UserId
 
 from cmk.automations.results import Gateway, GatewayResult, ScanParentsResult
 
@@ -34,7 +33,7 @@ def _host(with_admin_login: UserId, load_config: None) -> Iterator[Host]:
 
     hostname = HostName("host1")
     root = folder_tree().root_folder()
-    root.create_hosts([(hostname, {"site": SiteId(hostname)}, None)])
+    root.create_hosts([(hostname, {"site": SiteId("NO_SITE")}, None)], pprint_value=False)
     host = root.host(hostname)
     assert host, "Test setup failed, host not created"
 
@@ -68,11 +67,41 @@ def test_scan_parents_job(
     )
 
     # WHEN
-    start_parent_scan(hosts=[host], job=ParentScanBackgroundJob(), settings=settings)
+    start_parent_scan(
+        hosts=[host],
+        job=ParentScanBackgroundJob(),
+        settings=settings,
+        site_configs={
+            SiteId("NO_SITE"): {
+                "id": SiteId("NO_SITE"),
+                "alias": "Local site NO_SITE",
+                "socket": ("local", None),
+                "disable_wato": True,
+                "disabled": False,
+                "insecure": False,
+                "url_prefix": "/NO_SITE/",
+                "multisiteurl": "",
+                "persist": False,
+                "replicate_ec": False,
+                "replicate_mkps": False,
+                "replication": None,
+                "timeout": 5,
+                "user_login": True,
+                "proxy": None,
+                "user_sync": "all",
+                "status_host": None,
+                "message_broker_port": 5672,
+            }
+        },
+        pprint_value=False,
+        debug=False,
+    )
 
     # THEN
     with application_and_request_context():
         updated_host = folder_tree().root_folder().host(host.name())
-        assert updated_host is not None and updated_host.parents() == [f"gw-{host.id()}-123-0-0-1"]
+        assert updated_host is not None and updated_host.parents() == ["gw-NO_SITE-123-0-0-1"]
 
-    suppress_bake_agents_in_background.assert_called_once_with([f"gw-{host.id()}-123-0-0-1"])
+    suppress_bake_agents_in_background.assert_called_once_with(
+        ["gw-NO_SITE-123-0-0-1"], debug=False
+    )

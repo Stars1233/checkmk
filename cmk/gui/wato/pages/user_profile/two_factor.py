@@ -16,6 +16,7 @@ from urllib import parse
 from uuid import uuid4
 
 import fido2
+import fido2.features
 from fido2.server import Fido2Server
 from fido2.webauthn import (
     AttestedCredentialData,
@@ -29,13 +30,14 @@ from fido2.webauthn import (
 
 from cmk.ccc.exceptions import MKGeneralException
 from cmk.ccc.site import omd_site
+from cmk.ccc.user import UserId
 
 from cmk.utils.jsontype import JsonSerializable
 from cmk.utils.log.security_event import log_security_event
-from cmk.utils.user import UserId
 
 from cmk.gui import forms
 from cmk.gui.breadcrumb import Breadcrumb, BreadcrumbItem, make_simple_page_breadcrumb
+from cmk.gui.config import Config
 from cmk.gui.crash_handler import handle_exception_as_gui_crash_report
 from cmk.gui.ctx_stack import g
 from cmk.gui.exceptions import MKUserError
@@ -45,7 +47,7 @@ from cmk.gui.http import request, response
 from cmk.gui.i18n import _
 from cmk.gui.log import logger
 from cmk.gui.logged_in import LoggedInUser, user
-from cmk.gui.main_menu import mega_menu_registry
+from cmk.gui.main_menu import main_menu_registry
 from cmk.gui.page_menu import (
     make_javascript_link,
     make_simple_form_page_menu,
@@ -55,7 +57,7 @@ from cmk.gui.page_menu import (
     PageMenuEntry,
     PageMenuTopic,
 )
-from cmk.gui.pages import Page, PageRegistry
+from cmk.gui.pages import Page, PageEndpoint, PageRegistry
 from cmk.gui.session import session
 from cmk.gui.site_config import has_wato_slave_sites, is_wato_slave_site
 from cmk.gui.table import Table, table_element
@@ -98,10 +100,11 @@ from cmk.crypto.totp import TOTP
 from .abstract_page import ABCUserProfilePage
 from .page_menu import page_menu_dropdown_user_related
 
-try:  # this fails if its set multiple times (which sometimes happens in doctests)
-    fido2.features.webauthn_json_mapping.enabled = True
-except ValueError:
-    pass
+# NOTE: In fido2 >= 2.0.0, this feature has been removed and is enabled per default, see
+# https://github.com/Yubico/python-fido2/blob/main/doc/Migration_1-2.adoc#removal-of-featureswebauthn_json_mapping
+# TODO: Remove this when we upgraded to fido2 2.0.0.
+if _webauthn_json_mapping := getattr(fido2.features, "webauthn_json_mapping", None):
+    _webauthn_json_mapping.enabled = True
 
 
 def make_fido2_server() -> Fido2Server:
@@ -151,7 +154,9 @@ def _handle_success_auth(user_id: UserId) -> None:
     save_custom_attr(user_id, "num_failed_logins", 0)
 
 
-def _sec_notification_event_from_2fa_event(event: TwoFactorEventType) -> SecurityNotificationEvent:
+def _sec_notification_event_from_2fa_event(
+    event: TwoFactorEventType,
+) -> SecurityNotificationEvent:
     match event:
         case TwoFactorEventType.totp_add:
             return SecurityNotificationEvent.totp_added
@@ -207,15 +212,17 @@ overview_page_name: str = "user_two_factor_overview"
 
 
 def register(page_registry: PageRegistry) -> None:
-    page_registry.register_page(overview_page_name)(UserTwoFactorOverview)
-    page_registry.register_page("user_two_factor_enforce")(UserTwoFactorEnforce)
-    page_registry.register_page("user_two_factor_edit_credential")(EditCredentialAlias)
-    page_registry.register_page("user_webauthn_register_begin")(UserWebAuthnRegisterBegin)
-    page_registry.register_page("user_webauthn_register_complete")(UserWebAuthnRegisterComplete)
-    page_registry.register_page("user_login_two_factor")(UserLoginTwoFactor)
-    page_registry.register_page("user_webauthn_login_begin")(UserWebAuthnLoginBegin)
-    page_registry.register_page("user_webauthn_login_complete")(UserWebAuthnLoginComplete)
-    page_registry.register_page("user_totp_register")(RegisterTotpSecret)
+    page_registry.register(PageEndpoint(overview_page_name, UserTwoFactorOverview))
+    page_registry.register(PageEndpoint("user_two_factor_enforce", UserTwoFactorEnforce))
+    page_registry.register(PageEndpoint("user_two_factor_edit_credential", EditCredentialAlias))
+    page_registry.register(PageEndpoint("user_webauthn_register_begin", UserWebAuthnRegisterBegin))
+    page_registry.register(
+        PageEndpoint("user_webauthn_register_complete", UserWebAuthnRegisterComplete)
+    )
+    page_registry.register(PageEndpoint("user_login_two_factor", UserLoginTwoFactor))
+    page_registry.register(PageEndpoint("user_webauthn_login_begin", UserWebAuthnLoginBegin))
+    page_registry.register(PageEndpoint("user_webauthn_login_complete", UserWebAuthnLoginComplete))
+    page_registry.register(PageEndpoint("user_totp_register", RegisterTotpSecret))
 
 
 class UserTwoFactorOverview(ABCUserProfilePage):
@@ -504,7 +511,7 @@ class UserTwoFactorOverview(ABCUserProfilePage):
     @classmethod
     def _show_registered_credentials(
         cls,
-        two_factor_credentials: dict[str, TotpCredential] | dict[str, WebAuthnCredential],
+        two_factor_credentials: (dict[str, TotpCredential] | dict[str, WebAuthnCredential]),
         what: Literal["totp", "webauthn"],
         table: Table,
     ) -> None:
@@ -530,7 +537,9 @@ class UserTwoFactorOverview(ABCUserProfilePage):
             )
             delete_url = make_confirm_delete_link(
                 url=makeactionuri(
-                    request, transactions, [("_delete_credential", credential["credential_id"])]
+                    request,
+                    transactions,
+                    [("_delete_credential", credential["credential_id"])],
                 ),
                 title=delete_title,
                 message=_("Registered at ")
@@ -664,7 +673,7 @@ class RegisterTotpSecret(ABCUserProfilePage):
         self.secret = secret
 
     def _breadcrumb(self) -> Breadcrumb:
-        breadcrumb = make_simple_page_breadcrumb(mega_menu_registry.menu_user(), self._page_title())
+        breadcrumb = make_simple_page_breadcrumb(main_menu_registry.menu_user(), self._page_title())
         breadcrumb.insert(
             -1,
             BreadcrumbItem(
@@ -762,7 +771,10 @@ class RegisterTotpSecret(ABCUserProfilePage):
                 html.render_span(base32_secret) + html.render_icon("insert"),
                 href="javascript:void(0)",
                 onclick="cmk.utils.copy_to_clipboard(%s, %s);"
-                % (json.dumps(base32_secret), json.dumps(_("Successfully copied to clipboard"))),
+                % (
+                    json.dumps(base32_secret),
+                    json.dumps(_("Successfully copied to clipboard")),
+                ),
                 title=_("Copy secret to clipboard"),
                 class_="copy_to_clipboard",
             )
@@ -800,7 +812,7 @@ class EditCredentialAlias(ABCUserProfilePage):
         super().__init__("general.manage_2fa")
 
     def _breadcrumb(self) -> Breadcrumb:
-        breadcrumb = make_simple_page_breadcrumb(mega_menu_registry.menu_user(), self._page_title())
+        breadcrumb = make_simple_page_breadcrumb(main_menu_registry.menu_user(), self._page_title())
         breadcrumb.insert(
             -1,
             BreadcrumbItem(
@@ -812,7 +824,11 @@ class EditCredentialAlias(ABCUserProfilePage):
 
     def _page_menu(self, breadcrumb: Breadcrumb) -> PageMenu:
         menu = make_simple_form_page_menu(
-            _("Profile"), breadcrumb, form_name="profile", button_name="_save", add_cancel_link=True
+            _("Profile"),
+            breadcrumb,
+            form_name="profile",
+            button_name="_save",
+            add_cancel_link=True,
         )
         return menu
 
@@ -902,10 +918,10 @@ class EditCredentialAlias(ABCUserProfilePage):
 
 
 class JsonPage(Page, abc.ABC):
-    def handle_page(self) -> None:
+    def handle_page(self, config: Config) -> None:
         try:
             response.set_content_type("application/json")
-            response.set_data(json.dumps(self.page()))
+            response.set_data(json.dumps(self.page(config)))
         except MKGeneralException as e:
             response.status_code = http_client.BAD_REQUEST
             response.set_data(str(e))
@@ -918,7 +934,7 @@ class JsonPage(Page, abc.ABC):
             response.set_data(str(e))
 
     @abc.abstractmethod
-    def page(self) -> JsonSerializable:
+    def page(self, config: Config) -> JsonSerializable:
         """Override this to implement the page functionality"""
         raise NotImplementedError()
 
@@ -937,7 +953,7 @@ def _serialize_webauthn_state(state: dict) -> WebAuthnActionState:
 
 
 class UserWebAuthnRegisterBegin(JsonPage):
-    def page(self) -> JsonSerializable:
+    def page(self, config: Config) -> JsonSerializable:
         assert user.id is not None
 
         if not session.two_factor_enforced():
@@ -963,7 +979,7 @@ class UserWebAuthnRegisterBegin(JsonPage):
 
 
 class UserWebAuthnRegisterComplete(JsonPage):
-    def page(self) -> JsonSerializable:
+    def page(self, config: Config) -> JsonSerializable:
         assert user.id is not None
 
         if not session.two_factor_enforced():
@@ -978,8 +994,10 @@ class UserWebAuthnRegisterComplete(JsonPage):
         try:
             auth_data = make_fido2_server().register_complete(
                 state=session.session_info.webauthn_action_state,
-                client_data=data.client_data,
-                attestation_object=data.attestation_object,
+                response={  # TODO: Passing a RegistrationResponse would be nicer here.
+                    "client_data": data.client_data,
+                    "attestation_object": data.attestation_object,
+                },
             )
         except ValueError as e:
             if "Invalid origin in ClientData" in str(e):
@@ -1042,11 +1060,15 @@ class UserLoginTwoFactor(Page):
     def _render_totp(cls, available_methods: set[str]) -> None:
         html.p(_("Enter the six-digit code from your authenticator app to log in."))
         with html.form_context(
-            "totp_login", method="POST", add_transid=False, action="user_login_two_factor.py"
+            "totp_login",
+            method="POST",
+            add_transid=False,
+            action="user_login_two_factor.py",
         ):
             html.prevent_password_auto_completion()
             html.hidden_field(
-                "_origtarget", origtarget := request.get_url_input("_origtarget", "index.py")
+                "_origtarget",
+                origtarget := request.get_url_input("_origtarget", "index.py"),
             )
 
             html.open_div(id_="code_input")
@@ -1074,7 +1096,8 @@ class UserLoginTwoFactor(Page):
         ):
             html.prevent_password_auto_completion()
             html.hidden_field(
-                "_origtarget", origtarget := request.get_url_input("_origtarget", "index.py")
+                "_origtarget",
+                origtarget := request.get_url_input("_origtarget", "index.py"),
             )
 
             html.open_div(id_="code_input")
@@ -1096,7 +1119,8 @@ class UserLoginTwoFactor(Page):
         html.p(_("Please follow your browser's instructions for authentication."))
         html.prevent_password_auto_completion()
         html.hidden_field(
-            "_origtarget", origtarget := request.get_url_input("_origtarget", "index.py")
+            "_origtarget",
+            origtarget := request.get_url_input("_origtarget", "index.py"),
         )
         html.div("", id_="webauthn_message")
         html.javascript("cmk.webauthn.login()")
@@ -1123,7 +1147,8 @@ class UserLoginTwoFactor(Page):
             )
         )
         html.hidden_field(
-            "_origtarget", origtarget := request.get_url_input("_origtarget", "index.py")
+            "_origtarget",
+            origtarget := request.get_url_input("_origtarget", "index.py"),
         )
         if "totp_credentials" in available_methods:
             html.open_div(class_="button_text")
@@ -1185,7 +1210,7 @@ class UserLoginTwoFactor(Page):
                 _handle_failed_auth(user.id)
                 raise MKUserError(None, _("Invalid code provided"), HTTPStatus.UNAUTHORIZED)
 
-    def page(self) -> None:
+    def page(self, config: Config) -> None:
         assert user.id is not None
 
         html.render_headfoot = False
@@ -1201,7 +1226,7 @@ class UserLoginTwoFactor(Page):
         html.open_a(href="https://checkmk.com", class_="login_window_logo_link")
         html.img(
             src=theme.detect_icon_path(
-                icon_name="login_logo" if theme.has_custom_logo("login_logo") else "checkmk_logo",
+                icon_name=("login_logo" if theme.has_custom_logo("login_logo") else "checkmk_logo"),
                 prefix="",
             ),
             id_="logo",
@@ -1243,7 +1268,7 @@ class UserLoginTwoFactor(Page):
 
 
 class UserWebAuthnLoginBegin(JsonPage):
-    def page(self) -> JsonSerializable:
+    def page(self, config: Config) -> JsonSerializable:
         assert user.id is not None
 
         if not is_two_factor_login_enabled(user.id):
@@ -1262,7 +1287,7 @@ class UserWebAuthnLoginBegin(JsonPage):
 
 
 class UserWebAuthnLoginComplete(JsonPage):
-    def page(self) -> JsonSerializable:
+    def page(self, config: Config) -> JsonSerializable:
         assert user.id is not None
 
         if not is_two_factor_login_enabled(user.id):
@@ -1279,10 +1304,12 @@ class UserWebAuthnLoginComplete(JsonPage):
                     AttestedCredentialData.unpack_from(v["credential_data"])[0]
                     for v in load_two_factor_credentials(user.id)["webauthn_credentials"].values()
                 ],
-                credential_id=data.credential_id,
-                client_data=data.client_data,
-                auth_data=data.authenticator_data,
-                signature=data.signature,
+                response={  # TODO: Passing an AuthenticationResponse would be nicer here.
+                    "credential_id": data.credential_id,
+                    "client_data": data.client_data,
+                    "auth_data": data.authenticator_data,
+                    "signature": data.signature,
+                },
             )
         except BaseException:
             _log_event_auth("Webauthn")

@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+from cmk.gui.config import active_config
 from cmk.gui.logged_in import user
 from cmk.gui.openapi.endpoints.ruleset.fields import (
     RULESET_NAME,
@@ -67,7 +68,7 @@ def list_rulesets(param):
             {
                 name: ruleset
                 for name, ruleset in all_sets.get_rulesets().items()
-                if ruleset.matches_search_with_rules(search_options)
+                if ruleset.matches_search_with_rules(search_options, debug=active_config.debug)
             }
         )
     else:
@@ -146,6 +147,6 @@ def _serialize_ruleset(ruleset: Ruleset) -> DomainObject:
     )
 
 
-def register(endpoint_registry: EndpointRegistry) -> None:
-    endpoint_registry.register(list_rulesets)
-    endpoint_registry.register(show_ruleset)
+def register(endpoint_registry: EndpointRegistry, *, ignore_duplicates: bool) -> None:
+    endpoint_registry.register(list_rulesets, ignore_duplicates=ignore_duplicates)
+    endpoint_registry.register(show_ruleset, ignore_duplicates=ignore_duplicates)

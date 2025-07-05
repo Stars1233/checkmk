@@ -30,7 +30,6 @@ from tests.testlib.site import Site
 logger = logging.getLogger(__name__)
 
 
-@pytest.mark.xfail(reason="CMK-22883; Investigation ongoing ...")
 @pytest.mark.usefixtures("notification_user")
 def test_add_new_notification_rule(
     dashboard_page: Dashboard,
@@ -64,14 +63,14 @@ def test_add_new_notification_rule(
     logger.info("Set Hosts on Host filters to '%s'", test_site.id)
     add_rule_page.expand_host_filters()
     add_rule_page.hosts_checkbox.set_checked(True)
-    add_rule_page.hosts_textfield.click()
-    add_rule_page.select_host_from_textfield(host_name).click()
+    add_rule_page.hosts_dropdown_list().click()
+    add_rule_page.select_host_from_dropdown_list(host_name).click()
 
     logger.info("Go to stage '%s'", STAGE_NOTIFICATION_METHOD)
     add_rule_page.goto_next_qs_stage()
 
     logger.info("Create new html email parameter")
-    add_rule_page.create_parameter_button().click()
+    add_rule_page.create_html_parameter_using_slide_in()
 
     logger.info("Set description of parameter")
     add_rule_page.si_description.fill("gui_e2e_test_parameter")
@@ -107,7 +106,7 @@ def test_add_new_notification_rule(
     add_rule_page.description_text_field.fill(expected_notification_subject)
 
     logger.info("Go to review settings and save")
-    add_rule_page.goto_next_qs_stage()
+    add_rule_page.goto_next_qs_stage(is_last_stage=True)
     add_rule_page.save_and_test()
 
     logger.info("Disable the default notification rule")
@@ -115,19 +114,23 @@ def test_add_new_notification_rule(
     edit_rule_page.check_disable_rule(True)
     edit_rule_page.save_and_test()
 
-    add_rule_filesystem_page = AddRuleFilesystems(dashboard_page.page)
-    add_rule_filesystem_page.check_levels_for_user_free_space(True)
-    add_rule_filesystem_page.description_text_field.fill(filesystem_rule_description)
-    add_rule_filesystem_page.levels_for_used_free_space_warning_text_field.fill(used_space)
-    add_rule_filesystem_page.save_button.click()
-    add_rule_filesystem_page.activate_changes(test_site)
-
-    service_search_page = None
     try:
+        was_filesystem_ruleset_created = False
+
+        add_rule_filesystem_page = AddRuleFilesystems(dashboard_page.page)
+        add_rule_filesystem_page.check_levels_for_user_free_space(True)
+        add_rule_filesystem_page.description_text_field.fill(filesystem_rule_description)
+        add_rule_filesystem_page.levels_for_used_free_space_warning_text_field.fill(used_space)
+        add_rule_filesystem_page.save_button.click()
+        add_rule_filesystem_page.activate_changes(test_site)
+
+        was_filesystem_ruleset_created = True
+
+        checkmk_agent = "Check_MK"
         service_search_page = ServiceSearchPage(dashboard_page.page)
-        logger.info("Reschedule the 'Check_MK' service to trigger the notification")
+        logger.info("Reschedule the '%s' service to trigger the notification", checkmk_agent)
         service_search_page.filter_sidebar.apply_filters(service_search_page.services_table)
-        service_search_page.reschedule_check(host_name, "Check_MK")
+        service_search_page.reschedule_check(host_name, checkmk_agent)
         service_search_page.wait_for_check_status_update(host_name, service_name, "warn/crit at")
 
         logger.info("Waiting for email %s from for user %s", username, email)
@@ -143,14 +146,15 @@ def test_add_new_notification_rule(
             notification_configuration_page.page, rule_position=0
         )
         edit_notification_rule_page.check_disable_rule(False)
-        edit_notification_rule_page.apply_and_create_another_rule_button.click()
+        edit_notification_rule_page.apply_and_create_another_rule()
 
-        if service_search_page is not None:
+        if was_filesystem_ruleset_created:
             filesystems_rules_page = Ruleset(
-                service_search_page.page,
+                dashboard_page.page,
                 "Filesystems (used space and growth)",
                 "Service monitoring rules",
             )
             logger.info("Delete the filesystems rule")
             filesystems_rules_page.delete_rule(rule_id=filesystem_rule_description)
             filesystems_rules_page.activate_changes(test_site)
+            test_site.schedule_check(host_name, checkmk_agent)

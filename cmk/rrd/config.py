@@ -8,10 +8,10 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal, TypedDict
 
+from cmk.ccc.hostaddress import HostName
 from cmk.ccc.store import load_object_from_file
 
-from cmk.utils.config_path import ConfigPath, LATEST_CONFIG
-from cmk.utils.hostaddress import HostName
+from cmk.utils.config_path import VersionedConfigPath
 from cmk.utils.servicename import ServiceName
 
 RRD_CONFIG_FOLDER = "rrd_config"
@@ -20,12 +20,12 @@ CMC_LOG_RRDCREATION = "cmc_log_rrdcreation"
 
 
 @lru_cache
-def rrd_config_dir(config_path: ConfigPath) -> Path:
-    return Path(config_path) / RRD_CONFIG_FOLDER
+def rrd_config_dir(config_path: Path) -> Path:
+    return config_path / RRD_CONFIG_FOLDER
 
 
 @lru_cache
-def rrd_config_hosts_dir(config_path: ConfigPath) -> Path:
+def rrd_config_hosts_dir(config_path: Path) -> Path:
     return rrd_config_dir(config_path) / RRD_CONFIG_HOSTS_FOLDER
 
 
@@ -47,10 +47,10 @@ class _RRDHostConfig(TypedDict, total=False):
 class RRDConfig:
     def __init__(self, hostname: HostName) -> None:
         self._loaded_config: _RRDHostConfig = load_object_from_file(
-            rrd_config_hosts_dir(LATEST_CONFIG) / hostname, default={}
+            rrd_config_hosts_dir(VersionedConfigPath.LATEST_CONFIG) / hostname, default={}
         )
         self._cmc_log_rrdcreation = load_object_from_file(
-            rrd_config_dir(LATEST_CONFIG) / CMC_LOG_RRDCREATION, default=None
+            rrd_config_dir(VersionedConfigPath.LATEST_CONFIG) / CMC_LOG_RRDCREATION, default=None
         )
 
     def rrd_config(self) -> RRDObjectConfig | None:
@@ -64,4 +64,6 @@ class RRDConfig:
 
 
 def read_hostnames() -> Sequence[HostName]:
-    return [HostName(p.name) for p in rrd_config_hosts_dir(LATEST_CONFIG).glob("*")]
+    return [
+        HostName(p.name) for p in rrd_config_hosts_dir(VersionedConfigPath.LATEST_CONFIG).glob("*")
+    ]

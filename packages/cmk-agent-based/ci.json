@@ -1,4 +1,0 @@
-{
-    "command_line": "./run --clean --all",
-    "maintainers": ["team-nile@checkmk.com"]
-}

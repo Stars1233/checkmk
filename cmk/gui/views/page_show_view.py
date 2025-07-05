@@ -16,11 +16,11 @@ from urllib.parse import quote_plus
 
 import livestatus
 
+from cmk.ccc.cpu_tracking import CPUTracker, Snapshot
 from cmk.ccc.site import omd_site, SiteId
+from cmk.ccc.user import UserId
 
-from cmk.utils.cpu_tracking import CPUTracker, Snapshot
 from cmk.utils.livestatus_helpers.queries import Query
-from cmk.utils.user import UserId
 
 from cmk.gui import log, visuals
 from cmk.gui.config import active_config, Config
@@ -62,6 +62,7 @@ from .store import get_all_views, get_permitted_views
 
 
 def page_show_view(
+    config: Config,
     page_menu_dropdowns_callback: Callable[[View, Rows, list[PageMenuDropdown]], None],
 ) -> None:
     """Central entry point for the initial HTML page rendering of a view"""
@@ -103,14 +104,16 @@ def page_show_view(
                 view,
                 show_buttons=True,
                 page_menu_dropdowns_callback=page_menu_dropdowns_callback,
-            )
+            ),
+            debug=config.debug,
         )
 
-    _may_create_slow_view_log_entry(page_view_tracker, view)
+    _may_create_slow_view_log_entry(page_view_tracker, view, config.slow_views_duration_threshold)
 
 
-def _may_create_slow_view_log_entry(page_view_tracker: CPUTracker, view: View) -> None:
-    duration_threshold = active_config.slow_views_duration_threshold
+def _may_create_slow_view_log_entry(
+    page_view_tracker: CPUTracker, view: View, duration_threshold: int
+) -> None:
     if page_view_tracker.duration.process.elapsed < duration_threshold:
         return
 
@@ -173,15 +176,15 @@ def _patch_view_context(view_spec: ViewSpec) -> None:
             request.set_var("event_host", request.get_str_input_mandatory("host"))
 
 
-def process_view(view_renderer: ABCViewRenderer) -> None:
+def process_view(view_renderer: ABCViewRenderer, *, debug: bool) -> None:
     """Rendering all kind of views"""
     if request.var("mode") == "availability":
-        _process_availability_view(view_renderer)
+        _process_availability_view(view_renderer, debug=debug)
     else:
-        _process_regular_view(view_renderer)
+        _process_regular_view(view_renderer, debug=debug)
 
 
-def _process_regular_view(view_renderer: ABCViewRenderer) -> None:
+def _process_regular_view(view_renderer: ABCViewRenderer, *, debug: bool) -> None:
     all_active_filters = get_all_active_filters(view_renderer.view)
     with livestatus.intercept_queries() as queries:
         unfiltered_amount_of_rows, rows = _get_view_rows(
@@ -196,7 +199,7 @@ def _process_regular_view(view_renderer: ABCViewRenderer) -> None:
         return
 
     _add_rest_api_menu_entries(view_renderer, intercepted_queries)
-    _show_view(view_renderer, unfiltered_amount_of_rows, rows)
+    _show_view(view_renderer, unfiltered_amount_of_rows, rows, debug=debug)
 
 
 def _add_rest_api_menu_entries(view_renderer: ABCViewRenderer, queries: list[str]) -> None:
@@ -269,7 +272,7 @@ def _create_url(site: SiteId, query: Query) -> str:
     return url
 
 
-def _process_availability_view(view_renderer: ABCViewRenderer) -> None:
+def _process_availability_view(view_renderer: ABCViewRenderer, *, debug: bool) -> None:
     view = view_renderer.view
     all_active_filters = get_all_active_filters(view)
 
@@ -297,7 +300,7 @@ def _process_availability_view(view_renderer: ABCViewRenderer) -> None:
         )
 
     with CPUTracker(log.logger.debug) as view_render_tracker:
-        show_view_func()
+        show_view_func(debug=debug)
     view.process_tracking.duration_view_render = view_render_tracker.duration
 
 
@@ -390,7 +393,9 @@ def _fetch_rows_from_livestatus(view: View, all_active_filters: list[Filter]) ->
     return rows, unfiltered_amount_of_rows
 
 
-def _show_view(view_renderer: ABCViewRenderer, unfiltered_amount_of_rows: int, rows: Rows) -> None:
+def _show_view(
+    view_renderer: ABCViewRenderer, unfiltered_amount_of_rows: int, rows: Rows, *, debug: bool
+) -> None:
     view = view_renderer.view
 
     # Load from hard painter options > view > hard coded default
@@ -417,7 +422,12 @@ def _show_view(view_renderer: ABCViewRenderer, unfiltered_amount_of_rows: int, r
     # Now let's render the view
     with CPUTracker(log.logger.debug) as view_render_tracker:
         view_renderer.render(
-            rows, show_checkboxes, num_columns, show_filters, unfiltered_amount_of_rows
+            rows,
+            show_checkboxes,
+            num_columns,
+            show_filters,
+            unfiltered_amount_of_rows,
+            debug=debug,
         )
     view.process_tracking.duration_view_render = view_render_tracker.duration
 

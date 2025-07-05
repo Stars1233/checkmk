@@ -23,11 +23,10 @@ from stat import filemode
 from typing import Any, assert_never, overload
 
 import pexpect  # type: ignore[import-untyped]
+import psutil
 import yaml
 
 from tests.testlib.common.repo import branch_from_env, current_branch_name, repo_path
-
-from cmk.ccc.version import Edition
 
 from cmk import trace
 
@@ -110,10 +109,6 @@ def site_id() -> str:
 
     os.putenv("OMD_SITE", _site_id)
     return _site_id
-
-
-def package_hash_path(version: str, edition: Edition) -> Path:
-    return Path(f"/tmp/cmk_package_hash_{version}_{edition.long}")
 
 
 def version_spec_from_env(fallback: str | None = None) -> str:
@@ -257,6 +252,26 @@ def execute(
 
     with tracer.span("execute", attributes={"cmk.command": repr(cmd_)}):
         return subprocess.Popen(cmd_, **kwargs)
+
+
+def get_processes_by_cmdline(cmdline_pattern: str) -> list[psutil.Process]:
+    """Return a list of currently running processes matching the given command line pattern.
+
+    NOTE: only processes with a non-empty command line are considered.
+
+    Args:
+        cmdline_pattern (str): some substring or regex pattern (via re.search) of the command line.
+    Returns:
+        list[psutil.Process]:
+    """
+    processes = []
+    for proc in psutil.process_iter(attrs=["pid", "name", "cmdline"]):
+        if not proc.info["cmdline"]:
+            continue
+        full_cmdline = " ".join(proc.info["cmdline"])
+        if cmdline_pattern in full_cmdline or re.search(cmdline_pattern, full_cmdline):
+            processes.append(proc)
+    return processes
 
 
 def _add_trace_context(
@@ -449,6 +464,44 @@ def check_output(
         return subprocess.check_output(cmd_, **kwargs)
 
 
+@overload
+def read_file(
+    path: str | Path,
+    encoding: str = "utf-8",
+    sudo: bool = True,
+    substitute_user: str | None = None,
+) -> str: ...
+
+
+@overload
+def read_file(
+    path: str | Path,
+    encoding: None,
+    sudo: bool = True,
+    substitute_user: str | None = None,
+) -> bytes: ...
+
+
+def read_file(
+    path: str | Path,
+    encoding: str | None = "utf-8",
+    sudo: bool = True,
+    substitute_user: str | None = None,
+) -> str | bytes:
+    """Read a file as root or another user."""
+    try:
+        return run(
+            ["cat", Path(path).as_posix()],
+            capture_output=True,
+            encoding=encoding,
+            sudo=sudo,
+            substitute_user=substitute_user,
+        ).stdout
+    except subprocess.CalledProcessError as excp:
+        excp.add_note(f"Failed to read file '{path}'!")
+        raise excp
+
+
 def write_file(
     path: str | Path,
     content: bytes | str,
@@ -506,6 +559,7 @@ def restart_httpd() -> None:
 class ServiceInfo:
     state: int
     summary: str
+    extra_columns: dict[str, Any]
 
 
 def get_services_with_status(

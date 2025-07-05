@@ -28,15 +28,19 @@ from cmk.utils.statename import short_service_state_name
 
 import cmk.gui.sites
 from cmk.gui import log
-from cmk.gui.config import Config
 from cmk.gui.http import Request, request
 from cmk.gui.i18n import _
 from cmk.gui.log import logger as gui_logger
-from cmk.gui.site_config import get_site_config, is_wato_slave_site, site_is_local
+from cmk.gui.site_config import is_wato_slave_site
 from cmk.gui.utils import escaping
 from cmk.gui.utils.request_context import copy_request_context
 from cmk.gui.watolib.automation_commands import AutomationCommand
-from cmk.gui.watolib.automations import do_remote_automation
+from cmk.gui.watolib.automations import (
+    do_remote_automation,
+    LocalAutomationConfig,
+    make_automation_config,
+    RemoteAutomationConfig,
+)
 from cmk.gui.watolib.sites import get_effective_global_setting
 
 
@@ -259,24 +263,26 @@ class _TestResult(TypedDict):
 
 def _perform_tests_for_site(
     logger: logging.Logger,
-    active_config: Config,
+    automation_config: LocalAutomationConfig | RemoteAutomationConfig,
     request_: Request,
     site_id: SiteId,
     categories: Sequence[str] | None,
+    debug: bool,
 ) -> _TestResult:
     # Executes the tests on the site. This method is executed in a dedicated
     # thread (One per site)
     logger.debug("[%s] Starting" % site_id)
     try:
-        if site_is_local(active_config, site_id):
+        if isinstance(automation_config, LocalAutomationConfig):
             automation = AutomationCheckAnalyzeConfig()
             ac_test_results = automation.execute(_TCheckAnalyzeConfig(categories=categories))
         else:
             raw_ac_test_results = do_remote_automation(
-                get_site_config(active_config, site_id),
+                automation_config,
                 "check-analyze-config",
                 [("categories", json.dumps(categories))],
                 timeout=request_.request_timeout - 10,
+                debug=debug,
             )
             assert isinstance(raw_ac_test_results, list)
             ac_test_results = [ACTestResult.from_repr(r) for r in raw_ac_test_results]
@@ -318,20 +324,32 @@ def _error_callback(error: BaseException) -> None:
 
 def perform_tests(
     logger: logging.Logger,
-    active_config: Config,
     request_: Request,
     test_sites: SiteConfigurations,
-    categories: Sequence[str] | None = None,  # 'None' means 'No filtering'
+    *,
+    categories: Sequence[str] | None,  # 'None' means 'No filtering'
+    debug: bool,
 ) -> Mapping[SiteId, Sequence[ACTestResult]]:
     logger.debug("Executing tests for %d sites" % len(test_sites))
     if not test_sites:
         return {}
 
     pool = ThreadPool(processes=len(test_sites))
+
+    def run(site_id: SiteId) -> _TestResult:
+        return _perform_tests_for_site(
+            logger,
+            make_automation_config(test_sites[site_id]),
+            request_,
+            site_id,
+            categories,
+            debug,
+        )
+
     active_tasks = {
         site_id: pool.apply_async(
-            func=copy_request_context(_perform_tests_for_site),
-            args=(logger, active_config, request_, site_id, categories),
+            func=copy_request_context(run),
+            args=(site_id,),
             error_callback=_error_callback,
         )
         for site_id in test_sites

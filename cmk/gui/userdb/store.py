@@ -19,16 +19,15 @@ from cmk.ccc.store import (
     acquire_lock,
     load_from_mk_file,
     load_text_from_file,
-    mkdir,
     release_lock,
     save_text_to_file,
     save_to_mk_file,
 )
+from cmk.ccc.user import UserId
 
 import cmk.utils.paths
 from cmk.utils.local_secrets import AutomationUserSecret
 from cmk.utils.paths import htpasswd_file, var_dir
-from cmk.utils.user import UserId
 
 import cmk.gui.pages
 from cmk.gui import hooks, utils
@@ -76,31 +75,31 @@ def load_custom_attr(
     load_text_from_file can be replaced by a simpler operation
     """
     attr_path = custom_attr_path(user_id, key)
-    if not os.path.exists(attr_path):
+    if not attr_path.exists():
         return None
 
     if lock:
-        result = load_text_from_file(Path(attr_path), lock=lock)
+        result = load_text_from_file(attr_path, lock=lock)
     else:
         # Simpler operation if no lock is required. Does NOT check file permissions
         # These are only considered critical in case of pickled data
         # Files in the ~/var/check_mk/web/{username} do and WILL never contain pickled data
         try:
-            with open(str(attr_path)) as file_object:
+            with open(attr_path) as file_object:
                 result = file_object.read()
         except (FileNotFoundError, OSError):
             return None
     return None if result == "" else parser(result.strip())
 
 
-def custom_attr_path(userid: UserId, key: str) -> str:
-    return var_dir + "/web/" + userid + "/" + key + ".mk"
+def custom_attr_path(userid: UserId, key: str) -> Path:
+    return var_dir / "web" / userid / (key + ".mk")
 
 
 def save_custom_attr(userid: UserId, key: str, val: Any) -> None:
     path = custom_attr_path(userid, key)
-    mkdir(os.path.dirname(path))
-    save_text_to_file(path, "%s\n" % val)
+    path.parent.mkdir(mode=0o770, exist_ok=True)
+    save_text_to_file(path, f"{val}\n")
 
 
 def save_two_factor_credentials(user_id: UserId, credentials: TwoFactorCredentials) -> None:
@@ -111,16 +110,16 @@ def rewrite_users(now: datetime) -> None:
     save_users(load_users(lock=True), now)
 
 
-def _root_dir() -> str:
-    return cmk.utils.paths.check_mk_config_dir + "/wato/"
+def _root_dir() -> Path:
+    return cmk.utils.paths.check_mk_config_dir / "wato"
 
 
-def _multisite_dir() -> str:
-    return cmk.utils.paths.default_config_dir + "/multisite.d/wato/"
+def _multisite_dir() -> Path:
+    return cmk.utils.paths.default_config_dir / "multisite.d/wato"
 
 
 def get_authserials_lines() -> list[str]:
-    authserials_path = Path(cmk.utils.paths.htpasswd_file).with_name("auth.serials")
+    authserials_path = cmk.utils.paths.htpasswd_file.with_name("auth.serials")
     if not authserials_path.exists():
         return []
     with authserials_path.open(encoding="utf-8") as f:
@@ -265,7 +264,7 @@ def _merge_users_and_contacts(
 
 
 def _add_passwords(users: Users) -> Users:
-    htpwd_entries = Htpasswd(Path(cmk.utils.paths.htpasswd_file)).load(allow_missing_file=True)
+    htpwd_entries = Htpasswd(cmk.utils.paths.htpasswd_file).load(allow_missing_file=True)
     for uid, password in htpwd_entries.items():
         if password.startswith("!"):
             locked = True
@@ -294,7 +293,7 @@ def _add_passwords(users: Users) -> Users:
 
 
 def _add_serials(users: Users) -> Users:
-    serials_file = Path(cmk.utils.paths.htpasswd_file).with_name("auth.serials")
+    serials_file = cmk.utils.paths.htpasswd_file.with_name("auth.serials")
     try:
         for line in serials_file.read_text(encoding="utf-8").splitlines():
             if ":" in line:
@@ -308,10 +307,7 @@ def _add_serials(users: Users) -> Users:
 
 
 def remove_custom_attr(userid: UserId, key: str) -> None:
-    try:
-        os.unlink(custom_attr_path(userid, key))
-    except OSError:
-        pass  # Ignore non existing files
+    custom_attr_path(userid, key).unlink(missing_ok=True)
 
 
 def get_online_user_ids(now: datetime) -> list[UserId]:
@@ -416,7 +412,7 @@ def _save_user_profiles(
     multisite_keys = _multisite_keys()
 
     for user_id, user in updated_profiles.items():
-        mkdir(cmk.utils.paths.profile_dir / user_id)
+        (cmk.utils.paths.profile_dir / user_id).mkdir(mode=0o770, exist_ok=True)
 
         # authentication secret for local processes
         secret = AutomationUserSecret(user_id)
@@ -489,7 +485,7 @@ def _cleanup_old_user_profiles(updated_profiles: Users) -> None:
         "transids.mk",
         "serial.mk",
     ]
-    directory = cmk.utils.paths.var_dir + "/web"
+    directory = str(cmk.utils.paths.var_dir / "web")
     for user_dir in os.listdir(directory):
         if user_dir in [".", ".."] or user_dir in updated_profiles:
             continue
@@ -512,11 +508,11 @@ def write_contacts_and_users_file(
     updated_profiles = _add_custom_macro_attributes(profiles)
 
     if custom_default_config_dir:
-        check_mk_config_dir = "%s/conf.d/wato" % custom_default_config_dir
-        multisite_config_dir = "%s/multisite.d/wato" % custom_default_config_dir
+        check_mk_config_dir = Path(custom_default_config_dir) / "conf.d/wato"
+        multisite_config_dir = Path(custom_default_config_dir) / "multisite.d/wato"
     else:
-        check_mk_config_dir = "%s/conf.d/wato" % cmk.utils.paths.default_config_dir
-        multisite_config_dir = "%s/multisite.d/wato" % cmk.utils.paths.default_config_dir
+        check_mk_config_dir = cmk.utils.paths.default_config_dir / "conf.d/wato"
+        multisite_config_dir = cmk.utils.paths.default_config_dir / "multisite.d/wato"
 
     non_contact_attributes_cache: dict[str | None, Sequence[str]] = {}
     multisite_attributes_cache: dict[str | None, Sequence[str]] = {}
@@ -560,17 +556,17 @@ def write_contacts_and_users_file(
 
     # Checkmk's monitoring contacts
     save_to_mk_file(
-        "{}/{}".format(check_mk_config_dir, "contacts.mk"),
-        "contacts",
-        contacts,
+        check_mk_config_dir / "contacts.mk",
+        key="contacts",
+        value=contacts,
         pprint_value=active_config.wato_pprint_config,
     )
 
     # GUI specific user configuration
     save_to_mk_file(
-        "{}/{}".format(multisite_config_dir, "users.mk"),
-        "multisite_users",
-        users,
+        multisite_config_dir / "users.mk",
+        key="multisite_users",
+        value=users,
         pprint_value=active_config.wato_pprint_config,
     )
 
@@ -638,7 +634,7 @@ def _save_auth_serials(updated_profiles: Users) -> None:
     serials = ""
     for user_id, user in updated_profiles.items():
         serials += "%s:%d\n" % (user_id, user.get("serial", 0))
-    save_text_to_file("%s/auth.serials" % os.path.dirname(cmk.utils.paths.htpasswd_file), serials)
+    save_text_to_file(cmk.utils.paths.htpasswd_file.with_name("auth.serials"), serials)
 
 
 def create_cmk_automation_user(
@@ -698,15 +694,17 @@ def convert_idle_timeout(value: str) -> int | bool | None:
 
 
 def load_contacts() -> dict[str, UserContactDetails]:
-    return load_from_mk_file(_contacts_filepath(), "contacts", {})
+    return load_from_mk_file(_contacts_filepath(), key="contacts", default={}, lock=False)
 
 
-def _contacts_filepath() -> str:
-    return _root_dir() + "contacts.mk"
+def _contacts_filepath() -> Path:
+    return _root_dir() / "contacts.mk"
 
 
 def load_multisite_users() -> dict[str, UserDetails]:
-    return load_from_mk_file(_multisite_dir() + "users.mk", "multisite_users", {})
+    return load_from_mk_file(
+        _multisite_dir() / "users.mk", key="multisite_users", default={}, lock=False
+    )
 
 
 def _convert_start_url(value: str) -> str:
@@ -758,8 +756,8 @@ def general_userdb_job(now: datetime) -> None:
     hooks.call("userdb-job")
 
     # Create initial auth.serials file, same issue as auth.php above
-    serials_file = "%s/auth.serials" % os.path.dirname(htpasswd_file)
-    if not os.path.exists(serials_file) or os.path.getsize(serials_file) == 0:
+    serials_file = htpasswd_file.with_name("auth.serials")
+    if not serials_file.exists() or serials_file.stat().st_size == 0:
         rewrite_users(now)
 
 
@@ -784,4 +782,4 @@ def convert_session_info(value: str) -> dict[str, SessionInfo]:
 
 
 def release_users_lock() -> None:
-    release_lock(cmk.utils.paths.check_mk_config_dir + "/wato/contacts.mk")
+    release_lock(cmk.utils.paths.check_mk_config_dir / "wato/contacts.mk")

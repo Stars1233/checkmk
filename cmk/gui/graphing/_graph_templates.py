@@ -14,9 +14,9 @@ from typing import assert_never, Literal
 from pydantic import BaseModel
 
 from cmk.ccc.exceptions import MKGeneralException
+from cmk.ccc.hostaddress import HostName
 from cmk.ccc.site import SiteId
 
-from cmk.utils.hostaddress import HostName
 from cmk.utils.servicename import ServiceName
 
 from cmk.gui.config import active_config
@@ -63,6 +63,9 @@ from ._metric_operation import (
 from ._translated_metrics import translated_metrics_from_row, TranslatedMetric
 from ._unit import ConvertibleUnitSpecification
 from ._utils import get_graph_data_from_livestatus
+
+
+class MKGraphNotFound(MKGeneralException): ...
 
 
 def _sort_registered_graph_plugins(
@@ -117,12 +120,12 @@ def _parse_minimal_range(
     return MinimalGraphTemplateRange(
         min=(
             Constant(minimal_range.lower)
-            if isinstance(minimal_range.lower, (int, float))
+            if isinstance(minimal_range.lower, int | float)
             else parse_base_expression_from_api(minimal_range.lower)
         ),
         max=(
             Constant(minimal_range.upper)
-            if isinstance(minimal_range.upper, (int, float))
+            if isinstance(minimal_range.upper, int | float)
             else parse_base_expression_from_api(minimal_range.upper)
         ),
     )
@@ -298,7 +301,7 @@ def get_graph_template_from_id(
     for id_, graph_plugin in _sort_registered_graph_plugins(registered_graphs):
         if template_id == id_:
             return _parse_graph_plugin(id_, graph_plugin, registered_metrics)
-    raise MKGeneralException(_("There is no graph plug-in with the id '%s'") % template_id)
+    raise MKGraphNotFound(_("There is no graph plug-in with the id '%s'") % template_id)
 
 
 def evaluate_metrics(
@@ -558,7 +561,7 @@ def _evaluate_scalars(
             return []
         results.append(
             HorizontalRule(
-                value=result.ok.value,
+                value=result.ok.value * (-1 if result.ok.line_type.startswith("-") else 1),
                 rendered_value=user_specific_unit(
                     result.ok.unit_spec,
                     user,
@@ -623,22 +626,6 @@ def _create_evaluated_graph_template_from_name(
     )
 
 
-def _create_evaluated_graph_template(
-    graph_template: GraphTemplate,
-    evaluated_metrics: Sequence[Evaluated],
-    translated_metrics: Mapping[str, TranslatedMetric],
-) -> EvaluatedGraphTemplate:
-    return EvaluatedGraphTemplate(
-        id=graph_template.id,
-        title=_evaluate_title(graph_template.title, translated_metrics),
-        horizontal_rules=_evaluate_scalars(graph_template.scalars, translated_metrics),
-        consolidation_function=graph_template.consolidation_function or "max",
-        range=graph_template.range,
-        omit_zero_metrics=graph_template.omit_zero_metrics,
-        metrics=evaluated_metrics,
-    )
-
-
 def _get_evaluated_graph_templates(
     translated_metrics: Mapping[str, TranslatedMetric],
     registered_metrics: Mapping[str, RegisteredMetric],
@@ -648,39 +635,34 @@ def _get_evaluated_graph_templates(
         yield from ()
         return
 
-    graph_templates = [
-        _create_evaluated_graph_template(
-            graph_template,
-            list(
-                itertools.chain(
-                    evaluated_metrics,
-                    _evaluate_predictive_metrics(evaluated_metrics, translated_metrics),
-                )
-            ),
-            translated_metrics,
-        )
-        for id_, graph_plugin in _sort_registered_graph_plugins(registered_graphs)
-        for graph_template in [
-            _parse_graph_plugin(
-                id_,
-                graph_plugin,
-                registered_metrics,
+    already_graphed_metrics = set()
+    for id_, graph_plugin in _sort_registered_graph_plugins(registered_graphs):
+        graph_template = _parse_graph_plugin(id_, graph_plugin, registered_metrics)
+        if evaluated_metrics := evaluate_metrics(
+            conflicting_metrics=graph_template.conflicting_metrics,
+            optional_metrics=graph_template.optional_metrics,
+            metric_expressions=graph_template.metrics,
+            translated_metrics=translated_metrics,
+        ):
+            evaluated_graph_template = EvaluatedGraphTemplate(
+                id=graph_template.id,
+                title=_evaluate_title(graph_template.title, translated_metrics),
+                horizontal_rules=_evaluate_scalars(graph_template.scalars, translated_metrics),
+                consolidation_function=graph_template.consolidation_function or "max",
+                range=graph_template.range,
+                omit_zero_metrics=graph_template.omit_zero_metrics,
+                metrics=list(
+                    itertools.chain(
+                        evaluated_metrics,
+                        _evaluate_predictive_metrics(evaluated_metrics, translated_metrics),
+                    )
+                ),
             )
-        ]
-        if (
-            evaluated_metrics := evaluate_metrics(
-                conflicting_metrics=graph_template.conflicting_metrics,
-                optional_metrics=graph_template.optional_metrics,
-                metric_expressions=graph_template.metrics,
-                translated_metrics=translated_metrics,
+            already_graphed_metrics.update(
+                {n for e in evaluated_graph_template.metrics for n in e.metric_names()}
             )
-        )
-    ]
-    yield from graph_templates
+            yield evaluated_graph_template
 
-    already_graphed_metrics = {
-        n for t in graph_templates for e in t.metrics for n in e.metric_names()
-    }
     for metric_name, translated_metric in sorted(translated_metrics.items()):
         if translated_metric.auto_graph and metric_name not in already_graphed_metrics:
             yield _create_evaluated_graph_template_from_name(metric_name, translated_metrics)

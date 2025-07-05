@@ -67,15 +67,19 @@ for suite, value in suites.items():
     last_node_idx = len(nodes) - 1
     for node_idx, child in enumerate(reversed(nodes)):
         for attr in sum_attr:
-            if child.attrib.get(attr).isdecimal():
-                value[attr] = value.get(attr, 0) + int(child.attrib.get(attr))
+            child_attr = child.attrib.get(attr)
+            assert child_attr
+            if child_attr.isdecimal():
+                value[attr] = value.get(attr, 0) + int(child_attr)
                 continue
-            value[attr] = value.get(attr, 0.0) + float(child.attrib.get(attr))
+            value[attr] = value.get(attr, 0.0) + float(child_attr)
         for attr in set_attr:
             items = value.get(attr, "").split(",") + [child.attrib.get(attr)]
             value[attr] = ", ".join({_ for _ in items if _})
         for attr in min_attr:
-            value[attr] = min(child.attrib.get(attr), value.get(attr, child.attrib.get(attr)))
+            val = child.attrib.get(attr)
+            assert val is not None
+            value[attr] = min(val, value.get(attr, val))
         if node_idx < last_node_idx:
             for grandchild in child:
                 if node := root.find(f"testsuite[@name='{suite}']"):

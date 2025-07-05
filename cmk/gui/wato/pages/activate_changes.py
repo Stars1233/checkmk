@@ -14,11 +14,11 @@ from collections.abc import Collection, Iterator
 
 from livestatus import SiteConfiguration
 
+from cmk.ccc.hostaddress import HostName
 from cmk.ccc.site import SiteId
 from cmk.ccc.version import Edition, edition, edition_has_enforced_licensing
 
 from cmk.utils import paths, render
-from cmk.utils.hostaddress import HostName
 from cmk.utils.licensing.registry import get_licensing_user_effect
 from cmk.utils.licensing.usage import get_license_usage_report_validity, LicenseUsageReportValidity
 from cmk.utils.setup_search_index import request_index_rebuild
@@ -26,7 +26,7 @@ from cmk.utils.setup_search_index import request_index_rebuild
 import cmk.gui.watolib.changes as _changes
 from cmk.gui import forms
 from cmk.gui.breadcrumb import Breadcrumb
-from cmk.gui.config import active_config
+from cmk.gui.config import active_config, Config
 from cmk.gui.display_options import display_options
 from cmk.gui.exceptions import HTTPRedirect, MKUserError
 from cmk.gui.htmllib.generator import HTMLWriter
@@ -46,7 +46,7 @@ from cmk.gui.page_menu import (
     PageMenuTopic,
     show_confirm_cancel_dialog,
 )
-from cmk.gui.pages import AjaxPage, PageRegistry, PageResult
+from cmk.gui.pages import AjaxPage, PageEndpoint, PageRegistry, PageResult
 from cmk.gui.sites import SiteStatus
 from cmk.gui.table import Foldable, init_rowselect, table_element
 from cmk.gui.type_defs import ActionResult, PermissionName
@@ -81,8 +81,8 @@ def register(
     mode_registry: ModeRegistry,
     automation_command_registry: AutomationCommandRegistry,
 ) -> None:
-    page_registry.register_page("ajax_start_activation")(PageAjaxStartActivation)
-    page_registry.register_page("ajax_activation_state")(PageAjaxActivationState)
+    page_registry.register(PageEndpoint("ajax_start_activation", PageAjaxStartActivation))
+    page_registry.register(PageEndpoint("ajax_activation_state", PageAjaxActivationState))
     mode_registry.register(ModeActivateChanges)
     mode_registry.register(ModeRevertChanges)
     automation_command_registry.register(AutomationActivateChanges)
@@ -246,10 +246,12 @@ class ModeRevertChanges(WatoMode, activate_changes.ActivateChanges):
 
         # All sites and domains can be affected by a restore: Better restart everything.
         _changes.add_change(
-            "changes-discarded",
-            msg,
+            action_name="changes-discarded",
+            text=msg,
+            user_id=user.id,
             domains=ABCConfigDomain.enabled_domains(),
             need_restart=True,
+            use_git=active_config.wato_use_git,
         )
 
         _extract_snapshot(file_to_restore)
@@ -978,7 +980,7 @@ def _vs_activation(title: str, has_foreign_changes: bool) -> Dictionary | None:
 
 
 class PageAjaxStartActivation(AjaxPage):
-    def page(self) -> PageResult:
+    def page(self, config: Config) -> PageResult:
         check_csrf_token()
         user.need_permission("wato.activate")
 
@@ -1018,6 +1020,7 @@ class PageAjaxStartActivation(AjaxPage):
             comment=comment,
             activate_foreign=activate_foreign,
             source="GUI",
+            debug=active_config.debug,
         )
 
         return {
@@ -1026,7 +1029,7 @@ class PageAjaxStartActivation(AjaxPage):
 
 
 class PageAjaxActivationState(AjaxPage):
-    def page(self) -> PageResult:
+    def page(self, config: Config) -> PageResult:
         user.need_permission("wato.activate")
 
         api_request = self.webapi_request()

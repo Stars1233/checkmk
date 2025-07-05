@@ -33,10 +33,10 @@ class AnalyzeConfiguration(CmkPage):
         self.main_menu.setup_menu(self.page_title).click()
         _url_pattern: str = quote_plus("wato.py?mode=analyze_config")
         self.page.wait_for_url(url=re.compile(_url_pattern), wait_until="load")
-        self._validate_page()
+        self.validate_page()
 
     @override
-    def _validate_page(self) -> None:
+    def validate_page(self) -> None:
         logger.info(f"Validate that current page is '{self.page_title}' page")
         self.main_area.check_page_title(self.page_title)
         expect(self.analyse_config_table).to_have_count(4)
@@ -56,6 +56,17 @@ class AnalyzeConfiguration(CmkPage):
     @property
     def title_column_values(self) -> Locator:
         return self.main_area.locator("td[class*='buttons'] + td")
+
+    def verify_all_expected_checks_are_present(self, expected_checks: list[str]) -> None:
+        """Verify that all expected checks are present in the analyze configuration table."""
+        titles = self.title_column_values.all_inner_texts()
+        assert len(expected_checks) == len(titles), (
+            f"Expected {len(expected_checks)} checks, but got {len(titles)} checks."
+        )
+        for expected_check in expected_checks:
+            assert expected_check in titles, (
+                f"Expected check '{expected_check}' not found in the analyze configuration table."
+            )
 
     def verify_checks_statuses(self, expected_statues: dict[str, str]) -> None:
         titles = self.title_column_values.all_inner_texts()

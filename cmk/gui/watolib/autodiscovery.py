@@ -8,7 +8,7 @@ from cmk.ccc.site import omd_site
 import cmk.utils.paths
 from cmk.utils.auto_queue import AutoQueue
 
-from cmk.checkengine.discovery import DiscoveryResult as SingleHostDiscoveryResult
+from cmk.checkengine.discovery import DiscoveryReport as SingleHostDiscoveryResult
 
 from cmk.gui.background_job import (
     BackgroundJob,
@@ -17,6 +17,7 @@ from cmk.gui.background_job import (
     NoArgs,
     simple_job_target,
 )
+from cmk.gui.config import active_config, Config
 from cmk.gui.i18n import _
 from cmk.gui.log import logger
 from cmk.gui.logged_in import user
@@ -49,20 +50,24 @@ class AutodiscoveryBackgroundJob(BackgroundJob):
         hostname: str, discovery_result: SingleHostDiscoveryResult
     ) -> str:
         return _(
-            "Did service discovery on host %s: %d added, %d removed, %d kept, "
-            "%d total services and %d host labels added, %d host labels total"
+            "Discovery on host %s: %d services (%d added, %d changed, %d removed, %d kept)"
+            " and %d host labels (%d added, %d changed, %d removed, %d kept)"
         ) % (
             hostname,
-            discovery_result.self_new,
-            discovery_result.self_removed,
-            discovery_result.self_kept,
-            discovery_result.self_total,
-            discovery_result.self_new_host_labels,
-            discovery_result.self_total_host_labels,
+            discovery_result.services.total,
+            discovery_result.services.new,
+            discovery_result.services.changed,
+            discovery_result.services.removed,
+            discovery_result.services.kept,
+            discovery_result.host_labels.total,
+            discovery_result.host_labels.new,
+            discovery_result.host_labels.changed,
+            discovery_result.host_labels.removed,
+            discovery_result.host_labels.kept,
         )
 
-    def execute(self, job_interface: BackgroundProcessInterface) -> None:
-        result = autodiscovery(self.site_id)
+    def execute(self, job_interface: BackgroundProcessInterface, *, debug: bool) -> None:
+        result = autodiscovery(debug=debug)
 
         if not result.hosts:
             job_interface.send_result_message(_("No hosts to be discovered"))
@@ -82,25 +87,33 @@ class AutodiscoveryBackgroundJob(BackgroundJob):
                     object_ref=host.object_ref(),
                     user_id=user.id,
                     diff_text=discovery_result.diff_text,
+                    use_git=active_config.wato_use_git,
                 )
             else:
                 add_service_change(
-                    "autodiscovery",
-                    message,
-                    host.object_ref(),
-                    [config_domain_registry[CORE_DOMAIN]],
-                    {CORE_DOMAIN: generate_hosts_to_update_settings([host.name()])},
-                    self.site_id,
+                    action_name="autodiscovery",
+                    text=message,
+                    user_id=user.id,
+                    object_ref=host.object_ref(),
+                    domains=[config_domain_registry[CORE_DOMAIN]],
+                    domain_settings={CORE_DOMAIN: generate_hosts_to_update_settings([host.name()])},
+                    site_id=self.site_id,
                     diff_text=discovery_result.diff_text,
+                    use_git=active_config.wato_use_git,
                 )
 
         if result.changes_activated:
-            log_audit("activate-changes", "Started activation of site %s" % self.site_id)
+            log_audit(
+                action="activate-changes",
+                message="Started activation of site %s" % self.site_id,
+                user_id=user.id,
+                use_git=active_config.wato_use_git,
+            )
 
         job_interface.send_result_message(_("Successfully discovered hosts"))
 
 
-def execute_autodiscovery() -> None:
+def execute_autodiscovery(config: Config) -> None:
     # Only execute the job in case there is some work to do. The directory was so far internal to
     # "autodiscovery" automation which is implemented in cmk.base.automations.checkm_mk. But since
     # this condition saves us a lot of overhead and this function is part of the feature, it seems
@@ -126,4 +139,4 @@ def execute_autodiscovery() -> None:
 
 def autodiscovery_job_entry_point(job_interface: BackgroundProcessInterface, args: NoArgs) -> None:
     with job_interface.gui_context():
-        AutodiscoveryBackgroundJob().execute(job_interface)
+        AutodiscoveryBackgroundJob().execute(job_interface, debug=active_config.debug)

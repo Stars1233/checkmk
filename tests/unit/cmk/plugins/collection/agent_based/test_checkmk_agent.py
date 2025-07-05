@@ -5,7 +5,7 @@
 
 import json
 from collections.abc import Iterable, Mapping
-from datetime import datetime, timezone
+from datetime import datetime, UTC
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -327,17 +327,60 @@ def test_check_no_check_yet_pydantic() -> None:
 
 
 @pytest.mark.parametrize(
+    "cmk_hostname,agent_updater_hostname,expected_result",
+    (
+        (
+            "some_hostname",
+            "some_hostname",
+            [Result(state=State.OK, notice="Hostname used by cmk-update-agent: some_hostname")],
+        ),
+        (
+            "some_other_hostname",
+            "some_hostname",
+            [
+                Result(state=State.OK, notice="Hostname used by cmk-update-agent: some_hostname"),
+                Result(
+                    state=State.CRIT,
+                    notice="Hostname defined in Checkmk (some_other_hostname) and cmk-update-agent configuration (some_hostname) do not match",
+                ),
+            ],
+        ),
+    ),
+)
+def test_check_cmk_agent_update(
+    cmk_hostname: str,
+    agent_updater_hostname: str,
+    expected_result: list[Result],
+) -> None:
+    assert [
+        *_check_cmk_agent_update(
+            {"host_name": cmk_hostname},
+            None,
+            CMKAgentUpdateSection(
+                aghash=None,
+                last_update=None,
+                pending_hash=None,
+                update_url=None,
+                last_check=None,
+                error=None,
+                host_name=agent_updater_hostname,
+            ),
+        )
+    ] == [Result(state=State.WARN, summary="No successful connect to server yet"), *expected_result]
+
+
+@pytest.mark.parametrize(
     "trusted_certs,results",
     (
         (None, []),  # no cert details, pre 2.2 updater
-        ({}, [Result(state=State.CRIT, notice="Updater has no trusted certificates")]),
+        ({}, [Result(state=State.OK, notice="Agent updater has no trusted agent signature keys")]),
         (
             {
                 0: {"corrupt": True},
             },
             [
-                Result(state=State.WARN, notice="Updater certificate #0 is corrupt"),
-                Result(state=State.CRIT, notice="Updater has no trusted certificates"),
+                Result(state=State.OK, notice="Agent signature key #0 is corrupt"),
+                Result(state=State.OK, notice="Agent updater has no trusted agent signature keys"),
             ],
         ),
         (
@@ -352,11 +395,11 @@ def test_check_no_check_yet_pydantic() -> None:
             [
                 Result(
                     state=State.OK,
-                    notice="Time until updater certificate #0 (CN='foo') will expire: 42 years 9 days",  # timespan apparently does not care for leap years
+                    notice="Time until agent signature key #0 ('foo') will expire: 42 years 9 days",  # timespan apparently does not care for leap years
                 ),
                 Result(
                     state=State.OK,
-                    notice="Time until all updater certificates are expired: 42 years 9 days",
+                    notice="Time until all agent signature keys are expired: 42 years 9 days",
                 ),
             ],
         ),
@@ -371,14 +414,14 @@ def test_check_no_check_yet_pydantic() -> None:
                 },
             },
             [
-                Result(state=State.WARN, notice="Updater certificate #0 is corrupt"),
+                Result(state=State.OK, notice="Agent signature key #0 is corrupt"),
                 Result(
                     state=State.OK,
-                    notice="Time until updater certificate #1 (CN='foo') will expire: 42 years 9 days",
+                    notice="Time until agent signature key #1 ('foo') will expire: 42 years 9 days",
                 ),
                 Result(
                     state=State.OK,
-                    notice="Time until all updater certificates are expired: 42 years 9 days",
+                    notice="Time until all agent signature keys are expired: 42 years 9 days",
                 ),
             ],
         ),
@@ -406,19 +449,19 @@ def test_check_no_check_yet_pydantic() -> None:
             [
                 Result(
                     state=State.OK,
-                    notice="Time until updater certificate #0 (CN='foo') will expire: 42 years 9 days",
-                ),
-                Result(
-                    state=State.WARN,
-                    notice="Updater certificate #1 (CN='bar') is expired",
-                ),
-                Result(
-                    state=State.WARN,
-                    notice="Time until updater certificate #2 (CN='foobar') will expire: 6 days 21 hours (warn/crit below 90 days 0 hours/never)",
+                    notice="Time until agent signature key #0 ('foo') will expire: 42 years 9 days",
                 ),
                 Result(
                     state=State.OK,
-                    notice="Time until all updater certificates are expired: 42 years 9 days",
+                    notice="Agent signature key #1 ('bar') is expired",
+                ),
+                Result(
+                    state=State.OK,
+                    notice="Time until agent signature key #2 ('foobar') will expire: 6 days 21 hours",
+                ),
+                Result(
+                    state=State.OK,
+                    notice="Time until all agent signature keys are expired: 42 years 9 days",
                 ),
             ],
         ),
@@ -444,18 +487,18 @@ def test_check_no_check_yet_pydantic() -> None:
                 },
             },
             [
-                Result(state=State.WARN, notice="Updater certificate #0 is corrupt"),
+                Result(state=State.OK, notice="Agent signature key #0 is corrupt"),
                 Result(
                     state=State.OK,
-                    notice="Time until updater certificate #1 (CN='signed') will expire: 22 years 213 days",
+                    notice="Time until agent signature key #1 ('signed') will expire: 22 years 213 days",
                 ),
                 Result(
                     state=State.OK,
-                    notice="Time until updater certificate #2 (CN='Lorem ipsum') will expire: 22 years 213 days",
+                    notice="Time until agent signature key #2 ('Lorem ipsum') will expire: 22 years 213 days",
                 ),
                 Result(
                     state=State.OK,
-                    notice="Time until all updater certificates are expired: 22 years 213 days",
+                    notice="Time until all agent signature keys are expired: 22 years 213 days",
                 ),
             ],
         ),
@@ -1049,7 +1092,7 @@ def test_check_plugins(
                         site_id="localhost/heute",
                         local=LocalConnectionStatus(
                             cert_info=CertInfoController(
-                                to=datetime(2028, 1, 24, 15, 20, 54, tzinfo=timezone.utc),
+                                to=datetime(2028, 1, 24, 15, 20, 54, tzinfo=UTC),
                                 issuer="Site 'heute' local CA",
                             )
                         ),
@@ -1074,7 +1117,7 @@ def test_check_plugins(
                         site_id="localhost/heute",
                         local=LocalConnectionStatus(
                             cert_info=CertInfoController(
-                                to=datetime(2023, 2, 14, 15, 20, 54, tzinfo=timezone.utc),
+                                to=datetime(2023, 2, 14, 15, 20, 54, tzinfo=UTC),
                                 issuer="Site 'heute' local CA",
                             )
                         ),
@@ -1099,7 +1142,7 @@ def test_check_plugins(
                         site_id="localhost/heute",
                         local=LocalConnectionStatus(
                             cert_info=CertInfoController(
-                                to=datetime(2023, 2, 1, 15, 20, 54, tzinfo=timezone.utc),
+                                to=datetime(2023, 2, 1, 15, 20, 54, tzinfo=UTC),
                                 issuer="Site 'heute' local CA",
                             )
                         ),
@@ -1125,7 +1168,7 @@ def test_check_plugins(
                         coordinates="localhost:8000/heute",
                         local=LocalConnectionStatus(
                             cert_info=CertInfoController(
-                                to=datetime(3021, 5, 27, 15, 20, 40, tzinfo=timezone.utc),
+                                to=datetime(3021, 5, 27, 15, 20, 40, tzinfo=UTC),
                                 issuer="Site 'heute' local CA",
                             )
                         ),
@@ -1151,7 +1194,7 @@ def test_check_plugins(
                         coordinates=None,
                         local=LocalConnectionStatus(
                             cert_info=CertInfoController(
-                                to=datetime(2028, 1, 24, 15, 20, 54, tzinfo=timezone.utc),
+                                to=datetime(2028, 1, 24, 15, 20, 54, tzinfo=UTC),
                                 issuer="Site 'heute' local CA",
                             )
                         ),

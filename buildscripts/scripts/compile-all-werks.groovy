@@ -24,9 +24,9 @@ def main() {
     stage("Checkout repositories") {
         // this will checkout the repo at "${WORKSPACE}/${repo_name}"
         // but check again if you modify it here
-        provide_clone("check_mk", "ssh-git-gerrit-jenkins");
-        provide_clone("checkmk_kube_agent", "ssh-git-gerrit-jenkins");
-        provide_clone("cma", "ssh-git-gerrit-jenkins");
+        provide_clone("check_mk", "jenkins-gerrit-fips-compliant-ssh-key");
+        provide_clone("checkmk_kube_agent", "jenkins-gerrit-fips-compliant-ssh-key");
+        provide_clone("cma", "jenkins-gerrit-fips-compliant-ssh-key");
 
         // check_mk has to be on master
         dir("${WORKSPACE}/check_mk") {
@@ -68,7 +68,7 @@ def main() {
                 try {
                     /* groovylint-disable LineLength */
                     sh(script: """
-                        ./packages/cmk-frontend/run --clean --build  # we just want to install the dependencies, but there is no target for that
+                        ./packages/cmk-frontend/run --build  # we just want to install the dependencies, but there is no target for that
                         echo '<!DOCTYPE html><html lang="en"><head><title>werks</title></head><body>' > validate-werks.html
                         # still no need for jq!
                         python3 -c 'import json; print("\\n".join(("\\n\\n<p>{}</p>\\n{}".format(key, value["description"]) for key, value in json.load(open("all_werks.json")).items())))' >> validate-werks.html

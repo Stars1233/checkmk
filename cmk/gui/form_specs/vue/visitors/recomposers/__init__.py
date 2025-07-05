@@ -5,7 +5,6 @@
 
 from .cascading_single_choice import recompose as recompose_cascading_single_choice
 from .dictionary import recompose as recompose_dictionary
-from .folder import recompose as recompose_folder
 from .host_state import recompose as recompose_host_state
 from .levels import recompose as recompose_levels
 from .list import recompose as recompose_list
@@ -27,22 +26,21 @@ from .user_selection import recompose as recompose_user_selection
 __all__ = [
     "recompose_cascading_single_choice",
     "recompose_dictionary",
-    "recompose_folder",
+    "recompose_host_state",
     "recompose_levels",
     "recompose_list",
+    "recompose_metric",
+    "recompose_monitored_host_extended",
+    "recompose_monitored_host",
+    "recompose_monitored_service",
+    "recompose_multiple_choice",
     "recompose_percentage",
     "recompose_proxy",
     "recompose_regular_expression",
-    "recompose_single_choice",
-    "recompose_unknown_form_spec",
-    "recompose_host_state",
     "recompose_service_state",
+    "recompose_single_choice",
     "recompose_string",
-    "recompose_metric",
-    "recompose_multiple_choice",
-    "recompose_monitored_service",
-    "recompose_monitored_host",
-    "recompose_monitored_host_extended",
     "recompose_time_period",
+    "recompose_unknown_form_spec",
     "recompose_user_selection",
 ]

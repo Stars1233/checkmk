@@ -16,7 +16,6 @@ import functools
 import http.client
 import json
 import logging
-import re
 import warnings
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from typing import Any, Final, TypeVar
@@ -25,6 +24,7 @@ from marshmallow import Schema, ValidationError
 from werkzeug.http import parse_options_header
 
 from cmk.ccc import store
+from cmk.ccc.version import Edition
 
 from cmk.utils.paths import configuration_lockfile
 
@@ -32,15 +32,16 @@ from cmk.gui import hooks
 from cmk.gui import http as cmk_http
 from cmk.gui.config import active_config
 from cmk.gui.http import HTTPMethod, request
+from cmk.gui.openapi.framework.api_config import APIVersion
 from cmk.gui.openapi.permission_tracking import (
     enable_permission_tracking,
     is_permission_tracking_enabled,
 )
 from cmk.gui.openapi.restful_objects.api_error import ApiError
-from cmk.gui.openapi.restful_objects.content_decoder import KnownContentType
 from cmk.gui.openapi.restful_objects.parameters import CONTENT_TYPE
 from cmk.gui.openapi.restful_objects.params import to_schema
 from cmk.gui.openapi.restful_objects.type_defs import (
+    AcceptFieldType,
     EndpointTarget,
     ErrorStatusCodeInt,
     ETagBehaviour,
@@ -49,7 +50,11 @@ from cmk.gui.openapi.restful_objects.type_defs import (
     StatusCodeInt,
     TagGroup,
 )
-from cmk.gui.openapi.restful_objects.utils import endpoint_ident, identify_expected_status_codes
+from cmk.gui.openapi.restful_objects.utils import (
+    endpoint_ident,
+    format_to_routing_path,
+    identify_expected_status_codes,
+)
 from cmk.gui.openapi.restful_objects.validators import (
     ContentTypeValidator,
     HeaderValidator,
@@ -80,7 +85,6 @@ T = TypeVar("T")
 K = TypeVar("K")
 V = TypeVar("V")
 
-AcceptFieldType = KnownContentType | list[KnownContentType]
 Version = str
 WrappedFunc = Callable[[Mapping[str, Any]], cmk_http.Response]
 
@@ -222,6 +226,15 @@ class Endpoint:
             OpenAPI spec. If not set, the endpoint will infer the spec information based on the
             endpoint's module (legacy).
 
+        supported_editions:
+            The list of editions this endpoint is supported for. If not set, the endpoint will be
+            available for all editions. This is used to filter endpoints in the OpenAPI spec.
+
+        removed_in_version:
+            The starting (inclusive) version from which the endpoint will be no longer available
+            in the REST-API. All subsequent REST API versions will also not include this
+            endpoint.
+
     """
 
     def __init__(
@@ -254,6 +267,8 @@ class Endpoint:
         accept: AcceptFieldType = "application/json",
         internal_user_only: bool = False,
         family_name: str | None = None,
+        supported_editions: set[Edition] | None = None,
+        removed_in_version: APIVersion | None = None,
     ):
         self.path = path
         self.link_relation = link_relation
@@ -279,6 +294,8 @@ class Endpoint:
         self.accept = accept if isinstance(accept, list) else [accept]
         self.internal_user_only = internal_user_only
         self.family_name = family_name
+        self.supported_editions = supported_editions
+        self.removed_in_version = removed_in_version
 
         if deprecated_urls is not None:
             for url in deprecated_urls:
@@ -593,7 +610,7 @@ class Endpoint:
                 with tracer.span("json-to-response"):
                     response.set_data(json.dumps(outbound))
 
-        elif response.headers["Content-Type"] == "application/problem+json" and response.data:
+        elif response.headers.get("Content-Type") == "application/problem+json" and response.data:
             ResponseValidator.validate_problem_json(response)
 
         response.freeze()
@@ -707,19 +724,3 @@ class Endpoint:
 
     def make_url(self, parameter_values: dict[str, Any]) -> str:
         return self.path.format(**parameter_values)
-
-
-def format_to_routing_path(endpoint_path: str) -> str:
-    """
-    Examples:
-        >>> format_to_routing_path('/objects/folder_config/{folder_id}')
-        '/objects/folder_config/<string:folder_id>'
-
-        >>> format_to_routing_path('/objects/{object_type}/{object_id}/config')
-        '/objects/<string:object_type>/<string:object_id>/config'
-
-        >>> format_to_routing_path('A string with no replacements')
-        'A string with no replacements'
-    """
-    pattern = r"\{([^{}]+)\}"
-    return re.sub(pattern, lambda m: f"<string:{m.group(1)}>", endpoint_path)

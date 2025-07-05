@@ -12,6 +12,8 @@ import cmk.ccc.version as cmk_version
 from cmk.utils import paths
 
 import cmk.gui.pages
+from cmk.gui.config import Config
+from cmk.gui.pages import PageEndpoint
 
 
 def test_registered_pages() -> None:
@@ -32,6 +34,7 @@ def test_registered_pages() -> None:
         "ajax_fetch_ca",
         "ajax_inv_render_tree",
         "ajax_nagvis_maps_snapin",
+        "ajax_ping_host",
         "ajax_popup_action_menu",
         "ajax_popup_host_action_menu",
         "ajax_popup_service_action_menu",
@@ -62,6 +65,8 @@ def test_registered_pages() -> None:
         "ajax_load_bi_aggregation_layout",
         "ajax_delete_bi_aggregation_layout",
         "ajax_fetch_topology",
+        "ajax_sidebar_get_number_of_pending_changes",
+        "ajax_sidebar_get_sites_and_changes",
         "automation_login",
         "bi_map",
         "bi_render_tree",
@@ -142,10 +147,12 @@ def test_registered_pages() -> None:
         "user_webauthn_login_begin",
         "view",
         "wato",
+        "wato_ajax_diag_cmk_agent",
         "wato_ajax_diag_host",
         "wato_ajax_execute_check",
         "wato_ajax_fetch_site_status",
         "wato_ajax_profile_repl",
+        "welcome",
         "werk",
         "ajax_graph",
         "ajax_graph_hover",
@@ -227,6 +234,8 @@ def test_registered_pages() -> None:
             "robotmk_suite_log",
             "robotmk_suite_report",
             "download_robotmk_suite_report",
+            "ajax_fetch_metric_color",
+            "ajax_fetch_ajax_graph",
         ]
 
     if cmk_version.edition(paths.omd_root) is cmk_version.Edition.CSE:
@@ -254,18 +263,22 @@ def test_registered_pages() -> None:
 
 
 @pytest.mark.usefixtures("monkeypatch")
-def test_page_registry_register_page(capsys: pytest.CaptureFixture[str]) -> None:
+def test_page_registry_register_page_class(capsys: pytest.CaptureFixture[str]) -> None:
     page_registry = cmk.gui.pages.PageRegistry()
 
-    @page_registry.register_page("234handler")
     class PageClass(cmk.gui.pages.Page):
-        def page(self) -> None:
+        def page(self, config: Config) -> None:
             sys.stdout.write("234")
 
-    handler = page_registry.get("234handler")
-    assert handler == PageClass
+    page_registry.register(PageEndpoint("234handler", PageClass))
 
-    handler().handle_page()
+    endpoint = page_registry.get("234handler")
+    assert isinstance(endpoint, PageEndpoint)
+    handler = endpoint.handler
+    assert isinstance(handler, type)
+    assert issubclass(handler, PageClass)
+
+    handler().handle_page(Config())
     assert capsys.readouterr()[0] == "234"
 
 
@@ -275,20 +288,22 @@ def test_page_registry_register_page_handler(
 ) -> None:
     page_registry = cmk.gui.pages.PageRegistry()
 
-    def page() -> None:
+    def page(config: Config) -> None:
         sys.stdout.write("234")
 
-    page_registry.register_page_handler("234handler", page)
+    page_registry.register(PageEndpoint("234handler", page))
 
-    handler = page_registry["234handler"]
-    assert issubclass(handler, cmk.gui.pages.Page)
+    endpoint = page_registry.get("234handler")
+    assert isinstance(endpoint, PageEndpoint)
+    handler = endpoint.handler
+    assert not isinstance(handler, type)
 
-    handler().handle_page()
+    handler(Config())
     assert capsys.readouterr()[0] == "234"
 
 
 def test_get_page_handler_default() -> None:
-    def dummy():
+    def dummy(config: Config) -> None:
         pass
 
     handler = cmk.gui.pages.get_page_handler("123handler", dummy)

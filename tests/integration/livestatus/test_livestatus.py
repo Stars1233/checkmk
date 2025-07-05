@@ -141,7 +141,7 @@ def test_usage_counters(site: Site) -> None:
     assert isinstance(rows, list)
     assert len(rows) == 1
     assert isinstance(rows[0], list)
-    assert all(isinstance(v, (int, float)) for v in rows[0])
+    assert all(isinstance(v, int | float) for v in rows[0])
 
 
 @pytest.fixture(name="configure_service_tags")
@@ -208,7 +208,7 @@ class TestCrashReport:
         assert site.file_exists("var/check_mk/crashes")
         dir_path = f"var/check_mk/crashes/{component}/{uuid}/"
         site.makedirs(dir_path)
-        site.write_text_file(dir_path + "crash.info", _json.dumps(crash_info))
+        site.write_file(dir_path + "crash.info", _json.dumps(crash_info))
         yield
         site.delete_dir("var/check_mk/crashes/%s" % component)
 

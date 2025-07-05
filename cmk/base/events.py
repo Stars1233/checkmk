@@ -21,9 +21,9 @@ import livestatus
 
 import cmk.ccc.daemon
 import cmk.ccc.debug
+from cmk.ccc.hostaddress import HostName
 from cmk.ccc.site import omd_site
 
-from cmk.utils.hostaddress import HostName
 from cmk.utils.http_proxy_config import HTTPProxyConfig
 from cmk.utils.notify import read_notify_host_file
 from cmk.utils.notify_types import EventRule, NotifyPluginParamsDict
@@ -145,7 +145,7 @@ def event_keepalive(
 
 def config_timestamp() -> float:
     mtime = 0.0
-    for dirpath, _unused_dirnames, filenames in os.walk(cmk.utils.paths.check_mk_config_dir):
+    for dirpath, _unused_dirnames, filenames in os.walk(str(cmk.utils.paths.check_mk_config_dir)):
         for f in filenames:
             mtime = max(mtime, os.stat(dirpath + "/" + f).st_mtime)
 
@@ -1099,7 +1099,7 @@ def add_to_event_context(
     param: object,
     get_http_proxy: Callable[[tuple[str, str]], HTTPProxyConfig],
 ) -> None:
-    if isinstance(param, (list, tuple)):
+    if isinstance(param, list | tuple):
         if all(isinstance(p, str) for p in param):
             # TODO: Why on earth do we have these arbitrary differences? Can we unify this?
             suffix, separator = ("S", " ") if isinstance(param, list) else ("", "\t")
@@ -1115,7 +1115,7 @@ def add_to_event_context(
                     value = ("url", value)
                 value = get_http_proxy(value).serialize()
             add_to_event_context(context, varname, value, get_http_proxy)
-    elif isinstance(param, (str, int, float)):  # NOTE: bool is a subclass of int!
+    elif isinstance(param, str | int | float):  # NOTE: bool is a subclass of int!
         # Dynamically added keys...
         context[prefix] = str(param)  # type: ignore[literal-required]
     elif param is None:

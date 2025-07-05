@@ -8,11 +8,11 @@ import os
 import shutil
 import time
 
+import cmk.ccc.resulttype as result
 from cmk.ccc.exceptions import MKGeneralException
+from cmk.ccc.user import UserId
 
-import cmk.utils.resulttype as result
 from cmk.utils.regex import regex, REGEX_GENERIC_IDENTIFIER
-from cmk.utils.user import UserId
 
 from cmk.gui import log
 from cmk.gui.http import request
@@ -47,7 +47,7 @@ class BackgroundJob:
         raise NotImplementedError()
 
     @classmethod
-    def on_scheduler_start(cls, executor: JobExecutor) -> None:
+    def on_scheduler_start(cls, executor: JobExecutor, *, debug: bool) -> None:
         """Called when the job scheduler starts
 
         Can be used to implement initialization tasks that should be triggered once

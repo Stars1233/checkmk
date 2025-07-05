@@ -53,7 +53,7 @@ from cmk.gui.background_job import (
     JobTarget,
 )
 from cmk.gui.breadcrumb import Breadcrumb
-from cmk.gui.config import active_config
+from cmk.gui.config import active_config, Config
 from cmk.gui.exceptions import HTTPRedirect, MKAuthException, MKUserError
 from cmk.gui.htmllib.html import html, HTMLGenerator
 from cmk.gui.http import ContentDispositionType, request, response
@@ -67,8 +67,7 @@ from cmk.gui.page_menu import (
     PageMenuEntry,
     PageMenuTopic,
 )
-from cmk.gui.pages import Page, PageRegistry
-from cmk.gui.site_config import get_site_config, site_is_local
+from cmk.gui.pages import Page, PageEndpoint, PageRegistry
 from cmk.gui.theme import make_theme
 from cmk.gui.type_defs import ActionResult, PermissionName
 from cmk.gui.user_sites import get_activation_site_choices
@@ -86,7 +85,12 @@ from cmk.gui.valuespec import (
     ValueSpec,
 )
 from cmk.gui.watolib.automation_commands import AutomationCommand, AutomationCommandRegistry
-from cmk.gui.watolib.automations import do_remote_automation
+from cmk.gui.watolib.automations import (
+    do_remote_automation,
+    LocalAutomationConfig,
+    make_automation_config,
+    RemoteAutomationConfig,
+)
 from cmk.gui.watolib.check_mk_automations import create_diagnostics_dump
 from cmk.gui.watolib.mode import ModeRegistry, redirect, WatoMode
 
@@ -106,7 +110,7 @@ def register(
     automation_command_registry: AutomationCommandRegistry,
     job_registry: BackgroundJobRegistry,
 ) -> None:
-    page_registry.register_page("download_diagnostics_dump")(PageDownloadDiagnosticsDump)
+    page_registry.register(PageEndpoint("download_diagnostics_dump", PageDownloadDiagnosticsDump))
     mode_registry.register(ModeDiagnostics)
     automation_command_registry.register(AutomationDiagnosticsDumpGetFile)
     job_registry.register(DiagnosticsDumpBackgroundJob)
@@ -709,12 +713,22 @@ class DiagnosticsDumpBackgroundJob(BackgroundJob):
         job_interface: BackgroundProcessInterface,
     ) -> None:
         with job_interface.gui_context():
-            self._do_execute(diagnostics_parameters, job_interface)
+            self._do_execute(
+                diagnostics_parameters,
+                job_interface,
+                automation_config=make_automation_config(
+                    active_config.sites[diagnostics_parameters["site"]]
+                ),
+                debug=active_config.debug,
+            )
 
     def _do_execute(
         self,
         diagnostics_parameters: DiagnosticsParameters,
         job_interface: BackgroundProcessInterface,
+        *,
+        automation_config: LocalAutomationConfig | RemoteAutomationConfig,
+        debug: bool,
     ) -> None:
         job_interface.send_progress_update(_("Diagnostics dump started..."))
 
@@ -727,24 +741,20 @@ class DiagnosticsDumpBackgroundJob(BackgroundJob):
         results = []
         for chunk in chunks:
             chunk_result = create_diagnostics_dump(
-                site,
+                automation_config,
                 chunk,
                 diagnostics_parameters["timeout"],
+                debug=debug,
             )
             results.append(chunk_result)
 
-        # for site in sites:
-        #    for chunk in chunks:
-
-        #        chunk_result = create_diagnostics_dump(
-        #            site,
-        #            chunk,
-        #            timeout,
-        #        )
-        #        results.append(chunk_result)
-
         if len(results) > 1:
-            result = _merge_results(site, results, diagnostics_parameters["timeout"])
+            result = _merge_results(
+                automation_config,
+                results,
+                diagnostics_parameters["timeout"],
+                debug=debug,
+            )
             # The remote tarfiles will be downloaded and the link will point to the local site.
             download_site_id = omd_site()
         elif len(results) == 1:
@@ -785,7 +795,11 @@ class DiagnosticsDumpBackgroundJob(BackgroundJob):
 
 
 def _merge_results(
-    site: SiteId, results: Sequence[CreateDiagnosticsDumpResult], timeout: int
+    automation_config: LocalAutomationConfig | RemoteAutomationConfig,
+    results: Sequence[CreateDiagnosticsDumpResult],
+    timeout: int,
+    *,
+    debug: bool,
 ) -> CreateDiagnosticsDumpResult:
     output: str = ""
     tarfile_created: bool = False
@@ -794,13 +808,14 @@ def _merge_results(
         output += result.output
         if result.tarfile_created:
             tarfile_created = True
-            if site_is_local(active_config, site):
+            if isinstance(automation_config, LocalAutomationConfig):
                 tarfile_localpath = result.tarfile_path
             else:
                 tarfile_localpath = _get_tarfile_from_remotesite(
-                    SiteId(site),
+                    automation_config,
                     Path(result.tarfile_path).name,
                     timeout,
+                    debug=debug,
                 )
             tarfile_paths.append(tarfile_localpath)
 
@@ -811,11 +826,19 @@ def _merge_results(
     )
 
 
-def _get_tarfile_from_remotesite(site: SiteId, tarfile_name: str, timeout: int) -> str:
+def _get_tarfile_from_remotesite(
+    automation_config: RemoteAutomationConfig,
+    tarfile_name: str,
+    timeout: int,
+    *,
+    debug: bool,
+) -> str:
     cmk.utils.paths.diagnostics_dir.mkdir(parents=True, exist_ok=True)
     tarfile_localpath = _create_file_path()
     with open(tarfile_localpath, "wb") as file:
-        file.write(_get_diagnostics_dump_file(site, tarfile_name, timeout))
+        file.write(
+            _get_diagnostics_dump_file(automation_config, tarfile_name, timeout, debug=debug)
+        )
     return tarfile_localpath
 
 
@@ -841,16 +864,21 @@ def _create_file_path() -> str:
 
 
 class PageDownloadDiagnosticsDump(Page):
-    def page(self) -> None:
+    def page(self, config: Config) -> None:
         if not user.may("wato.diagnostics"):
             raise MKAuthException(
                 _("Sorry, you lack the permission for downloading diagnostics dumps.")
             )
 
-        site = SiteId(request.get_ascii_input_mandatory("site"))
+        site_id = SiteId(request.get_ascii_input_mandatory("site"))
         tarfile_name = request.get_ascii_input_mandatory("tarfile_name")
         timeout = request.get_integer_input_mandatory("timeout")
-        file_content = _get_diagnostics_dump_file(site, tarfile_name, timeout)
+        file_content = _get_diagnostics_dump_file(
+            make_automation_config(config.sites[site_id]),
+            tarfile_name,
+            timeout,
+            debug=config.debug,
+        )
 
         response.set_content_type("application/x-tgz")
         response.set_content_disposition(ContentDispositionType.ATTACHMENT, tarfile_name)
@@ -868,17 +896,24 @@ class AutomationDiagnosticsDumpGetFile(AutomationCommand[str]):
         return request.get_ascii_input_mandatory("tarfile_name")
 
 
-def _get_diagnostics_dump_file(site: SiteId, tarfile_name: str, timeout: int) -> bytes:
-    if site_is_local(active_config, site):
+def _get_diagnostics_dump_file(
+    automation_config: LocalAutomationConfig | RemoteAutomationConfig,
+    tarfile_name: str,
+    timeout: int,
+    *,
+    debug: bool,
+) -> bytes:
+    if isinstance(automation_config, LocalAutomationConfig):
         return _get_local_diagnostics_dump_file(tarfile_name)
 
     raw_response = do_remote_automation(
-        get_site_config(active_config, site),
+        automation_config,
         "diagnostics-dump-get-file",
         [
             ("tarfile_name", tarfile_name),
         ],
         timeout=timeout,
+        debug=debug,
     )
     assert isinstance(raw_response, bytes)
     return raw_response

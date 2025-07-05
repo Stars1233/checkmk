@@ -17,9 +17,9 @@ from cmk.utils import man_pages
 from cmk.utils.licensing.export import (
     LicenseUsageExtensions,
     LicenseUsageSample,
-    LicensingProtocolVersion,
     RawLicenseUsageReport,
 )
+from cmk.utils.licensing.protocol_version import get_licensing_protocol_version
 from cmk.utils.licensing.usage import (
     _load_extensions,
     _parse_extensions,
@@ -218,7 +218,7 @@ def test_serialize_license_usage_report() -> None:
     )
     assert _serialize_dump(
         RawLicenseUsageReport(
-            VERSION=LicensingProtocolVersion,
+            VERSION=get_licensing_protocol_version(),
             history=history.for_report(),
         )
     ) == (

@@ -11,7 +11,8 @@ modified via rules."""
 import functools
 from collections.abc import Callable, Collection, Container, Iterator
 
-from cmk.utils.hostaddress import HostName
+from cmk.ccc.hostaddress import HostName
+
 from cmk.utils.rulesets.definition import RuleGroup
 from cmk.utils.servicename import Item
 
@@ -31,6 +32,11 @@ from cmk.gui.type_defs import PermissionName
 from cmk.gui.utils.html import HTML
 from cmk.gui.valuespec import Tuple, ValueSpecText
 from cmk.gui.wato.pages.hosts import ModeEditHost, page_menu_host_entries
+from cmk.gui.watolib.automations import (
+    LocalAutomationConfig,
+    make_automation_config,
+    RemoteAutomationConfig,
+)
 from cmk.gui.watolib.check_mk_automations import analyse_host, analyse_service
 from cmk.gui.watolib.hosts_and_folders import (
     Folder,
@@ -131,16 +137,22 @@ class ModeObjectParameters(WatoMode):
 
         # Object type specific detail information
         service_result: AnalyseServiceResult | None = None
+        automation_config = make_automation_config(active_config.sites[self._host.site_id()])
         if for_host:
-            self._show_host_info()
+            self._show_host_info(automation_config=automation_config, debug=active_config.debug)
         else:
             assert self._service is not None
             service_result = analyse_service(
-                self._host.site_id(),
+                automation_config,
                 self._hostname,
                 self._service,
+                debug=active_config.debug,
             )
-            self._show_service_info(all_rulesets=all_rulesets, service_result=service_result)
+            self._show_service_info(
+                all_rulesets=all_rulesets,
+                service_result=service_result,
+                debug=active_config.debug,
+            )
 
         last_maingroup = None
         allow_list = get_rulespec_allow_list()
@@ -177,20 +189,25 @@ class ModeObjectParameters(WatoMode):
                     svc_desc_or_item=self._service,
                     svc_desc=self._service,
                     service_result=service_result,
+                    known_settings=None,
+                    debug=active_config.debug,
                 )
 
         forms.end()
 
-    def _show_host_info(self) -> None:
+    def _show_host_info(
+        self, *, automation_config: LocalAutomationConfig | RemoteAutomationConfig, debug: bool
+    ) -> None:
         host_info = analyse_host(
-            self._host.site_id(),
+            automation_config,
             self._hostname,
+            debug=debug,
         )
         forms.header(_("Host information"), isopen=True, narrow=True, css="rulesettings")
         self._show_labels(host_info.labels, "host", host_info.label_sources)
 
     def _show_service_info(
-        self, all_rulesets: AllRulesets, service_result: AnalyseServiceResult
+        self, all_rulesets: AllRulesets, service_result: AnalyseServiceResult, *, debug: bool
     ) -> None:
         assert self._service is not None
         serviceinfo = service_result.service_info
@@ -218,7 +235,12 @@ class ModeObjectParameters(WatoMode):
         )
         rulespec_allow_list = get_rulespec_allow_list()
         handler[origin](
-            serviceinfo, all_rulesets, rulespec_allow_list, service_result, render_labels
+            serviceinfo,
+            all_rulesets,
+            rulespec_allow_list,
+            service_result,
+            render_labels,
+            debug=debug,
         )
         return
 
@@ -229,6 +251,8 @@ class ModeObjectParameters(WatoMode):
         rulespec_allow_list: RulespecAllowList | AllowAll,
         service_result: AnalyseServiceResult,
         render_labels: Callable[[], None],
+        *,
+        debug: bool,
     ) -> None:
         # First case: discovered checks. They come from var/check_mk/autochecks/HOST.
         checkgroup = serviceinfo["checkgroup"]
@@ -265,6 +289,7 @@ class ModeObjectParameters(WatoMode):
                     svc_desc=self._service,
                     known_settings=serviceinfo["parameters"],
                     service_result=service_result,
+                    debug=debug,
                 )
             else:
                 not_configurable_render()
@@ -287,6 +312,7 @@ class ModeObjectParameters(WatoMode):
                     svc_desc=self._service,
                     known_settings=serviceinfo["parameters"],
                     service_result=service_result,
+                    debug=debug,
                 )
             else:
                 not_configurable_render()
@@ -323,6 +349,8 @@ class ModeObjectParameters(WatoMode):
         rulespec_allow_list: RulespecAllowList | AllowAll,
         service_result: AnalyseServiceResult,
         render_labels: Callable[[], None],
+        *,
+        debug: bool,
     ) -> None:
         checkgroup = serviceinfo["checkgroup"]
         rulespec = rulespec_registry.get("static_checks:" + checkgroup)
@@ -349,6 +377,7 @@ class ModeObjectParameters(WatoMode):
             svc_desc=self._service,
             known_settings=self._PARAMETERS_OMIT,
             service_result=service_result,
+            debug=debug,
         )
         assert isinstance(rulespec.valuespec, Tuple)
         html.write_text_permissive(
@@ -366,6 +395,8 @@ class ModeObjectParameters(WatoMode):
         rulespec_allow_list: RulespecAllowList | AllowAll,
         service_result: AnalyseServiceResult,
         render_labels: Callable[[], None],
+        *,
+        debug: bool,
     ) -> None:
         checktype = serviceinfo["checktype"]
         rulespec = rulespec_registry[
@@ -383,6 +414,7 @@ class ModeObjectParameters(WatoMode):
                 svc_desc=None,
                 known_settings=serviceinfo["parameters"],
                 service_result=service_result,
+                debug=debug,
             )
         self._show_labels(service_result.labels, "service", service_result.label_sources)
 
@@ -393,11 +425,13 @@ class ModeObjectParameters(WatoMode):
         _rulespec_allow_list: RulespecAllowList | AllowAll,
         service_result: AnalyseServiceResult,
         render_labels: Callable[[], None],
+        *,
+        debug: bool,
     ) -> None:
         ruleset = all_rulesets.get("custom_checks")
         assert self._service is not None
         origin_rule_result = self._get_custom_check_origin_rule(
-            ruleset, self._hostname, self._service, service_result=service_result
+            ruleset, self._hostname, self._service, service_result=service_result, debug=debug
         )
         if origin_rule_result is None:
             raise MKUserError(
@@ -438,7 +472,13 @@ class ModeObjectParameters(WatoMode):
         render_labels()
 
     def _get_custom_check_origin_rule(
-        self, ruleset: Ruleset, hostname: str, svc_desc: str, service_result: AnalyseServiceResult
+        self,
+        ruleset: Ruleset,
+        hostname: str,
+        svc_desc: str,
+        service_result: AnalyseServiceResult,
+        *,
+        debug: bool,
     ) -> tuple[Folder, int, Rule] | None:
         # We could use the outcome of _setting instead of the outcome of
         # the automation call in the future
@@ -447,6 +487,7 @@ class ModeObjectParameters(WatoMode):
             svc_desc_or_item=None,
             svc_desc=None,
             service_labels=service_result.labels,
+            debug=debug,
         )
 
         for rule_folder, rule_index, rule in rules:
@@ -511,7 +552,9 @@ class ModeObjectParameters(WatoMode):
         svc_desc_or_item: str | None,
         svc_desc: str | None,
         service_result: AnalyseServiceResult | None,
-        known_settings: object | None = None,
+        known_settings: object | None,
+        *,
+        debug: bool,
     ) -> None:
         if known_settings is None:
             known_settings = self._PARAMETERS_UNKNOWN
@@ -553,6 +596,7 @@ class ModeObjectParameters(WatoMode):
             svc_desc_or_item,
             svc_desc,
             service_labels=service_result.labels if service_result else {},
+            debug=debug,
         )
 
         html.open_table(class_="setting")

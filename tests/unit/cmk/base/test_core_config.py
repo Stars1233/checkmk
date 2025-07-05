@@ -5,8 +5,8 @@
 
 
 import shutil
+import socket
 from collections.abc import Mapping
-from pathlib import Path
 
 import pytest
 from pytest import MonkeyPatch
@@ -14,12 +14,11 @@ from pytest import MonkeyPatch
 from tests.testlib.unit.base_configuration_scenario import Scenario
 
 import cmk.ccc.version as cmk_version
+from cmk.ccc.hostaddress import HostAddress, HostName
 
-import cmk.utils.config_path
 import cmk.utils.paths
 from cmk.utils import ip_lookup, password_store
-from cmk.utils.config_path import ConfigPath, LATEST_CONFIG
-from cmk.utils.hostaddress import HostAddress, HostName
+from cmk.utils.config_path import VersionedConfigPath
 from cmk.utils.labels import Labels, LabelSources
 from cmk.utils.tags import TagGroupID, TagID
 
@@ -35,11 +34,11 @@ from cmk.base.core_factory import create_core
 
 @pytest.fixture(name="config_path")
 def fixture_config_path():
-    ConfigPath.ROOT.mkdir(parents=True, exist_ok=True)
+    VersionedConfigPath.ROOT.mkdir(parents=True, exist_ok=True)
     try:
-        yield ConfigPath.ROOT
+        yield VersionedConfigPath.ROOT
     finally:
-        shutil.rmtree(ConfigPath.ROOT)
+        shutil.rmtree(VersionedConfigPath.ROOT)
 
 
 @pytest.fixture(name="core_scenario")
@@ -70,22 +69,30 @@ def test_do_create_config_nagios(
     core_scenario: ConfigCache, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(config, "get_resource_macros", lambda *_: {})
-    ip_address_of = config.ConfiguredIPLookup(
-        core_scenario, error_handler=ip_lookup.CollectFailedHosts()
-    )
+    ip_lookup_config = core_scenario.ip_lookup_config()
     core_config.do_create_config(
         create_core("nagios"),
         core_scenario,
+        core_scenario.hosts_config,
         core_scenario.make_passive_service_name_config(),
         AgentBasedPlugins.empty(),
         discovery_rules={},
-        ip_address_of=ip_address_of,
-        all_hosts=[HostName("test-host")],
+        get_ip_stack_config=lambda host_name: ip_lookup.IPStackConfig.IPv4,
+        default_address_family=lambda host_name: socket.AddressFamily.AF_INET,
+        ip_address_of=ip_lookup.ConfiguredIPLookup(
+            ip_lookup.make_lookup_ip_address(ip_lookup_config),
+            allow_empty=(),
+            error_handler=ip_lookup.CollectFailedHosts(),
+        ),
+        ip_address_of_mgmt=lambda *a: None,
+        hosts_to_update=None,
+        service_depends_on=lambda *a: (),
         duplicates=(),
+        bake_on_restart=lambda: None,
     )
 
-    assert Path(cmk.utils.paths.nagios_objects_file).exists()
-    assert config.PackedConfigStore.from_serial(LATEST_CONFIG).path.exists()
+    assert cmk.utils.paths.nagios_objects_file.exists()
+    assert config.PackedConfigStore.from_serial(VersionedConfigPath.LATEST_CONFIG).path.exists()
 
 
 @pytest.mark.skip(reason="CMK-22671")
@@ -93,24 +100,33 @@ def test_do_create_config_nagios_collects_passwords(
     core_scenario: ConfigCache, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(config, "get_resource_macros", lambda *_: {})  # file IO :-(
-    ip_address_of = config.ConfiguredIPLookup(
-        core_scenario, error_handler=ip_lookup.CollectFailedHosts()
+    ip_lookup_config = core_scenario.ip_lookup_config()
+    ip_address_of = ip_lookup.ConfiguredIPLookup(
+        ip_lookup.make_lookup_ip_address(ip_lookup_config),
+        allow_empty=(),
+        error_handler=ip_lookup.CollectFailedHosts(),
     )
 
     password_store.save(passwords := {"stored-secret": "123"}, password_store.password_store_path())
 
-    core_store = password_store.core_password_store_path(LATEST_CONFIG)
+    core_store = password_store.core_password_store_path()
     assert not password_store.load(core_store)
 
     core_config.do_create_config(
         create_core("nagios"),
         core_scenario,
+        core_scenario.hosts_config,
         core_scenario.make_passive_service_name_config(),
         AgentBasedPlugins.empty(),
         discovery_rules={},
+        get_ip_stack_config=lambda host_name: ip_lookup.IPStackConfig.IPv4,
+        default_address_family=lambda host_name: socket.AddressFamily.AF_INET,
         ip_address_of=ip_address_of,
-        all_hosts=[HostName("test-host")],
+        ip_address_of_mgmt=lambda *a: None,
+        hosts_to_update=None,
+        service_depends_on=lambda *a: (),
         duplicates=(),
+        bake_on_restart=lambda: None,
     )
 
     assert password_store.load(core_store) == passwords
@@ -132,7 +148,7 @@ def test_get_host_attributes(monkeypatch: MonkeyPatch) -> None:
     expected_attrs = {
         "_ADDRESSES_4": "",
         "_ADDRESSES_6": "",
-        "_ADDRESS_4": "0.0.0.0",
+        "_ADDRESS_4": "1.2.3.4",
         "_ADDRESS_6": "",
         "_ADDRESS_FAMILY": "4",
         "_FILENAME": "/wato/hosts.mk",
@@ -149,7 +165,7 @@ def test_get_host_attributes(monkeypatch: MonkeyPatch) -> None:
         "__LABEL_cmk/site": "unit",
         "__LABELSOURCE_cmk/site": "discovered",
         "__LABELSOURCE_ding": "explicit",
-        "address": "0.0.0.0",
+        "address": "1.2.3.4",
         "alias": "test-host",
     }
 
@@ -161,7 +177,8 @@ def test_get_host_attributes(monkeypatch: MonkeyPatch) -> None:
     assert (
         config_cache.get_host_attributes(
             HostName("test-host"),
-            config.ConfiguredIPLookup(config_cache, error_handler=config.handle_ip_lookup_failure),
+            socket.AddressFamily.AF_INET,
+            ip_address_of=lambda *a: HostAddress("1.2.3.4"),
         )
         == expected_attrs
     )
@@ -297,11 +314,8 @@ def test_template_translation(
     config_cache = ts.apply(monkeypatch)
 
     assert (
-        config_cache.translate_commandline(
-            hostname,
-            ipaddress,
-            template,
-            config.ConfiguredIPLookup(config_cache, error_handler=config.handle_ip_lookup_failure),
+        config_cache.translate_fetcher_commandline(
+            hostname, socket.AddressFamily.AF_INET, ipaddress, template, lambda *a: HostAddress("")
         )
         == f"<NOTHING>x{ipaddress or ''}x{hostname}x<host>x<ip>x"
     )

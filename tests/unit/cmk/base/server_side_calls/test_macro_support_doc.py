@@ -8,6 +8,7 @@ These tests are a single point of truth about supported macros
 in active check and special agent SSC plugins.
 """
 
+import socket
 from collections.abc import Iterable, Iterator, Sequence
 
 import pytest
@@ -15,9 +16,10 @@ import pytest
 from tests.testlib.unit.base_configuration_scenario import Scenario
 
 import cmk.ccc.version as cmk_version
+from cmk.ccc.hostaddress import HostAddress, HostName
 
 import cmk.utils.paths
-from cmk.utils.hostaddress import HostName
+from cmk.utils.ip_lookup import IPStackConfig
 
 import cmk.base.config as base_config
 from cmk.base.config import ConfigCache
@@ -149,10 +151,10 @@ def _iter_macros(documented_macros: Sequence[str], resources: Iterable[str]) -> 
 
 def test_active_checks_macros(config_cache: ConfigCache, resource_cfg_file: None) -> None:
     host_name = HostName("test-host")
-    ip_address_of = base_config.ConfiguredIPLookup(
-        config_cache, error_handler=base_config.handle_ip_lookup_failure
+    ip_address_of = lambda *a: HostAddress("")
+    host_attrs = config_cache.get_host_attributes(
+        host_name, socket.AddressFamily.AF_INET, ip_address_of
     )
-    host_attrs = config_cache.get_host_attributes(host_name, ip_address_of)
 
     host_macros = base_config.ConfigCache.get_host_macros_from_attributes(host_name, host_attrs)
     resource_macros = base_config.get_resource_macros()
@@ -164,8 +166,8 @@ def test_active_checks_macros(config_cache: ConfigCache, resource_cfg_file: None
     host_config = base_config.get_ssc_host_config(
         host_name,
         config_cache.alias(host_name),
-        config_cache.default_address_family(host_name),
-        config_cache.ip_stack_config(host_name),
+        socket.AddressFamily.AF_INET,
+        IPStackConfig.IPv4,
         additional_addresses_ipv4,
         additional_addresses_ipv6,
         macros,
@@ -181,7 +183,7 @@ def test_active_checks_macros(config_cache: ConfigCache, resource_cfg_file: None
 
     expected_macros = (
         documented["required"]
-        + list(_iter_macros(documented["per_tag"], config_cache.tags(host_name).keys()))
+        + list(_iter_macros(documented["per_tag"], config_cache.host_tags.tags(host_name).keys()))
         + list(
             _iter_macros(
                 documented["per_label"], config_cache.label_manager.labels_of_host(host_name).keys()
@@ -202,11 +204,11 @@ def test_special_agent_macros(
     config_cache: ConfigCache,
 ) -> None:
     host_name = HostName("test-host")
-    ip_address_of = base_config.ConfiguredIPLookup(
-        config_cache, error_handler=base_config.handle_ip_lookup_failure
-    )
+    ip_address_of = lambda *a: HostAddress("")
 
-    host_attrs = config_cache.get_host_attributes(host_name, ip_address_of)
+    host_attrs = config_cache.get_host_attributes(
+        host_name, socket.AddressFamily.AF_INET, ip_address_of
+    )
     macros = {
         "<IP>": "127.0.0.1",
         "<HOST>": host_name,
@@ -219,8 +221,8 @@ def test_special_agent_macros(
     host_config = base_config.get_ssc_host_config(
         host_name,
         config_cache.alias(host_name),
-        config_cache.default_address_family(host_name),
-        config_cache.ip_stack_config(host_name),
+        socket.AddressFamily.AF_INET,
+        IPStackConfig.IPv4,
         additional_addresses_ipv4,
         additional_addresses_ipv6,
         macros,
@@ -236,7 +238,7 @@ def test_special_agent_macros(
 
     expected_macros = (
         documented["required"]
-        + list(_iter_macros(documented["per_tag"], config_cache.tags(host_name).keys()))
+        + list(_iter_macros(documented["per_tag"], config_cache.host_tags.tags(host_name).keys()))
         + list(
             _iter_macros(
                 documented["per_label"], config_cache.label_manager.labels_of_host(host_name).keys()

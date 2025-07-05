@@ -10,10 +10,10 @@ from typing import Literal, Protocol
 import livestatus
 
 import cmk.ccc.version as cmk_version
+from cmk.ccc.hostaddress import HostName
 from cmk.ccc.site import SiteId
 
 from cmk.utils import paths
-from cmk.utils.hostaddress import HostName
 from cmk.utils.livestatus_helpers.queries import Query
 from cmk.utils.livestatus_helpers.tables.hosts import Hosts
 from cmk.utils.servicename import ServiceName
@@ -42,7 +42,6 @@ from cmk.gui.utils.time import timezone_utc_offset_str
 from cmk.gui.utils.urls import makeuri, makeuri_contextless
 from cmk.gui.valuespec import AbsoluteDate, Age, Checkbox, DatePicker, Dictionary, TimePicker
 from cmk.gui.view_utils import render_cre_upgrade_button
-from cmk.gui.watolib.downtime import determine_downtime_mode, DowntimeSchedule
 
 from cmk.bi.trees import CompiledAggrLeaf, CompiledAggrRule, CompiledAggrTree
 
@@ -79,7 +78,7 @@ def register(
     command_registry.register(CommandRemoveDowntimesHostServicesTable)
     command_registry.register(CommandRemoveDowntimesDowntimesTable)
     command_registry.register(CommandRemoveComments)
-    permission_section_registry.register(PermissionSectionAction)
+    permission_section_registry.register(PERMISSION_SECTION_ACTION)
     permission_registry.register(PermissionActionReschedule)
     permission_registry.register(PermissionActionNotifications)
     permission_registry.register(PermissionActionEnableChecks)
@@ -106,18 +105,11 @@ class CommandGroupVarious(CommandGroup):
         return 20
 
 
-class PermissionSectionAction(PermissionSection):
-    @property
-    def name(self) -> str:
-        return "action"
-
-    @property
-    def title(self) -> str:
-        return _("Commands on host and services")
-
-    @property
-    def do_sort(self):
-        return True
+PERMISSION_SECTION_ACTION = PermissionSection(
+    name="action",
+    title=_("Commands on host and services"),
+    do_sort=True,
+)
 
 
 #   .--Reschedule----------------------------------------------------------.
@@ -130,7 +122,7 @@ class PermissionSectionAction(PermissionSection):
 #   '----------------------------------------------------------------------'
 
 PermissionActionReschedule = Permission(
-    section=PermissionSectionAction,
+    section=PERMISSION_SECTION_ACTION,
     name="reschedule",
     title=_l("Reschedule checks"),
     description=_l("Reschedule host and service checks"),
@@ -230,7 +222,7 @@ CommandReschedule = Command(
 #   '----------------------------------------------------------------------'
 
 PermissionActionNotifications = Permission(
-    section=PermissionSectionAction,
+    section=PERMISSION_SECTION_ACTION,
     name="notifications",
     title=_l("Enable/disable notifications"),
     description=_l("Enable and disable notifications on hosts and services"),
@@ -324,7 +316,7 @@ CommandNotifications = Command(
 #   '----------------------------------------------------------------------'
 
 PermissionActionEnableChecks = Permission(
-    section=PermissionSectionAction,
+    section=PERMISSION_SECTION_ACTION,
     name="enablechecks",
     title=_l("Enable/disable checks"),
     description=_l("Enable and disable active or passive checks on hosts and services"),
@@ -456,7 +448,7 @@ CommandTogglePassiveChecks = Command(
 #   '----------------------------------------------------------------------'
 
 PermissionActionClearModifiedAttributes = Permission(
-    section=PermissionSectionAction,
+    section=PERMISSION_SECTION_ACTION,
     name="clearmodattr",
     title=_l("Reset modified attributes"),
     description=_l(
@@ -529,7 +521,7 @@ CommandClearModifiedAttributes = Command(
 #   '----------------------------------------------------------------------'
 
 PermissionActionFakeChecks = Permission(
-    section=PermissionSectionAction,
+    section=PERMISSION_SECTION_ACTION,
     name="fakechecks",
     title=_l("Fake check results"),
     description=_l("Manually submit check results for host and service checks"),
@@ -703,7 +695,7 @@ CommandFakeCheckResult = Command(
 #   '----------------------------------------------------------------------'
 
 PermissionActionCustomNotification = Permission(
-    section=PermissionSectionAction,
+    section=PERMISSION_SECTION_ACTION,
     name="customnotification",
     title=_l("Send custom notification"),
     description=_l(
@@ -791,7 +783,7 @@ CommandCustomNotification = Command(
 #   '----------------------------------------------------------------------'
 
 PermissionActionAcknowledge = Permission(
-    section=PermissionSectionAction,
+    section=PERMISSION_SECTION_ACTION,
     name="acknowledge",
     title=_l("Acknowledge"),
     description=_l("Acknowledge host and service problems and remove acknowledgements"),
@@ -1054,7 +1046,7 @@ CommandAcknowledge = Command(
     confirm_button=_l("Yes, acknowledge"),
     cancel_button=_l("No, discard"),
     deny_button=_l("No, adjust settings"),
-    deny_js_function='() => cmk.page_menu.toggle_popup("popup_command_acknowledge")',
+    deny_js_function='function () { cmk.page_menu.toggle_popup("popup_command_acknowledge"); }',
     icon_name="ack",
     is_shortcut=True,
     is_suggested=True,
@@ -1175,7 +1167,7 @@ CommandRemoveAcknowledgments = Command(
 #   '----------------------------------------------------------------------'
 
 PermissionActionAddComment = Permission(
-    section=PermissionSectionAction,
+    section=PERMISSION_SECTION_ACTION,
     name="addcomment",
     title=_l("Add comments"),
     description=_l("Add comments to hosts or services, and remove comments"),
@@ -1251,7 +1243,7 @@ CommandAddComment = Command(
 #   '----------------------------------------------------------------------'
 
 PermissionActionDowntimes = Permission(
-    section=PermissionSectionAction,
+    section=PERMISSION_SECTION_ACTION,
     name="downtimes",
     title=_l("Set/remove downtimes"),
     description=_l("Schedule and remove downtimes on hosts and services"),
@@ -1259,7 +1251,7 @@ PermissionActionDowntimes = Permission(
 )
 
 PermissionRemoveAllDowntimes = Permission(
-    section=PermissionSectionAction,
+    section=PERMISSION_SECTION_ACTION,
     name="remove_all_downtimes",
     title=_l("Remove all downtimes"),
     description=_l('Allow the user to use the action "Remove all" downtimes'),
@@ -1332,7 +1324,7 @@ class CommandScheduleDowntimes(Command):
             confirm_button=_l("Yes, schedule"),
             cancel_button=_l("No, discard"),
             deny_button=_l("No, adjust settings"),
-            deny_js_function='() => cmk.page_menu.toggle_popup("popup_command_schedule_downtimes")',
+            deny_js_function='function() { cmk.page_menu.toggle_popup("popup_command_schedule_downtimes"); }',
             icon_name="downtime",
             is_shortcut=True,
             is_suggested=True,
@@ -1643,7 +1635,7 @@ class CommandScheduleDowntimesForm:
 
             comment = self._comment()
             delayed_duration = self._flexible_option()
-            mode = determine_downtime_mode(recurring_number, delayed_duration)
+            mode = _determine_downtime_mode(recurring_number, delayed_duration)
             downtime = DowntimeSchedule(start_time, end_time, mode, delayed_duration, comment)
             cmdtag, specs, action_rows = self._downtime_specs(cmdtag, row, action_rows, spec)
             if "aggr_tree" in row:  # BI mode
@@ -1886,6 +1878,49 @@ class CommandScheduleDowntimesForm:
 
     def _adhoc_downtime_configured(self) -> bool:
         return bool(active_config.adhoc_downtime and active_config.adhoc_downtime.get("duration"))
+
+
+def _determine_downtime_mode(recurring_number: int, delayed_duration: int) -> int:
+    """Determining the downtime mode
+
+    The mode is represented by an integer (bit masking?) which contains information
+    about the recurring option
+    """
+    fixed_downtime = 0 if delayed_duration else 1
+
+    if recurring_number:
+        mode = recurring_number * 2 + fixed_downtime
+    else:
+        mode = fixed_downtime
+
+    return mode
+
+
+class DowntimeSchedule:
+    def __init__(
+        self, start_time: float, end_time: float, mode: int, delayed_duration: int, comment: str
+    ) -> None:
+        self.start_time = start_time
+        self.end_time = end_time
+        self.mode = mode
+        self.delayed_duration = delayed_duration
+        self.comment = comment
+
+    def livestatus_command(self, specification: str, cmdtag: Literal["HOST", "SVC"]) -> str:
+        return (
+            ("SCHEDULE_" + cmdtag + "_DOWNTIME;%s;" % specification)
+            + (
+                "%d;%d;%d;0;%d;%s;"
+                % (
+                    self.start_time,
+                    self.end_time,
+                    self.mode,
+                    self.delayed_duration,
+                    user.id,
+                )
+            )
+            + livestatus.lqencode(self.comment)
+        )
 
 
 def _confirm_dialog_date_and_time_format(timestamp: float, show_timezone: bool = True) -> str:

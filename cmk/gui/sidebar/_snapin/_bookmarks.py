@@ -10,10 +10,12 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, Self, TypedDict
 
+from cmk.ccc.user import UserId
+
 from cmk.utils.urls import is_allowed_url
-from cmk.utils.user import UserId
 
 from cmk.gui import pagetypes
+from cmk.gui.config import Config
 from cmk.gui.exceptions import MKUserError
 from cmk.gui.htmllib.foldable_container import foldable_container
 from cmk.gui.http import request
@@ -286,7 +288,7 @@ class Bookmarks(SidebarSnapin):
             "bookmarks to views and other content in the main frame"
         )
 
-    def show(self) -> None:
+    def show(self, config: Config) -> None:
         for topic, bookmarks in self._get_bookmarks_by_topic():
             with foldable_container(
                 treename="bookmarks",
@@ -323,14 +325,14 @@ class Bookmarks(SidebarSnapin):
                     bookmark_list += bookmarks
         return sorted(topics.items())
 
-    def _ajax_add_bookmark(self) -> None:
+    def _ajax_add_bookmark(self, config: Config) -> None:
         check_csrf_token()
         title = request.var("title")
         url = request.var("url")
         if title and url:
             BookmarkList.validate_url(url, "url")
             self._add_bookmark(title, url)
-        self.show()
+        self.show(config)
 
     def _add_bookmark(self, title: str, url: str) -> None:
         assert user.id is not None
@@ -377,7 +379,7 @@ class Bookmarks(SidebarSnapin):
                     url = "../" + url
         return url
 
-    def page_handlers(self) -> dict[str, Callable[[], None]]:
+    def page_handlers(self) -> dict[str, Callable[[Config], None]]:
         return {
             "add_bookmark": self._ajax_add_bookmark,
         }

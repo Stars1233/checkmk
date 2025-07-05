@@ -115,8 +115,6 @@ def _is_allowed_import(imported: ModuleName) -> bool:
             imported.in_component(Component("cmk.automations")),
             imported.in_component(Component("cmk.bi")),
             imported.in_component(Component("cmk.piggyback")),
-            imported.in_component(Component("cmk.plugins.mail")),
-            imported.in_component(Component("cmk.plugins.collection")),
             imported.in_component(Component("cmk.discover_plugins")),
             imported.in_component(Component("cmk.agent_based")),
             imported.in_component(Component("cmk.rulesets")),
@@ -139,23 +137,6 @@ def _is_default_allowed_import(
     component: Component,
 ) -> bool:
     return _is_allowed_import(imported) or imported.in_component(component)
-
-
-def _is_allowed_for_special_agent_executable(
-    *,
-    imported: ModuleName,
-    component: Component,
-) -> bool:
-    return (
-        # still OK, but is on its way out.
-        imported.in_component(Component("cmk.special_agents"))
-        or (
-            # allow all `cmk.plugins.<FAMILY>.special_agents`
-            imported.in_component(Component("cmk.plugins"))
-            and len(imported.parts) >= 4
-            and imported.parts[3] == "special_agents"
-        )
-    )
 
 
 def _allow_default_plus_checkers(
@@ -578,9 +559,16 @@ def _allowed_for_robotmk(
     return any(
         (
             _allow_default_plus_gui_and_base(imported=imported, component=component),
-            _is_allowed_for_plugins(imported=imported, component=component),
-            imported.in_component(Component("cmk.checkengine")),
-            imported.in_component(Component("cmk.cee.bakery")),
+            _allow(
+                "cmk.agent_based.v2",
+                "cmk.graphing.v1",
+                "cmk.rulesets.v1",
+                "cmk.server_side_calls.v1",
+                "cmk.special_agents.v0_unstable",
+                "cmk.plugins",
+                "cmk.checkengine",
+                "cmk.cee.bakery",
+            ),
         )
     )
 
@@ -655,7 +643,6 @@ def _is_allowed_for_rrd(
 
 
 _COMPONENTS = (
-    (Component("agents.special"), _is_allowed_for_special_agent_executable),
     (Component("tests.unit.cmk"), _allow_default_plus_component_under_test),
     (Component("tests.unit.checks"), _is_allowed_for_legacy_check_tests),
     (Component("tests.extension_compatibility"), _allow_default_plus_gui_and_base),
@@ -671,10 +658,42 @@ _COMPONENTS = (
         Component("tests.integration.cmk.cee.robotmk"),
         _allow_default_plus_component_under_test,
     ),
+    (Component("cmk.bakery"), _allow()),  # only allow itself, this is the future :-)
+    (
+        Component("cmk.base.api.bakery"),
+        _allow(
+            "cmk.bakery",
+            "cmk.ccc",
+            "cmk.utils",
+        ),
+    ),
+    (
+        Component("cmk.base.cee.bakery"),
+        _allow(
+            "cmk.bakery",
+            "cmk.base.api.bakery",
+            "cmk.base.plugins.bakery.bakery_api",
+            "cmk.base.cee.cap",
+            "cmk.base.cee.plugins.bakery.bakery_api",
+            "cmk.crypto.certificate",
+            "cmk.cee.robotmk.bakery",
+            "cmk.ccc",
+            "cmk.cee.bakery",
+            "cmk.utils",
+        ),
+    ),
     (Component("cmk.base.check_legacy_includes"), _is_allowed_for_legacy_checks),
     (Component("cmk.base.legacy_checks"), _is_allowed_for_legacy_checks),
     # importing config in ip_lookup repeatedly lead to import cycles. It's cleanup now.
     (Component("cmk.base.ip_lookup"), _is_default_allowed_import),
+    (
+        Component("cmk.base.plugins.bakery.bakery_api"),
+        _allow(
+            "cmk.bakery",
+            "cmk.base.api.bakery",
+            "cmk.utils",
+        ),
+    ),
     (Component("cmk.base"), _allowed_for_base_cee),
     (Component("cmk.base.cee"), _allowed_for_base_cee),
     (Component("cmk.cmkpasswd"), _allow_for_cmkpasswd),
@@ -721,13 +740,39 @@ _COMPONENTS = (
             "cmk.ccc",
         ),
     ),
-    (Component("cmk.plugins"), _is_allowed_for_plugins),
+    (
+        Component("cmk.plugins.otel"),
+        _allow(
+            "cmk.agent_based.v1",
+            "cmk.agent_based.v2",
+            "cmk.graphing.v1",
+            "cmk.rulesets.v1",
+            "cmk.gui.form_specs.private",
+            "cmk.server_side_calls.v1",
+            "cmk.special_agents.v0_unstable",
+            "cmk.plugins",
+        ),
+    ),
+    (
+        Component("cmk.plugins"),
+        _allow(
+            "cmk.agent_based.v1",
+            "cmk.agent_based.v2",
+            "cmk.graphing.v1",
+            "cmk.rulesets.v1",
+            "cmk.server_side_calls.v1",
+            "cmk.special_agents.v0_unstable",
+            "cmk.plugins",
+            "cmk.utils",  # FIXME (should only be password store)
+            "cmk.ccc",  # FIXME
+        ),
+    ),
     (Component("cmk.server_side_calls_backend"), _is_default_allowed_import),
     (Component("cmk.special_agents"), _is_default_allowed_import),
     (Component("cmk.update_config"), _allow_for_cmk_update_config),
     (
         Component("cmk.validate_config"),
-        _allow("cmk.base", "cmk.gui", "cmk.checkengine", "cmk.utils"),
+        _allow("cmk.base", "cmk.gui", "cmk.checkengine", "cmk.utils", "cmk.ccc"),
     ),
     (Component("cmk.validate_plugins"), _is_default_allowed_import),
     (Component("cmk.utils"), _is_default_allowed_import),
@@ -742,6 +787,7 @@ _COMPONENTS = (
     (Component("cmk.cee.robotmk"), _allowed_for_robotmk),
     (Component("cmk.diskspace"), _is_allowed_for_diskspace),
     (Component("cmk.rrd"), _is_allowed_for_rrd),
+    (Component("cmk.inventory"), _is_default_allowed_import),
 )
 
 _EXPLICIT_FILE_TO_COMPONENT = {
@@ -756,6 +802,7 @@ _EXPLICIT_FILE_TO_COMPONENT = {
     ModulePath("bin/cmk-migrate-http"): Component("cmk.update_config"),
     ModulePath("bin/cmk-validate-config"): Component("cmk.validate_config"),
     ModulePath("bin/cmk-validate-plugins"): Component("cmk.validate_plugins"),
+    ModulePath("bin/cmk-transform-inventory-trees"): Component("cmk.inventory"),
     ModulePath("bin/post-rename-site"): Component("cmk.post_rename_site"),
     ModulePath("bin/mkeventd"): Component("cmk.ec"),
     ModulePath("bin/cmk-convert-rrds"): Component("cmk.rrd"),
@@ -765,6 +812,7 @@ _EXPLICIT_FILE_TO_COMPONENT = {
     ModulePath("omd/packages/enterprise/bin/dcd"): Component("cmk.cee.dcd"),
     ModulePath("omd/packages/enterprise/bin/cmk-dcd"): Component("cmk.cee.dcd"),
     ModulePath("omd/packages/enterprise/bin/fetcher"): Component("cmk.cee.helpers"),
+    ModulePath("omd/packages/appliance/webconf_snapin.py"): Component("cmk.gui"),
     ModulePath("cmk/active_checks/check_cmk_inv.py"): Component("cmk.base"),
     # CEE specific notification plugins
     ModulePath("notifications/servicenow"): Component("cmk.cee.notification_plugins"),
@@ -854,16 +902,8 @@ class CMKModuleLayerChecker(BaseChecker):
             return explicit_component == component
 
         return (
-            (
-                component == Component("cmk.notification_plugins")
-                and importing_path.is_below("notifications")
-            )
-            or (
-                component == Component("agents.special")
-                and importing_path.is_below("agents/special")
-            )
-            or (
-                component == Component("cmk.active_checks")
-                and importing_path.is_below("active_checks")
-            )
+            component == Component("cmk.notification_plugins")
+            and importing_path.is_below("notifications")
+        ) or (
+            component == Component("cmk.active_checks") and importing_path.is_below("active_checks")
         )

@@ -4,7 +4,7 @@ include ../../artifacts.make
 THREE_TO_TWO := ../../scripts/run-uvenv 3to2
 
 # Not all plugins are working with Python 2 therefore these are skipped during 3to2 conversion
-PYTHON3_ONLY_PLUGINS := mk_sap.py
+PYTHON3_ONLY_PLUGINS := mk_sap.py mk_podman.py
 # New plugins are expected to all have a .py extension. This will discover them
 # automatically.  Old plugins without extension are explicitly whitelistet here
 # to be found.
@@ -32,7 +32,7 @@ clean:
 .SECONDARY:
 
 %_2.py: %.py.checksum
-	cat "$(<:.checksum=)" | gawk -v text="# Do not test generated 2.x files\n# fmt: off\n# type: ignore" '!/^#/ && !p {print text; p=1} 1' > "$@"
+	cat "$(<:.checksum=)" | awk -v text="# Do not test generated 2.x files\n# fmt: off\n# type: ignore" '!/^#/ && !p {print text; p=1} 1' > "$@"
 	sed -i 's/#!\/usr\/bin\/env python3/#!\/usr\/bin\/env python2/g' "$@"
 	$(THREE_TO_TWO) --nofix=str --nofix=next --nobackups --write "$@" >/dev/null
 	chmod +x "$@"

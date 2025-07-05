@@ -42,12 +42,14 @@ class StageInfo(TypedDict, total=False):
     ENV_VAR_LIST: Sequence[str]
     SEC_VAR_LIST: Sequence[str]
     GIT_FETCH_TAGS: bool
+    GIT_FETCH_NOTES: bool
     BAZEL_LOCKS_AMOUNT: int
     COMMAND: str
     TEXT_ON_SKIP: str
     SKIPPED: str
     RESULT_CHECK_TYPE: str
     RESULT_CHECK_FILE_PATTERN: str
+    JENKINS_TEST_RESULT_PATH: str
 
 
 Stages = Sequence[StageInfo]
@@ -101,7 +103,7 @@ def parse_args() -> argparse.Namespace:
         "input",
         type=Path,
         help="A YAML encoded file containing information about stages to generate",
-        default=Path(os.path.dirname(__file__)) / "stages.yml",
+        default=Path(__file__).parent / "stages.yml",
         nargs="?",
     )
     return parser.parse_args()
@@ -116,11 +118,13 @@ def to_stage_info(raw_stage: Mapping[Any, Any]) -> StageInfo:
         ENV_VARS={str(k): str(v) for k, v in raw_stage.get("ENV_VARS", {}).items()},
         SEC_VAR_LIST=list(raw_stage.get("SEC_VAR_LIST", [])),
         GIT_FETCH_TAGS=bool(raw_stage.get("GIT_FETCH_TAGS", False)),
+        GIT_FETCH_NOTES=bool(raw_stage.get("GIT_FETCH_NOTES", False)),
         BAZEL_LOCKS_AMOUNT=int(raw_stage.get("BAZEL_LOCKS_AMOUNT", -1)),
         COMMAND=str(raw_stage["COMMAND"]).replace("\n", ";"),
         TEXT_ON_SKIP=str(raw_stage.get("TEXT_ON_SKIP", "")),
         RESULT_CHECK_TYPE=str(raw_stage.get("RESULT_CHECK_TYPE", "")),
         RESULT_CHECK_FILE_PATTERN=str(raw_stage.get("RESULT_CHECK_FILE_PATTERN", "")),
+        JENKINS_TEST_RESULT_PATH=str(raw_stage.get("JENKINS_TEST_RESULT_PATH", "")),
     )
 
 
@@ -162,11 +166,13 @@ def apply_variables(in_data: StageInfo, env_vars: Vars) -> StageInfo:
         ENV_VARS={k: replace_variables(v, env_vars) for k, v in in_data["ENV_VARS"].items()},
         SEC_VAR_LIST=list(in_data["SEC_VAR_LIST"]),
         GIT_FETCH_TAGS=in_data.get("GIT_FETCH_TAGS", False),
+        GIT_FETCH_NOTES=in_data.get("GIT_FETCH_NOTES", False),
         BAZEL_LOCKS_AMOUNT=int(replace_variables(str(in_data["BAZEL_LOCKS_AMOUNT"]), env_vars)),
         COMMAND=replace_variables(in_data["COMMAND"], env_vars),
         TEXT_ON_SKIP=replace_variables(in_data["TEXT_ON_SKIP"], env_vars),
         RESULT_CHECK_TYPE=replace_variables(in_data["RESULT_CHECK_TYPE"], env_vars),
         RESULT_CHECK_FILE_PATTERN=replace_variables(in_data["RESULT_CHECK_FILE_PATTERN"], env_vars),
+        JENKINS_TEST_RESULT_PATH=replace_variables(in_data["JENKINS_TEST_RESULT_PATH"], env_vars),
     )
 
 
@@ -181,10 +187,12 @@ def finalize_stage(stage: StageInfo, env_vars: Vars, no_skip: bool) -> StageInfo
             ENV_VAR_LIST=[f"{k}={v}" for k, v in stage.get("ENV_VARS", {}).items()],
             SEC_VAR_LIST=list(stage.get("SEC_VAR_LIST", [])),
             GIT_FETCH_TAGS=stage.get("GIT_FETCH_TAGS", False),
+            GIT_FETCH_NOTES=stage.get("GIT_FETCH_NOTES", False),
             BAZEL_LOCKS_AMOUNT=int(stage.get("BAZEL_LOCKS_AMOUNT", -1)),
             COMMAND=stage["COMMAND"],
             RESULT_CHECK_TYPE=stage["RESULT_CHECK_TYPE"],
             RESULT_CHECK_FILE_PATTERN=stage["RESULT_CHECK_FILE_PATTERN"],
+            JENKINS_TEST_RESULT_PATH=stage["JENKINS_TEST_RESULT_PATH"],
         )
         if no_skip or not skip_stage
         else StageInfo(  #

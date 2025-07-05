@@ -2,6 +2,7 @@
 # Copyright (C) 2025 Checkmk GmbH - License: GNU General Public License v2
 # This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
 # conditions defined in the file COPYING, which is part of this source code package.
+# mypy: disable-error-code="no-untyped-def"
 
 import socket
 from typing import Final, override
@@ -11,7 +12,8 @@ from requests.adapters import HTTPAdapter
 from urllib3.connection import HTTPConnection
 from urllib3.connectionpool import HTTPConnectionPool
 
-import cmk.utils.resulttype as result
+import cmk.ccc.resulttype as result
+
 from cmk.utils import paths
 
 from cmk.gui.i18n import _
@@ -49,7 +51,7 @@ class JobSchedulerClient:
                     _(
                         "Could not connect to ui-job-scheduler. "
                         "Possibly the service <tt>ui-job-scheduler</tt> is not started, "
-                        "please make sure that all site services are all started. "
+                        "please make sure that all site services are started. "
                         "Tried to connect via <tt>%s</tt>. Reported error was: %s."
                     )
                     % (paths.omd_root.joinpath(JOB_SCHEDULER_SOCKET), e)

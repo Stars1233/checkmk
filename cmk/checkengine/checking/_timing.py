@@ -6,9 +6,8 @@
 from collections import defaultdict
 from collections.abc import Iterable
 from contextlib import suppress
-from typing import DefaultDict
 
-from cmk.utils.cpu_tracking import Snapshot
+from cmk.ccc.cpu_tracking import Snapshot
 
 from cmk.checkengine.checkresults import ActiveCheckResult
 from cmk.checkengine.fetcher import FetcherType, SourceInfo
@@ -22,7 +21,7 @@ def make_timing_results(
     *,
     perfdata_with_times: bool,
 ) -> ActiveCheckResult:
-    summary: DefaultDict[str, Snapshot] = defaultdict(Snapshot.null)
+    summary: defaultdict[str, Snapshot] = defaultdict(Snapshot.null)
     for source, duration in fetched:
         total_times += duration
         with suppress(KeyError):

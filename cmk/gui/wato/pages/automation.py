@@ -15,24 +15,24 @@ import cmk.ccc.version as cmk_version
 from cmk.ccc import store
 from cmk.ccc.exceptions import MKGeneralException
 from cmk.ccc.site import omd_site
+from cmk.ccc.user import UserId
 
 import cmk.utils.paths
 from cmk.utils.local_secrets import DistributedSetupSecret
 from cmk.utils.paths import configuration_lockfile
-from cmk.utils.user import UserId
 
 from cmk.automations.results import result_type_registry, SerializedResult
 
 import cmk.gui.utils
 import cmk.gui.watolib.utils as watolib_utils
 from cmk.gui import userdb
-from cmk.gui.config import active_config
+from cmk.gui.config import Config
 from cmk.gui.exceptions import MKAuthException
 from cmk.gui.http import request, response
 from cmk.gui.i18n import _
 from cmk.gui.log import logger
 from cmk.gui.logged_in import user
-from cmk.gui.pages import AjaxPage, PageRegistry, PageResult
+from cmk.gui.pages import AjaxPage, PageEndpoint, PageRegistry, PageResult
 from cmk.gui.session import SuperUserContext
 from cmk.gui.watolib.automation_commands import automation_command_registry, AutomationCommand
 from cmk.gui.watolib.automations import (
@@ -44,6 +44,7 @@ from cmk.gui.watolib.automations import (
     MKAutomationException,
     verify_request_compatibility,
 )
+from cmk.gui.watolib.hosts_and_folders import collect_all_hosts
 
 from cmk import trace
 from cmk.crypto.password import Password
@@ -52,8 +53,8 @@ tracer = trace.get_tracer()
 
 
 def register(page_registry: PageRegistry) -> None:
-    page_registry.register_page("automation_login")(PageAutomationLogin)
-    page_registry.register_page("noauth:automation")(PageAutomation)
+    page_registry.register(PageEndpoint("automation_login", PageAutomationLogin))
+    page_registry.register(PageEndpoint("noauth:automation", PageAutomation))
 
 
 def _store_central_site_info() -> None:
@@ -83,11 +84,11 @@ class PageAutomationLogin(AjaxPage):
 
     # TODO: Better use AjaxPage.handle_page() for standard AJAX call error handling. This
     # would need larger refactoring of the generic html.popup_trigger() mechanism.
-    def handle_page(self) -> None:
-        self._handle_exc(self.page)
+    def handle_page(self, config: Config) -> None:
+        self._handle_exc(config, self.page)
 
     @tracer.instrument("PageAutomationLogin.page")
-    def page(self) -> PageResult:
+    def page(self, config: Config) -> PageResult:
         if not user.may("wato.automation"):
             raise MKAuthException(_("This account has no permission for automation."))
 
@@ -143,16 +144,16 @@ class PageAutomation(AjaxPage):
 
     # TODO: Better use AjaxPage.handle_page() for standard AJAX call error handling. This
     # would need larger refactoring of the generic html.popup_trigger() mechanism.
-    def handle_page(self) -> None:
+    def handle_page(self, config: Config) -> None:
         # The automation page is accessed unauthenticated. After leaving the index.py area
         # into the page handler we always want to have a user context initialized to keep
         # the code free from special cases (if no user logged in, then...). So fake the
         # logged in user here.
         with SuperUserContext():
-            self._handle_exc(self.page)
+            self._handle_exc(config, self.page)
 
     @tracer.instrument("PageAutomation.page")
-    def page(self) -> PageResult:
+    def page(self, config: Config) -> PageResult:
         # To prevent mixups in written files we use the same lock here as for
         # the normal Setup page processing. This might not be needed for some
         # special automation requests, like inventory e.g., but to keep it simple,
@@ -166,23 +167,23 @@ class PageAutomation(AjaxPage):
             if lock_config
             else nullcontext()
         ):
-            self._execute_automation()
+            self._execute_automation(debug=config.debug)
         return None
 
-    def _execute_automation(self) -> None:
+    def _execute_automation(self, *, debug: bool) -> None:
         with tracer.span(f"_execute_automation[{self._command}]"):
             # TODO: Refactor these two calls to also use the automation_command_registry
             if self._command == "checkmk-automation":
-                self._execute_cmk_automation()
+                self._execute_cmk_automation(debug=debug)
                 return
             if self._command == "push-profile":
-                self._execute_push_profile()
+                self._execute_push_profile(debug=debug)
                 return
             try:
                 automation_command = automation_command_registry[self._command]
             except KeyError:
                 raise MKGeneralException(_("Invalid automation command: %s.") % self._command)
-            self._execute_automation_command(automation_command)
+            self._execute_automation_command(automation_command, debug=debug)
 
     @staticmethod
     def _format_cmk_automation_result(
@@ -190,6 +191,7 @@ class PageAutomation(AjaxPage):
         serialized_result: SerializedResult,
         cmk_command: str,
         cmdline_cmd: Iterable[str],
+        debug: bool,
     ) -> SerializedResult:
         try:
             return (
@@ -203,10 +205,11 @@ class PageAutomation(AjaxPage):
                 cmdline=cmdline_cmd,
                 out=serialized_result,
                 exc=e,
+                debug=debug,
             )
             raise MKAutomationException(msg)
 
-    def _execute_cmk_automation(self) -> None:
+    def _execute_cmk_automation(self, *, debug: bool) -> None:
         cmk_command = request.get_str_input_mandatory("automation")
         args = watolib_utils.mk_eval(request.get_str_input_mandatory("arguments"))
         indata = watolib_utils.mk_eval(request.get_str_input_mandatory("indata"))
@@ -218,6 +221,8 @@ class PageAutomation(AjaxPage):
             indata=indata,
             stdin_data=stdin_data,
             timeout=timeout,
+            debug=debug,
+            collect_all_hosts=collect_all_hosts,
         )
         # Don't use write_text() here (not needed, because no HTML document is rendered)
         response.set_data(
@@ -225,15 +230,16 @@ class PageAutomation(AjaxPage):
                 serialized_result=SerializedResult(serialized_result),
                 cmk_command=cmk_command,
                 cmdline_cmd=cmdline_cmd,
+                debug=debug,
             )
         )
 
-    def _execute_push_profile(self) -> None:
+    def _execute_push_profile(self, *, debug: bool) -> None:
         try:
             response.set_data(str(watolib_utils.mk_repr(self._automation_push_profile())))
         except Exception as e:
             logger.exception("error pushing profile")
-            if active_config.debug:
+            if debug:
                 raise
             response.set_data(_("Internal automation error: %s\n%s") % (e, traceback.format_exc()))
 
@@ -264,14 +270,16 @@ class PageAutomation(AjaxPage):
 
         return True
 
-    def _execute_automation_command(self, automation_command: type[AutomationCommand]) -> None:
+    def _execute_automation_command(
+        self, automation_command: type[AutomationCommand], *, debug: bool
+    ) -> None:
         try:
             # Don't use write_text() here (not needed, because no HTML document is rendered)
             automation = automation_command()
             response.set_data(repr(automation.execute(automation.get_request())))
         except Exception as e:
             logger.exception("error executing automation command")
-            if active_config.debug:
+            if debug:
                 raise
             response.set_data(_("Internal automation error: %s\n%s") % (e, traceback.format_exc()))
 
@@ -286,7 +294,7 @@ def _set_version_headers() -> None:
 
 
 def _get_login_secret(create_on_demand: bool = False) -> str | None:
-    path = cmk.utils.paths.var_dir + "/wato/automation_secret.mk"
+    path = cmk.utils.paths.var_dir / "wato/automation_secret.mk"
 
     secret = store.load_object_from_file(path, default=None)
     if secret is not None:

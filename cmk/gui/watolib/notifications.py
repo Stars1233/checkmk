@@ -27,10 +27,10 @@ import logging
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Any, cast, NotRequired, TypedDict
+from typing import Any, cast, NotRequired, override, TypedDict
 
 from cmk.ccc import store
+from cmk.ccc.user import UserId
 
 from cmk.utils.notify_types import (
     EventRule,
@@ -44,7 +44,6 @@ from cmk.utils.notify_types import (
     NotifyPlugin,
     PluginNameWithParameters,
 )
-from cmk.utils.user import UserId
 
 from cmk.gui import userdb
 from cmk.gui.i18n import _
@@ -90,16 +89,17 @@ logger = logging.getLogger(__name__)
 class NotificationRuleConfigFile(WatoListConfigFile[EventRule]):
     def __init__(self) -> None:
         super().__init__(
-            config_file_path=Path(wato_root_dir() + "notifications.mk"),
+            config_file_path=wato_root_dir() / "notifications.mk",
             config_variable="notification_rules",
             spec_class=EventRule,
         )
 
-    def _load_file(self, lock: bool) -> list[EventRule]:
+    @override
+    def _load_file(self, *, lock: bool) -> list[EventRule]:
         notification_rules = store.load_from_mk_file(
             self._config_file_path,
             key=self._config_variable,
-            default=[],
+            default=list[Any](),  # Sigh... :-/
             lock=lock,
         )
         # Convert to new plug-in configuration format
@@ -619,7 +619,9 @@ def _get_parameters_for_rule_with_id(
     return (notify_plugin_name, parameters_for_method[params_id]["parameter_properties"])
 
 
-def _create_parameters_for_rule(notify_plugin: PluginNameWithParameters) -> NotifyPlugin:
+def _create_parameters_for_rule(
+    notify_plugin: PluginNameWithParameters, pprint_value: bool
+) -> NotifyPlugin:
     if notify_plugin[1] is None:
         return (notify_plugin[0], None)
 
@@ -641,7 +643,7 @@ def _create_parameters_for_rule(notify_plugin: PluginNameWithParameters) -> Noti
             {new_params_id: new_notification_parameter_item}
         )
 
-    NotificationParameterConfigFile().save(notification_parameters)
+    NotificationParameterConfigFile().save(notification_parameters, pprint_value)
     return (notify_plugin[0], new_params_id)
 
 
@@ -690,13 +692,15 @@ class NotificationRule:
         }
         return r
 
-    def to_mk_file_format(self) -> EventRule:
+    def to_mk_file_format(self, pprint_value: bool) -> EventRule:
         r: dict[str, Any] = {"rule_id": self.rule_id}
         notify_method = self.notification_method.to_mk_file_format()
         if "bulk" in notify_method:
             r["bulk"] = notify_method["bulk"]
 
-        r["notify_plugin"] = _create_parameters_for_rule(notify_method["notify_plugin"])
+        r["notify_plugin"] = _create_parameters_for_rule(
+            notify_method["notify_plugin"], pprint_value
+        )
 
         r.update(self.rule_properties.to_mk_file_format() | self.conditions.to_mk_file_format())
 
@@ -742,7 +746,7 @@ def find_timeperiod_usage_in_notification_rules(time_period_name: str) -> list[t
 class NotificationParameterConfigFile(WatoSimpleConfigFile[NotificationParameterSpec]):
     def __init__(self) -> None:
         super().__init__(
-            config_file_path=Path(wato_root_dir() + "notification_parameter.mk"),
+            config_file_path=wato_root_dir() / "notification_parameter.mk",
             config_variable="notification_parameter",
             spec_class=NotificationParameterSpec,
         )

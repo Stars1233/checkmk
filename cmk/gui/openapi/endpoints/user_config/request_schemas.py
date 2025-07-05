@@ -200,10 +200,10 @@ class UserInterfaceAttributes(BaseSchema):
         enum=["hide", "show"],
         load_default="hide",
     )
-    mega_menu_icons = fields.String(
+    main_menu_icons = fields.String(
         required=False,
         description="This option decides if colored icon should be shown foe every entry in the "
-        "mega menus or alternatively only for the headlines (the 'topics')",
+        "main menus or alternatively only for the headlines (the 'topics')",
         enum=["topic", "entry"],
         load_default="topic",
     )
@@ -391,12 +391,19 @@ class CreateUser(CustomUserAttributes):
             "interface_theme": "default",
             "sidebar_position": "right",
             "navigation_bar_icons": "hide",
-            "mega_menu_icons": "topic",
+            "main_menu_icons": "topic",
             "show_mode": "default",
             "contextual_help_icon": "show_icon",
         },
         example={"interface_theme": "dark"},
         description="",
+    )
+    start_url = fields.String(
+        required=False,
+        load_default="default_start_url",
+        description="The URL that the user should be redirected to after login. There is a "
+        "'default_start_url', a 'welcome_page', and any other will be treated as a custom URL",
+        example="default_start_url",
     )
 
 
@@ -417,10 +424,10 @@ class UserInterfaceUpdateAttributes(BaseSchema):
         "respective titles",
         enum=["hide", "show"],
     )
-    mega_menu_icons = fields.String(
+    main_menu_icons = fields.String(
         required=False,
         description="This option decides if colored icon should be shown foe every entry in the "
-        "mega menus or alternatively only for the headlines (the 'topics')",
+        "main menus or alternatively only for the headlines (the 'topics')",
         enum=["topic", "entry"],
     )
     show_mode = fields.String(
@@ -541,4 +548,10 @@ class UpdateUser(CustomUserAttributes):
         required=False,
         example={"interface_theme": "dark"},
         description="",
+    )
+    start_url = fields.String(
+        required=False,
+        description="The URL that the user should be redirected to after login. There is a "
+        "'default_start_url', a 'welcome_page', and any other will be treated as a custom URL",
+        example="default_start_url",
     )

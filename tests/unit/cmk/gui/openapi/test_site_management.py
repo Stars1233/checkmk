@@ -79,11 +79,11 @@ def test_login(
     monkeypatch.setattr("cmk.gui.fields.definitions.load_users", lambda: ["cmkadmin"])
     monkeypatch.setattr(
         "cmk.gui.watolib.site_management.do_site_login",
-        lambda site_id, username, password: "watosecret",
+        lambda site_id, username, password, debug: "watosecret",
     )
     monkeypatch.setattr(
         "cmk.gui.watolib.site_management.trigger_remote_certs_creation",
-        lambda site_id, settings: None,
+        lambda site_id, settings, force, debug: None,
     )
 
     clients.SiteManagement.login(
@@ -162,7 +162,7 @@ def test_delete_site_connection_problem(
     clients.SiteManagement.delete(
         site_id=site_id,
         expect_ok=False,
-    ).assert_status_code(404)
+    ).assert_status_code(400)
 
 
 def test_create_site_connection(clients: ClientRegistry) -> None:

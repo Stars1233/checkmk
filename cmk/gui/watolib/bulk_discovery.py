@@ -4,21 +4,28 @@
 # conditions defined in the file COPYING, which is part of this source code package.
 import multiprocessing as mp
 import threading
-from collections.abc import Sequence
-from typing import NamedTuple, NewType, override
+import traceback
+from collections.abc import Mapping, Sequence
+from typing import Literal, NamedTuple, NewType, override
 
 from pydantic import BaseModel
 
+import cmk.ccc.resulttype as result
 from cmk.ccc import store
+from cmk.ccc.hostaddress import HostName
 from cmk.ccc.site import SiteId
 
-import cmk.utils.resulttype as result
-from cmk.utils.hostaddress import HostName
 from cmk.utils.paths import configuration_lockfile, tmp_run_dir
 
 from cmk.automations.results import ServiceDiscoveryResult as AutomationDiscoveryResult
 
-from cmk.checkengine.discovery import DiscoveryResult, DiscoverySettings
+from cmk.checkengine.discovery import (
+    DiscoveryReport,
+    DiscoverySettingFlags,
+    DiscoverySettings,
+    DiscoveryValueSpecModel,
+    TransitionCounter,
+)
 
 from cmk.gui.background_job import (
     AlreadyRunningError,
@@ -27,6 +34,7 @@ from cmk.gui.background_job import (
     InitialStatusArgs,
     JobTarget,
 )
+from cmk.gui.config import active_config
 from cmk.gui.exceptions import MKUserError
 from cmk.gui.http import request
 from cmk.gui.i18n import _
@@ -103,7 +111,13 @@ def vs_bulk_discovery(render_form: bool = False, include_subfolders: bool = True
                                 "update_everything",
                                 _("Refresh all services and host labels (tabula rasa)"),
                                 FixedValue(
-                                    value=None,
+                                    value=DiscoverySettingFlags(
+                                        add_new_services=True,
+                                        remove_vanished_services=True,
+                                        update_host_labels=True,
+                                        update_changed_service_labels=True,
+                                        update_changed_service_parameters=True,
+                                    ),
                                     title=_("Refresh all services and host labels (tabula rasa)"),
                                     totext="",
                                 ),
@@ -135,9 +149,9 @@ def vs_bulk_discovery(render_form: bool = False, include_subfolders: bool = True
                                             ),
                                         ),
                                         (
-                                            "update_changed_service_params",
+                                            "update_changed_service_parameters",
                                             Checkbox(
-                                                label=_("Update service params"),
+                                                label=_("Update service parameters"),
                                                 default_value=False,
                                             ),
                                         ),
@@ -182,59 +196,41 @@ def vs_bulk_discovery(render_form: bool = False, include_subfolders: bool = True
 
 
 def _migrate_automatic_rediscover_parameters(
-    param: str | tuple[str, dict[str, bool]],
-) -> tuple[str, dict[str, bool]]:
-    # already migrated
-    if isinstance(param, tuple):
-        return param
-
-    if param == "new":
-        return (
-            "custom",
-            {
-                "add_new_services": True,
-                "remove_vanished_services": False,
-                "update_host_labels": True,
-            },
-        )
-
-    if param == "remove":
-        return (
-            "custom",
-            {
-                "add_new_services": False,
-                "remove_vanished_services": True,
-                "update_host_labels": False,
-            },
-        )
-
-    if param == "fixall":
-        return (
-            "custom",
-            {
-                "add_new_services": True,
-                "remove_vanished_services": True,
-                "update_host_labels": True,
-            },
-        )
-
-    if param == "refresh":
+    param: tuple[Literal["update_everything", "custom"], Mapping[str, bool] | None],
+) -> DiscoveryValueSpecModel:
+    ident, flags = param
+    if ident == "update_everything" or flags is None:
+        # handle temporary 2.4 beta state and inconsistent 2.3 state
         return (
             "update_everything",
-            {
-                "add_new_services": True,
-                "remove_vanished_services": True,
-                "update_host_labels": True,
-            },
+            DiscoverySettingFlags(
+                add_new_services=True,
+                remove_vanished_services=True,
+                update_host_labels=True,
+                update_changed_service_labels=True,
+                update_changed_service_parameters=True,
+            ),
         )
 
-    raise MKUserError(None, _("Automatic rediscovery parameter {param} not implemented"))
+    return (
+        "custom",
+        DiscoverySettingFlags(
+            add_new_services=flags["add_new_services"],
+            remove_vanished_services=flags["remove_vanished_services"],
+            update_host_labels=flags["update_host_labels"],
+            update_changed_service_labels=flags.get("update_changed_service_labels", False),
+            update_changed_service_parameters=flags.get(
+                "update_changed_service_parameters",
+                bool(flags.get("update_changed_service_params", False)),
+            ),
+        ),
+    )
 
 
 class _DiscoveryTaskResult(NamedTuple):
     task: DiscoveryTask
     result: AutomationDiscoveryResult | None
-    error: Exception | None
+    error: tuple[Exception, str] | None
 
 
 class BulkDiscoveryBackgroundJob(BackgroundJob):
@@ -263,11 +259,22 @@ class BulkDiscoveryBackgroundJob(BackgroundJob):
         ignore_errors: IgnoreErrors,
         tasks: Sequence[DiscoveryTask],
         job_interface: BackgroundProcessInterface,
+        *,
+        pprint_value: bool,
+        debug: bool,
     ) -> None:
         job_interface.send_progress_update(_("Waiting to acquire lock"))
         with job_interface.gui_context(), store.locked(self.lock_file):
             job_interface.send_progress_update(_("Acquired lock"))
-            self._do_execute(mode, do_scan, ignore_errors, tasks, job_interface)
+            self._do_execute(
+                mode,
+                do_scan,
+                ignore_errors,
+                tasks,
+                job_interface,
+                pprint_value=pprint_value,
+                debug=debug,
+            )
 
     def _do_execute(
         self,
@@ -276,6 +283,9 @@ class BulkDiscoveryBackgroundJob(BackgroundJob):
         ignore_errors: IgnoreErrors,
         tasks: Sequence[DiscoveryTask],
         job_interface: BackgroundProcessInterface,
+        *,
+        pprint_value: bool,
+        debug: bool,
     ) -> None:
         self._initialize_statistics(
             num_hosts_total=sum(len(task.host_names) for task in tasks),
@@ -289,15 +299,18 @@ class BulkDiscoveryBackgroundJob(BackgroundJob):
         result_queue: mp.Queue[_DiscoveryTaskResult | None] = mp.Queue()
         result_processing_thread = threading.Thread(
             target=copy_request_context(self._process_discovery_results),
-            args=(result_queue, len(tasks_by_site), job_interface),
+            args=(result_queue, len(tasks_by_site), job_interface, pprint_value),
         )
+
+        def run(site_tasks: list[DiscoveryTask]) -> None:
+            self._run_discovery_tasks(
+                result_queue, site_tasks, mode, do_scan, ignore_errors, debug=debug
+            )
 
         with mp.pool.ThreadPool(processes=len(tasks_by_site)) as task_pool:
             for site_tasks in tasks_by_site.values():
-                task_pool.apply_async(
-                    func=copy_request_context(self._run_discovery_tasks),
-                    args=(result_queue, site_tasks, mode, do_scan, ignore_errors),
-                )
+                task_pool.apply_async(func=copy_request_context(run), args=(site_tasks,))
+
             try:
                 result_processing_thread.start()
 
@@ -318,16 +331,23 @@ class BulkDiscoveryBackgroundJob(BackgroundJob):
             )
         )
         job_interface.send_progress_update(
-            _("Host labels: %d total (%d added)")
-            % (self._num_host_labels_total, self._num_host_labels_added)
+            _("Host labels: %d total (%d added, %d changed, %d removed, %d kept)")
+            % (
+                self._num_host_labels.total,
+                self._num_host_labels.new,
+                self._num_host_labels.changed,
+                self._num_host_labels.removed,
+                self._num_host_labels.kept,
+            )
         )
         job_interface.send_progress_update(
-            _("Services: %d total (%d added, %d removed, %d kept)")
+            _("Services: %d total (%d added, %d changed, %d removed, %d kept)")
             % (
-                self._num_services_total,
-                self._num_services_added,
-                self._num_services_removed,
-                self._num_services_kept,
+                self._num_services.total,
+                self._num_services.new,
+                self._num_services.changed,
+                self._num_services.removed,
+                self._num_services.kept,
             )
         )
 
@@ -340,17 +360,20 @@ class BulkDiscoveryBackgroundJob(BackgroundJob):
         mode: DiscoverySettings,
         do_scan: DoFullScan,
         ignore_errors: IgnoreErrors,
+        *,
+        debug: bool,
     ) -> None:
         for task in site_tasks:
             try:
                 result = discovery(
                     task.site_id,
-                    mode.to_json(),
+                    mode,
                     task.host_names,
                     scan=do_scan,
                     raise_errors=not ignore_errors,
                     timeout=request.request_timeout - 2,
                     non_blocking_http=True,
+                    debug=debug,
                 )
                 queue.put(
                     _DiscoveryTaskResult(
@@ -360,7 +383,9 @@ class BulkDiscoveryBackgroundJob(BackgroundJob):
                     )
                 )
             except Exception as exc:
-                queue.put(_DiscoveryTaskResult(task, None, exc))
+                # Needs to be formatted in this thread, since the traceback is a thread local
+                # and the error handling is done in another thread.
+                queue.put(_DiscoveryTaskResult(task, None, (exc, traceback.format_exc())))
 
         # Indicate result processing thread that we're done
         queue.put(None)
@@ -371,17 +396,14 @@ class BulkDiscoveryBackgroundJob(BackgroundJob):
         self._num_hosts_succeeded = 0
         self._num_hosts_skipped = 0
         self._num_hosts_failed = 0
-        self._num_services_added = 0
-        self._num_services_removed = 0
-        self._num_services_kept = 0
-        self._num_services_total = 0
-        self._num_host_labels_total = 0
-        self._num_host_labels_added = 0
+        self._num_services = TransitionCounter()
+        self._num_host_labels = TransitionCounter()
 
     def _process_discovery_error(
         self,
+        job_interface: BackgroundProcessInterface,
         task: DiscoveryTask,
-        exception: Exception,
+        exception: tuple[Exception, str],
     ) -> None:
         self._num_hosts_failed += len(task.host_names)
         if task.site_id:
@@ -391,16 +413,18 @@ class BulkDiscoveryBackgroundJob(BackgroundJob):
             )
         else:
             msg = _("Error during discovery of %s") % (", ".join(task.host_names))
-        self._logger.warning(f"{msg}, Error: {exception}")
+        self._logger.warning(f"{msg}, Error: {exception[0]}")
+        job_interface.send_progress_update(f"{msg}, Error: {exception[0]}")
 
         # only show traceback on debug
-        self._logger.debug("Exception", exc_info=exception)
+        self._logger.debug(f"Traceback: {exception[1]}")
 
     def _process_discovery_results(
         self,
         results: "mp.Queue[_DiscoveryTaskResult | None]",
         n_task_threads: int,
         job_interface: BackgroundProcessInterface,
+        pprint_value: bool,
     ) -> None:
         remaining_threads = n_task_threads
         while True:
@@ -413,12 +437,19 @@ class BulkDiscoveryBackgroundJob(BackgroundJob):
                 continue
 
             if result.error:
-                self._process_discovery_error(result.task, result.error)
+                self._process_discovery_error(job_interface, result.task, result.error)
             elif result.result:
                 try:
-                    self._process_discovery_result(result.task, result.result, job_interface)
+                    self._process_discovery_result(
+                        result.task,
+                        result.result,
+                        job_interface,
+                        pprint_value=pprint_value,
+                    )
                 except Exception as exc:
-                    self._process_discovery_error(result.task, exc)
+                    self._process_discovery_error(
+                        job_interface, result.task, (exc, traceback.format_exc())
+                    )
 
             self._num_hosts_processed += len(result.task.host_names)
 
@@ -427,6 +458,8 @@ class BulkDiscoveryBackgroundJob(BackgroundJob):
         task: DiscoveryTask,
         response: AutomationDiscoveryResult,
         job_interface: BackgroundProcessInterface,
+        *,
+        pprint_value: bool,
     ) -> None:
         # The following code updates the host config. The progress from loading the Setup folder
         # until it has been saved needs to be locked.
@@ -438,21 +471,19 @@ class BulkDiscoveryBackgroundJob(BackgroundJob):
             for count, hostname in enumerate(task.host_names, self._num_hosts_processed + 1):
                 self._process_service_counts_for_host(response.hosts[hostname])
                 msg = self._process_discovery_result_for_host(
-                    hosts[hostname], response.hosts[hostname]
+                    hosts[hostname], response.hosts[hostname], pprint_value=pprint_value
                 )
                 job_interface.send_progress_update(
                     f"[{count}/{self._num_hosts_total}] {hostname}: {msg}"
                 )
 
-    def _process_service_counts_for_host(self, result: DiscoveryResult) -> None:
-        self._num_services_added += result.self_new
-        self._num_services_removed += result.self_removed
-        self._num_services_kept += result.self_kept
-        self._num_services_total += result.self_total
-        self._num_host_labels_added += result.self_new_host_labels
-        self._num_host_labels_total += result.self_total_host_labels
+    def _process_service_counts_for_host(self, result: DiscoveryReport) -> None:
+        self._num_services += result.services
+        self._num_host_labels += result.host_labels
 
-    def _process_discovery_result_for_host(self, host: Host, result: DiscoveryResult) -> str:
+    def _process_discovery_result_for_host(
+        self, host: Host, result: DiscoveryReport, *, pprint_value: bool
+    ) -> str:
         if result.error_text == "":
             self._num_hosts_skipped += 1
             return _("discovery skipped: host not monitored")
@@ -460,35 +491,41 @@ class BulkDiscoveryBackgroundJob(BackgroundJob):
         if result.error_text is not None:
             self._num_hosts_failed += 1
             if not host.locked():
-                host.set_discovery_failed()
+                host.set_discovery_failed(pprint_value=pprint_value)
             return _("discovery failed: %s") % result.error_text
 
         self._num_hosts_succeeded += 1
 
         add_service_change(
-            "bulk-discovery",
-            _(
-                "Did service discovery on host %s: %d added, %d removed, %d kept, "
-                "%d total services and %d host labels added, %d host labels total"
+            action_name="bulk-discovery",
+            text=_(
+                "Discovery on host %s: %d services (%d added, %d changed, %d removed, %d kept)"
+                "and %d host labels (%d added, %d changed, %d removed, %d kept)"
             )
             % (
                 host.name(),
-                result.self_new,
-                result.self_removed,
-                result.self_kept,
-                result.self_total,
-                result.self_new_host_labels,
-                result.self_total_host_labels,
+                result.services.total,
+                result.services.new,
+                result.services.changed,
+                result.services.removed,
+                result.services.kept,
+                result.host_labels.total,
+                result.host_labels.new,
+                result.host_labels.changed,
+                result.host_labels.removed,
+                result.host_labels.kept,
             ),
-            host.object_ref(),
-            [config_domain_registry[CORE_DOMAIN]],
-            {CORE_DOMAIN: generate_hosts_to_update_settings([host.name()])},
-            host.site_id(),
+            user_id=user.id,
+            object_ref=host.object_ref(),
+            domains=[config_domain_registry[CORE_DOMAIN]],
+            domain_settings={CORE_DOMAIN: generate_hosts_to_update_settings([host.name()])},
+            site_id=host.site_id(),
             diff_text=result.diff_text,
+            use_git=active_config.wato_use_git,
         )
 
         if not host.locked():
-            host.clear_discovery_failed()
+            host.clear_discovery_failed(pprint_value=pprint_value)
 
         return _("discovery successful")
 
@@ -511,6 +548,9 @@ def start_bulk_discovery(
     do_full_scan: DoFullScan,
     ignore_errors: IgnoreErrors,
     bulk_size: BulkSize,
+    *,
+    pprint_value: bool,
+    debug: bool,
 ) -> result.Result[None, AlreadyRunningError | StartupError]:
     """Start a bulk discovery job with the given options
 
@@ -547,6 +587,8 @@ def start_bulk_discovery(
                 do_full_scan=do_full_scan,
                 ignore_errors=ignore_errors,
                 tasks=tasks,
+                pprint_value=pprint_value,
+                debug=debug,
             ),
         ),
         InitialStatusArgs(
@@ -563,13 +605,21 @@ class BulkDiscoveryJobArgs(BaseModel, frozen=True):
     do_full_scan: DoFullScan
     ignore_errors: IgnoreErrors
     tasks: Sequence[DiscoveryTask]
+    pprint_value: bool
+    debug: bool
 
 
 def bulk_discovery_job_entry_point(
     job_interface: BackgroundProcessInterface, args: BulkDiscoveryJobArgs
 ) -> None:
     BulkDiscoveryBackgroundJob().do_execute(
-        args.discovery_mode, args.do_full_scan, args.ignore_errors, args.tasks, job_interface
+        args.discovery_mode,
+        args.do_full_scan,
+        args.ignore_errors,
+        args.tasks,
+        job_interface,
+        pprint_value=args.pprint_value,
+        debug=args.debug,
     )
 
 

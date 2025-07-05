@@ -27,7 +27,6 @@ from cmk.gui.form_specs.private import (
     CommentTextArea,
     ConditionChoices,
     DictionaryExtended,
-    Folder,
     Labels,
     LegacyValueSpec,
     ListExtended,
@@ -41,15 +40,14 @@ from cmk.gui.form_specs.private import (
     SingleChoiceExtended,
     StringAutocompleter,
     TimeSpecific,
-    UnknownFormSpec,
     UserSelection,
 )
+from cmk.gui.form_specs.private.two_column_dictionary import TwoColumnDictionary
 from cmk.gui.form_specs.vue.visitors.condition_choices import ConditionChoicesVisitor
 from cmk.gui.form_specs.vue.visitors.metric import MetricVisitor
 from cmk.gui.form_specs.vue.visitors.recomposers import (
     recompose_cascading_single_choice,
     recompose_dictionary,
-    recompose_folder,
     recompose_host_state,
     recompose_levels,
     recompose_list,
@@ -65,7 +63,6 @@ from cmk.gui.form_specs.vue.visitors.recomposers import (
     recompose_single_choice,
     recompose_string,
     recompose_time_period,
-    recompose_unknown_form_spec,
     recompose_user_selection,
 )
 from cmk.gui.htmllib.html import html
@@ -142,18 +139,19 @@ from .visitors import (
     TimeSpecificVisitor,
     TransformVisitor,
     TupleVisitor,
+    TwoColumnDictionaryVisitor,
 )
 from .visitors._type_defs import (
     DataOrigin,
     DEFAULT_VALUE,
     DefaultValue,
     DiskModel,
-    FrontendModel,
     VisitorOptions,
 )
 from .visitors._type_defs import FormSpecValidationError as FormSpecValidationError
 
 T = TypeVar("T")
+_FrontendModel = TypeVar("_FrontendModel")
 
 
 class DisplayMode(Enum):
@@ -182,6 +180,7 @@ def register_form_specs():
     # Native rendering
     register_visitor_class(Integer, IntegerVisitor)
     register_visitor_class(DictionaryExtended, DictionaryVisitor)
+    register_visitor_class(TwoColumnDictionary, TwoColumnDictionaryVisitor)
     register_visitor_class(String, StringVisitor)
     register_visitor_class(Float, FloatVisitor)
     register_visitor_class(SingleChoiceExtended, SingleChoiceVisitor)
@@ -219,7 +218,6 @@ def register_form_specs():
     register_recomposer_function(MonitoredHostExtended, recompose_monitored_host_extended)
     register_recomposer_function(MonitoredService, recompose_monitored_service)
     register_recomposer_function(String, recompose_string)
-    register_recomposer_function(Folder, recompose_folder)
     register_recomposer_function(HostState, recompose_host_state)
     register_recomposer_function(ServiceState, recompose_service_state)
     register_recomposer_function(SingleChoice, recompose_single_choice)
@@ -227,7 +225,6 @@ def register_form_specs():
     register_recomposer_function(SimpleLevels, recompose_levels)
     register_recomposer_function(List, recompose_list)
     register_recomposer_function(Percentage, recompose_percentage)
-    register_recomposer_function(UnknownFormSpec, recompose_unknown_form_spec)
     register_recomposer_function(UserSelection, recompose_user_selection)
     register_recomposer_function(Dictionary, recompose_dictionary)
     register_recomposer_function(CascadingSingleChoice, recompose_cascading_single_choice)
@@ -305,7 +302,7 @@ def render_form_spec(
         )
         logger.warning("Vue value:\n%s", pprint.pformat(vue_app_config.data, width=220))
         logger.warning("Vue validation:\n%s", pprint.pformat(vue_app_config.validation, width=220))
-    html.vue_app(app_name="form_spec", data=asdict(vue_app_config))
+    html.vue_component(component_name="cmk-form-spec", data=asdict(vue_app_config))
 
 
 def parse_data_from_frontend(form_spec: FormSpec[T], field_id: str) -> Any:
@@ -326,7 +323,7 @@ def validate_value_from_frontend(
 
 
 def transform_to_disk_model(
-    form_spec: FormSpec[T], value_from_frontend: FrontendModel | DefaultValue = DEFAULT_VALUE
+    form_spec: FormSpec[T], value_from_frontend: _FrontendModel | DefaultValue = DEFAULT_VALUE
 ) -> DiskModel:
     visitor = get_visitor(form_spec, VisitorOptions(data_origin=DataOrigin.FRONTEND))
     return visitor.to_disk(value_from_frontend)

@@ -8,8 +8,9 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
 
+from cmk.ccc.user import UserId
+
 from cmk.utils.structured_data import SDKey, SDPath
-from cmk.utils.user import UserId
 
 from cmk.gui import inventory
 from cmk.gui.data_source import data_source_registry
@@ -81,10 +82,10 @@ def _register_painter(
             "short_title": lambda s, cell: s._spec.get("short", s.title),
             "tooltip_title": lambda s, cell: s._spec.get("tooltip_title", s.title),
             "columns": property(lambda s: s._spec["columns"]),
-            "render": lambda self, row, cell: spec["paint"](row),
-            "export_for_python": lambda self, row, cell: spec["export_for_python"](row, cell),
-            "export_for_csv": lambda self, row, cell: spec["export_for_csv"](row, cell),
-            "export_for_json": lambda self, row, cell: spec["export_for_json"](row, cell),
+            "render": lambda self, row, cell, user: spec["paint"](row),
+            "export_for_python": lambda self, row, cell, user: spec["export_for_python"](row, cell),
+            "export_for_csv": lambda self, row, cell, user: spec["export_for_csv"](row, cell),
+            "export_for_json": lambda self, row, cell, user: spec["export_for_json"](row, cell),
             "group_by": lambda self, row, cell: self._spec.get("groupby"),
             "parameters": property(lambda s: s._spec.get("params")),
             "painter_options": property(lambda s: s._spec.get("options", [])),
@@ -224,7 +225,7 @@ def _register_views(
         "owner": UserId.builtin(),
         "add_context_to_title": True,
         "packaged": False,
-        "megamenu_search_terms": [],
+        "main_menu_search_terms": [],
     }
 
     # View for the items of one host
@@ -265,7 +266,7 @@ def _register_views(
         "owner": UserId.builtin(),
         "add_context_to_title": True,
         "packaged": False,
-        "megamenu_search_terms": [],
+        "main_menu_search_terms": [],
     }
 
 

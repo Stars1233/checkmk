@@ -3,13 +3,14 @@
 # This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
 # conditions defined in the file COPYING, which is part of this source code package.
 
-from cmk.utils.hostaddress import HostName
+from cmk.ccc.hostaddress import HostName
+
 from cmk.utils.servicename import ServiceName
 
 from cmk.gui.breadcrumb import Breadcrumb, BreadcrumbItem, make_topic_breadcrumb
 from cmk.gui.http import request
 from cmk.gui.i18n import _u
-from cmk.gui.main_menu import mega_menu_registry
+from cmk.gui.main_menu import main_menu_registry
 from cmk.gui.pagetypes import PagetypeTopics
 from cmk.gui.utils.urls import makeuri_contextless
 from cmk.gui.views.store import get_permitted_views
@@ -29,7 +30,11 @@ def _service_breadcrumb(host_name: HostName, service_name: ServiceName) -> Bread
             title=view_title(service_view_spec, context={}),
             url=makeuri_contextless(
                 request,
-                [("view_name", "service"), ("host", host_name), ("service", service_name)],
+                [
+                    ("view_name", "service"),
+                    ("host", host_name),
+                    ("service", service_name),
+                ],
                 filename="view.py",
             ),
         )
@@ -43,7 +48,7 @@ def make_host_breadcrumb(host_name: HostName) -> Breadcrumb:
     allhosts_view_spec = permitted_views["allhosts"]
 
     breadcrumb = make_topic_breadcrumb(
-        mega_menu_registry.menu_monitoring(),
+        main_menu_registry.menu_monitoring(),
         PagetypeTopics.get_topic(allhosts_view_spec["topic"]).title(),
     )
 

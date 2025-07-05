@@ -10,6 +10,8 @@
 /// values which should not be here. If that gets on `master`, it should be gotten
 /// rid of as soon as possible
 
+import org.jenkinsci.plugins.pipeline.modeldefinition.Utils
+
 /// Returns the Jenkins 'branch folder' of the currently running job, either with or without
 /// the 'Testing/..' prefix
 /// So "Testing/bla.blubb/checkmk/2.4.0/some_job" will result in
@@ -23,7 +25,7 @@ def branch_base_folder(with_testing_prefix) {
     return project_name_components[checkmk_index..checkmk_index + 1].join('/');
 }
 
-def provide_agent_binaries(version, edition, disable_cache, bisect_comment) {
+def provide_agent_binaries(Map args) {
     // This _should_ go to an externally maintained file (single point of truth), see
     // https://jira.lan.tribe29.com/browse/CMK-13857
     // and https://review.lan.tribe29.com/c/check_mk/+/67387
@@ -41,16 +43,16 @@ def provide_agent_binaries(version, edition, disable_cache, bisect_comment) {
             condition: true, // edition != "raw",  // FIXME!
             dependency_paths: [
                 "agents",
-                "non-free/cmk-update-agent"
+                "non-free/packages/cmk-update-agent"
             ],
             install_cmd: """\
                 # check-mk-agent-*.{deb,rpm}
                 cp *.deb *.rpm ${checkout_dir}/agents/
                 # artifact file flags are not being kept - building a tar would be better..
                 install -m 755 -D cmk-agent-ctl* mk-sql -t ${checkout_dir}/agents/linux/
-                if [ "${edition}" != "raw" ]; then
-                    echo "edition is ${edition} => copy Linux agent updaters"
-                    install -m 755 -D cmk-update-agent* -t ${checkout_dir}/non-free/cmk-update-agent/
+                if [ "${args.edition}" != "raw" ]; then
+                    echo "edition is ${args.edition} => copy Linux agent updaters"
+                    install -m 755 -D cmk-update-agent* -t ${checkout_dir}/non-free/packages/cmk-update-agent/
                 fi
                 """.stripIndent(),
         ],
@@ -66,8 +68,8 @@ def provide_agent_binaries(version, edition, disable_cache, bisect_comment) {
                 "agents/modules",
                 "agents/windows",
                 "agents/wnx",
-                "packages/host/cmk-agent-ctl",
-                "packages/host/mk-sql",
+                "packages/cmk-agent-ctl",
+                "packages/mk-sql",
                 "third_party/asio",
                 "third_party/fmt",
                 "third_party/googletest",
@@ -118,35 +120,54 @@ def provide_agent_binaries(version, edition, disable_cache, bisect_comment) {
         ],
     ];
 
-    def artifacts_base_dir = "tmp_artifacts";
+    def stages = upstream_job_details.collectEntries { job_name, details ->
+        [("${job_name}".toString()) : {
+            def run_condition = details.get("condition", true);
+            def build_instance = null;
 
-    upstream_job_details.collect { job_name, details ->
-        if ( ! details.get("condition", true) ) {
-            return;
-        }
-        println("Build ${job_name}");
-        details.collect { key, value ->
-            println("  ${key}: ${value}");
-        }
-        upstream_build(
-            relative_job_name: details.relative_job_name,
-            build_params: [
-                DISABLE_CACHE: disable_cache,
-                VERSION: version,
-            ],
-            build_params_no_check: [
-                CIPARAM_BISECT_COMMENT: bisect_comment,
-            ],
-            dependency_paths: details.dependency_paths,
-            no_venv: true,          // run ci-artifacts call without venv
-            omit_build_venv: true,  // do not check or build a venv first
-            dest: "${artifacts_base_dir}/${job_name}",
-        );
-        dir("${checkout_dir}/${artifacts_base_dir}/${job_name}") {
-            sh(details.install_cmd);
-        }
+            if (! run_condition) {
+                Utils.markStageSkippedForConditional("${distro}");
+            }
+
+            smart_stage(
+                name: job_name,
+                condition: run_condition,
+                raiseOnError: true,
+            ) {
+                build_instance = smart_build(
+                    // see global-defaults.yml, needs to run in minimal container
+                    use_upstream_build: true,
+                    relative_job_name: details.relative_job_name,
+                    build_params: [
+                        VERSION: args.version,
+                        DISABLE_CACHE: args.disable_cache,
+                    ],
+                    build_params_no_check: [
+                        CIPARAM_BISECT_COMMENT: args.bisect_comment,
+                    ],
+                    dependency_paths: details.dependency_paths,
+                    dest: "${args.artifacts_base_dir}/${job_name}",
+                    no_remove_others: true, // do not delete other files in the dest dir
+                );
+            }
+
+            smart_stage(
+                name: "Move artifacts around",
+                condition: run_condition && build_instance,
+                raiseOnError: true,
+            ) {
+                // prevent "_tmp" directories created by the Jenkins groovy dir() command
+                def install_cmd = "cd ${checkout_dir}/${args.artifacts_base_dir}/${job_name};";
+                install_cmd += details.install_cmd;
+                sh(install_cmd);
+            }
+        }]
     }
 
+    return stages;
+}
+
+def cleanup_provided_agent_binaries(artifacts_base_dir) {
     /// Cleanup
     sh("""
         # needed only because upstream_build() only downloads relative

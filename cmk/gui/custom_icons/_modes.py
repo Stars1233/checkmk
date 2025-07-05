@@ -6,8 +6,6 @@
 import os
 from collections.abc import Collection
 
-from cmk.ccc import store
-
 import cmk.utils.paths
 from cmk.utils.images import CMKImage, ImageType
 
@@ -24,7 +22,7 @@ from cmk.gui.utils.csrf_token import check_csrf_token
 from cmk.gui.utils.transaction_manager import transactions
 from cmk.gui.utils.urls import make_confirm_delete_link
 from cmk.gui.valuespec import Dictionary, DropdownChoice, IconSelector, ImageUpload
-from cmk.gui.wato import PermissionSectionWATO
+from cmk.gui.wato import PERMISSION_SECTION_WATO
 from cmk.gui.watolib.hosts_and_folders import make_action_link
 from cmk.gui.watolib.mode import ModeRegistry, redirect, WatoMode
 
@@ -111,7 +109,7 @@ class ModeIcons(WatoMode):
 
     def _upload_icon(self, icon_info):
         dest_dir = cmk.utils.paths.omd_root / "local/share/check_mk/web/htdocs/images/icons"
-        store.makedirs(dest_dir)
+        dest_dir.mkdir(mode=0o770, exist_ok=True, parents=True)
         try:
             image = CMKImage(icon_info["icon"][2], ImageType.PNG)
             image.add_metadata("Comment", icon_info["category"])
@@ -168,7 +166,7 @@ def register(
 
     permission_registry.register(
         Permission(
-            section=PermissionSectionWATO,
+            section=PERMISSION_SECTION_WATO,
             name="icons",
             title=_l("Manage custom icons"),
             description=_l("Upload or delete custom icons"),

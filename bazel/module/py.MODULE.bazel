@@ -1,0 +1,33 @@
+py3mod = use_extension("//bazel/extensions:create_python_requirements.bzl", "create_python_requirements")
+py3mod.requirements(
+    name = "python_modules",
+    ignored_modules = [
+        # Broken third party packages
+        "netapp-ontap",  # their build process is broken, see https://github.com/NetApp/ontap-rest-python/issues/46
+    ],
+    requirements_lock = "//:runtime-requirements.txt",
+)
+use_repo(py3mod, "python_modules")
+
+pip = use_extension("@rules_python//python/extensions:pip.bzl", "pip")
+pip.parse(
+    environment = {
+        # Hack for building extensions from source.
+        # See also:  https://github.com/bazelbuild/rules_python/issues/1463
+        "CC": "gcc-13",
+    },
+    hub_name = "cmk_requirements",
+    python_version = "3.12.11",
+    requirements_by_platform = {
+        "@//:requirements.txt": "linux_*",
+    },
+)
+use_repo(pip, "cmk_requirements")
+
+types = use_extension("@rules_mypy//mypy:types.bzl", "types")
+types.requirements(
+    name = "cmk_types",
+    pip_requirements = "@cmk_requirements//:requirements.bzl",
+    requirements_txt = "//:requirements.txt",
+)
+use_repo(types, "cmk_types")

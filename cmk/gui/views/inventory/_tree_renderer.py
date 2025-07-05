@@ -10,10 +10,11 @@ from dataclasses import dataclass
 from functools import total_ordering
 from typing import Literal
 
+from cmk.ccc.hostaddress import HostName
 from cmk.ccc.site import SiteId
 
+import cmk.utils.paths
 import cmk.utils.render
-from cmk.utils.hostaddress import HostName
 from cmk.utils.structured_data import (
     ImmutableAttributes,
     ImmutableDeltaAttributes,
@@ -21,6 +22,7 @@ from cmk.utils.structured_data import (
     ImmutableDeltaTree,
     ImmutableTable,
     ImmutableTree,
+    InventoryStore,
     RetentionInterval,
     SDDeltaValue,
     SDKey,
@@ -30,7 +32,7 @@ from cmk.utils.structured_data import (
 )
 
 from cmk.gui import inventory
-from cmk.gui.config import active_config
+from cmk.gui.config import Config
 from cmk.gui.exceptions import MKUserError
 from cmk.gui.htmllib.foldable_container import foldable_container
 from cmk.gui.htmllib.generator import HTMLWriter
@@ -294,7 +296,7 @@ class _SDDeltaItemsSorter(_ABCItemsSorter):
                     paint_function=c.paint_function,
                 )
                 for c in columns
-                for v in (row.get(c.key) or SDDeltaValue(None, None),)
+                for v in (row.get(c.key) or SDDeltaValue(old=None, new=None),)
             ]
 
         min_type = _MinType()
@@ -311,7 +313,7 @@ class _SDDeltaItemsSorter(_ABCItemsSorter):
                 for row in sorted(
                     self.table.rows,
                     key=lambda r: tuple(
-                        _sanitize(r.get(c.key) or SDDeltaValue(None, None)) for c in columns
+                        _sanitize(r.get(c.key) or SDDeltaValue(old=None, new=None)) for c in columns
                     ),
                 )
                 if any(_delta_value_has_change(delta_value) for delta_value in row.values())
@@ -320,17 +322,21 @@ class _SDDeltaItemsSorter(_ABCItemsSorter):
 
 
 # Ajax call for fetching parts of the tree
-def ajax_inv_render_tree() -> None:
+def ajax_inv_render_tree(config: Config) -> None:
     site_id = SiteId(request.get_ascii_input_mandatory("site"))
     host_name = request.get_validated_type_input_mandatory(HostName, "host")
-    inventory.verify_permission(host_name, site_id)
+    inventory.verify_permission(site_id, host_name)
 
     raw_path = request.get_ascii_input_mandatory("raw_path", "")
     show_internal_tree_paths = bool(request.var("show_internal_tree_paths"))
 
     tree: ImmutableTree | ImmutableDeltaTree
     if tree_id := request.get_ascii_input_mandatory("tree_id", ""):
-        tree, corrupted_history_files = inventory.load_delta_tree(host_name, int(tree_id))
+        tree, corrupted_history_files = inventory.load_delta_tree(
+            InventoryStore(cmk.utils.paths.omd_root),
+            host_name,
+            int(tree_id),
+        )
         if corrupted_history_files:
             user_errors.add(
                 MKUserError(
@@ -341,11 +347,14 @@ def ajax_inv_render_tree() -> None:
             )
             return
     else:
-        row = inventory.get_status_data_via_livestatus(site_id, host_name)
+        raw_status_data_tree = inventory.get_raw_status_data_via_livestatus(site_id, host_name)
         try:
-            tree = inventory.load_filtered_and_merged_tree(row)
+            tree = inventory.load_tree(
+                host_name=host_name,
+                raw_status_data_tree=raw_status_data_tree,
+            )
         except Exception as e:
-            if active_config.debug:
+            if config.debug:
                 html.show_warning("%s" % e)
             user_errors.add(
                 MKUserError(
@@ -363,7 +372,7 @@ def ajax_inv_render_tree() -> None:
         theme,
         request,
         show_internal_tree_paths,
-    ).show(tree.get_tree(inventory.parse_inventory_path(raw_path).path), tree_id)
+    ).show(tree.get_tree(inventory.parse_internal_raw_path(raw_path).path), tree_id)
 
 
 def _replace_title_placeholders(hint: NodeDisplayHint, path: SDPath) -> str:

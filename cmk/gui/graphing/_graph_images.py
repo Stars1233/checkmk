@@ -16,14 +16,16 @@ from pydantic import ValidationError as PydanticValidationError
 
 import livestatus
 
+from cmk.ccc.hostaddress import HostName
 from cmk.ccc.site import SiteId
 
-from cmk.utils.hostaddress import HostName
-
 from cmk.gui import pdf
-from cmk.gui.config import active_config
-from cmk.gui.exceptions import MKUnauthenticatedException, MKUserError
-from cmk.gui.graphing._graph_templates import get_template_graph_specification
+from cmk.gui.config import Config
+from cmk.gui.exceptions import MKNotFound, MKUnauthenticatedException, MKUserError
+from cmk.gui.graphing._graph_templates import (
+    get_template_graph_specification,
+    MKGraphNotFound,
+)
 from cmk.gui.http import request, response
 from cmk.gui.i18n import _
 from cmk.gui.log import logger
@@ -56,23 +58,20 @@ from ._utils import get_graph_data_from_livestatus
 # of a host or service.
 #    # Needed by mail notification plug-in (-> no authentication from localhost)
 class AjaxGraphImagesForNotifications(Page):
-    @classmethod
-    def ident(cls) -> str:
-        return "ajax_graph_images"
-
-    def page(self) -> None:
+    def page(self, config: Config) -> None:
         """Registered as `ajax_graph_images`."""
         if not isinstance(user, LoggedInSuperUser):
             # This page used to be noauth but restricted to local ips.
             # Now we use the SiteInternalSecret for this.
             raise MKUnauthenticatedException(_("You are not allowed to access this page."))
 
-        _answer_graph_image_request(metrics_from_api, graphs_from_api)
+        _answer_graph_image_request(metrics_from_api, graphs_from_api, config.debug)
 
 
 def _answer_graph_image_request(
     registered_metrics: Mapping[str, RegisteredMetric],
     registered_graphs: Mapping[str, graphs_api.Graph | graphs_api.Bidirectional],
+    debug: bool,
 ) -> None:
     try:
         host_name = request.get_validated_type_input_mandatory(HostName, "host")
@@ -93,7 +92,7 @@ def _answer_graph_image_request(
                 host_name,
                 service_description,
             )
-            if active_config.debug:
+            if debug:
                 raise
             return
 
@@ -139,7 +138,7 @@ def _answer_graph_image_request(
         logger.error(
             "Call to ajax_graph_images.py failed: %s\n%s", e, "".join(traceback.format_stack())
         )
-        if active_config.debug:
+        if debug:
             raise
 
 
@@ -250,6 +249,10 @@ def graph_recipes_for_api_request(
             registered_metrics,
             registered_graphs,
         )
+
+    except MKGraphNotFound:
+        raise MKNotFound()
+
     except livestatus.MKLivestatusNotFoundError as e:
         raise MKUserError(None, _("Cannot calculate graph recipes: %s") % e)
 
@@ -277,6 +280,9 @@ def graph_spec_from_request(
 
     except PydanticValidationError as e:
         raise MKUserError(None, str(e))
+
+    except MKGraphNotFound:
+        raise MKNotFound()
 
     except IndexError:
         raise MKUserError(None, _("The requested graph does not exist"))

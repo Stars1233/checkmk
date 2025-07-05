@@ -70,9 +70,9 @@ class ModeManageReadOnly(WatoMode):
 
     def _save(self):
         store.save_to_mk_file(
-            multisite_dir() + "read_only.mk",
-            "wato_read_only",
-            self._settings,
+            multisite_dir() / "read_only.mk",
+            key="wato_read_only",
+            value=self._settings,
             pprint_value=active_config.wato_pprint_config,
         )
 

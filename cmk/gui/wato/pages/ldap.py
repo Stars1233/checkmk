@@ -827,17 +827,17 @@ class ModeEditLDAPConnection(WatoMode):
                 )
             _all_connections[connection_cfg["id"]] = connection_cfg
             add_change(
-                "new-ldap-connection",
-                _("Created new LDAP connection"),
-                get_affected_sites(connection_cfg),
+                action_name="new-ldap-connection",
+                text=_("Created new LDAP connection"),
+                sites=get_affected_sites(connection_cfg),
             )
 
         else:
             _all_connections[connection_cfg["id"]] = connection_cfg
             add_change(
-                "edit-ldap-connection",
-                _("Changed LDAP connection %s") % connection_cfg["id"],
-                get_affected_sites(connection_cfg),
+                action_name="edit-ldap-connection",
+                text=_("Changed LDAP connection %s") % connection_cfg["id"],
+                sites=get_affected_sites(connection_cfg),
             )
 
         self._connection_cfg = connection_cfg
@@ -933,7 +933,7 @@ class ModeEditLDAPConnection(WatoMode):
 
     def _test_connect(self, connection: LDAPUserConnector, address: str) -> tuple[bool, str | None]:
         conn, msg = connection.connect_server(address)
-        if conn:  # type: ignore[truthy-bool]
+        if conn:
             return (True, _("Connection established. The connection settings seem to be ok."))
         return (False, msg)
 
@@ -1039,9 +1039,14 @@ class ModeEditLDAPConnection(WatoMode):
         ldap_groups = plugin.fetch_needed_groups_for_groups_to_roles(connection, params)
 
         num_groups = 0
-        for role_id, group_specs in active_plugins["groups_to_roles"].items():
-            if group_specs is True:
+
+        for role_id, value in active_plugins["groups_to_roles"].items():
+            if value is True:
                 continue
+
+            # We have typing for active_plugins["groups_to_roles"], however it doesn't
+            # take into account the old config mentioned below.
+            group_specs = cast(list, value)
 
             for group_spec in group_specs:
                 if isinstance(group_spec, str):

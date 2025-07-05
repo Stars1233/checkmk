@@ -2,6 +2,7 @@
 # Copyright (C) 2019 Checkmk GmbH - License: GNU General Public License v2
 # This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
 # conditions defined in the file COPYING, which is part of this source code package.
+# mypy: disable-error-code="no-any-return"
 
 from typing import Any, Literal
 
@@ -47,6 +48,6 @@ def _load_single_global_wato_setting(varname: str, deflt: Any = None) -> Any:
     settings, which should be enough for most cases.
     """
     settings = load_mk_file(
-        cmk.utils.paths.default_config_dir + "/multisite.d/wato/global.mk", default={}
+        cmk.utils.paths.default_config_dir / "multisite.d/wato/global.mk", default={}, lock=False
     )
     return settings.get(varname, deflt)

@@ -8,13 +8,14 @@ from collections.abc import Collection, Iterable
 from typing import final
 
 from cmk.gui.breadcrumb import Breadcrumb, BreadcrumbItem
+from cmk.gui.config import Config
 from cmk.gui.htmllib.html import html
 from cmk.gui.http import request
 from cmk.gui.i18n import _
 from cmk.gui.logged_in import user
-from cmk.gui.main_menu import mega_menu_registry
+from cmk.gui.main_menu import main_menu_registry
 from cmk.gui.page_menu import PageMenu
-from cmk.gui.type_defs import ActionResult, HTTPVariables, MegaMenu, PermissionName
+from cmk.gui.type_defs import ActionResult, HTTPVariables, MainMenu, PermissionName
 from cmk.gui.utils.transaction_manager import transactions
 from cmk.gui.utils.urls import makeuri_contextless
 from cmk.gui.watolib.main_menu import main_module_registry
@@ -83,9 +84,9 @@ class WatoMode(abc.ABC):
 
     # Currently only needed for a special Setup module "user_notifications_p" that
     # is not part of the Setup main menu but the user menu.
-    def main_menu(self) -> MegaMenu:
+    def main_menu(self) -> MainMenu:
         """Specify the top-level breadcrumb item of this mode"""
-        return mega_menu_registry.menu_setup()
+        return main_menu_registry.menu_setup()
 
     def breadcrumb(self) -> Breadcrumb:
         """Render the breadcrumb to the current mode
@@ -168,5 +169,5 @@ class WatoMode(abc.ABC):
     def page(self) -> None:
         html.show_message(_("(This module is not yet implemented)"))
 
-    def handle_page(self) -> None:
+    def handle_page(self, config: Config) -> None:
         return self.page()

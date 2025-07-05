@@ -11,12 +11,13 @@ import cmk.utils
 import cmk.utils.paths
 from cmk.utils.encryption import fetch_certificate_details
 
+from cmk.gui.config import Config
 from cmk.gui.exceptions import MKUserError
 from cmk.gui.htmllib.generator import HTMLWriter
 from cmk.gui.http import request
 from cmk.gui.i18n import _
 from cmk.gui.logged_in import user
-from cmk.gui.pages import AjaxPage, PageRegistry, PageResult
+from cmk.gui.pages import AjaxPage, PageEndpoint, PageRegistry, PageResult
 from cmk.gui.utils.csrf_token import check_csrf_token
 from cmk.gui.utils.html import HTML
 from cmk.gui.utils.output_funnel import output_funnel
@@ -25,11 +26,11 @@ from .definitions import HostAddress, IconSelector, ListOfMultiple, NetworkPort,
 
 
 def register(page_registry: PageRegistry) -> None:
-    page_registry.register_page("ajax_fetch_ca")(AjaxFetchCA)
-    page_registry.register_page_handler("ajax_popup_icon_selector", ajax_popup_icon_selector)
+    page_registry.register(PageEndpoint("ajax_fetch_ca", AjaxFetchCA))
+    page_registry.register(PageEndpoint("ajax_popup_icon_selector", ajax_popup_icon_selector))
 
 
-def ajax_popup_icon_selector() -> None:
+def ajax_popup_icon_selector(config: Config) -> None:
     """AJAX API call for rendering the icon selector"""
     varprefix = request.get_ascii_input_mandatory("varprefix")
     value = request.var("value")
@@ -45,7 +46,7 @@ class ABCPageListOfMultipleGetChoice(AjaxPage, abc.ABC):
     def _get_choices(self, api_request: Mapping[str, str]) -> Sequence[tuple[str, ValueSpec]]:
         raise NotImplementedError()
 
-    def page(self) -> dict:
+    def page(self, config: Config) -> dict:
         api_request = request.get_request()
         vs = ListOfMultiple(
             choices=self._get_choices(api_request), choice_page_name="unused_dummy_page"
@@ -56,7 +57,7 @@ class ABCPageListOfMultipleGetChoice(AjaxPage, abc.ABC):
 
 
 class AjaxFetchCA(AjaxPage):
-    def page(self) -> PageResult:
+    def page(self, config: Config) -> PageResult:
         check_csrf_token()
         user.need_permission("general.server_side_requests")
 

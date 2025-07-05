@@ -3,16 +3,18 @@
 # This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
 # conditions defined in the file COPYING, which is part of this source code package.
 
+import socket
 from collections.abc import Mapping, Sequence
 from pathlib import Path
+from typing import Literal
 
 import pytest
 
 from tests.testlib.unit.base_configuration_scenario import Scenario
 
 from cmk.ccc.exceptions import OnError
+from cmk.ccc.hostaddress import HostAddress, HostName
 
-from cmk.utils.hostaddress import HostAddress, HostName
 from cmk.utils.ip_lookup import IPStackConfig
 from cmk.utils.rulesets.ruleset_matcher import RuleSpec
 from cmk.utils.tags import TagGroupID, TagID
@@ -30,7 +32,7 @@ from cmk.fetchers.filecache import FileCacheOptions, MaxAge
 from cmk.checkengine.parser import NO_SELECTION
 from cmk.checkengine.plugins import AgentBasedPlugins
 
-from cmk.base.config import ConfigCache, ConfiguredIPLookup, handle_ip_lookup_failure
+from cmk.base.config import ConfigCache
 from cmk.base.sources import make_sources, SNMPFetcherConfig, Source
 
 
@@ -53,15 +55,18 @@ def _make_sources(
     # Too many arguments to this function.  Let's wrap it to make it easier
     # to test.
     ipaddress = HostAddress("127.0.0.1")
+    ip_family: Literal[socket.AddressFamily.AF_INET] = socket.AddressFamily.AF_INET
     return make_sources(
         AgentBasedPlugins.empty(),
         hostname,
+        ip_family,
         ipaddress,
         IPStackConfig.IPv4,
         fetcher_factory=config_cache.fetcher_factory(
             config_cache.make_service_configurer(
                 {}, config_cache.make_passive_service_name_config()
-            )
+            ),
+            ip_lookup=lambda *a: ipaddress,
         ),
         snmp_fetcher_config=SNMPFetcherConfig(
             scan_config=SNMPScanConfig(
@@ -88,15 +93,16 @@ def _make_sources(
         ),
         computed_datasources=config_cache.computed_datasources(hostname),
         datasource_programs=config_cache.datasource_programs(hostname),
-        tag_list=config_cache.tag_list(hostname),
+        tag_list=config_cache.host_tags.tag_list(hostname),
         management_ip=ipaddress,
         management_protocol=config_cache.management_protocol(hostname),
         special_agent_command_lines=config_cache.special_agent_command_lines(
             hostname,
+            ip_family,
             ipaddress,
             password_store_file=Path("/pw/store"),
             passwords={},
-            ip_address_of=ConfiguredIPLookup(config_cache, error_handler=handle_ip_lookup_failure),
+            ip_address_of=lambda *a: ipaddress,
         ),
         agent_connection_mode=config_cache.agent_connection_mode(hostname),
         check_mk_check_interval=config_cache.check_mk_check_interval(hostname),

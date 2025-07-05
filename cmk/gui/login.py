@@ -8,23 +8,24 @@ import contextlib
 import http.client
 from collections.abc import Iterator
 from datetime import datetime
+from typing import override
 from urllib.parse import unquote
 
 import cmk.ccc.version as cmk_version
 from cmk.ccc.site import omd_site, url_prefix
+from cmk.ccc.user import UserId
 
 import cmk.utils.paths
 from cmk.utils.licensing.handler import LicenseStateError, RemainingTrialTime
 from cmk.utils.licensing.registry import get_remaining_trial_time_rounded
 from cmk.utils.log.security_event import log_security_event
 from cmk.utils.urls import is_allowed_url
-from cmk.utils.user import UserId
 
 import cmk.gui.mobile
 from cmk.gui import userdb
 from cmk.gui.auth import is_site_login
 from cmk.gui.breadcrumb import Breadcrumb
-from cmk.gui.config import active_config
+from cmk.gui.config import Config
 from cmk.gui.exceptions import FinalizeRequest, HTTPRedirect, MKAuthException, MKUserError
 from cmk.gui.htmllib.generator import HTMLWriter
 from cmk.gui.htmllib.header import make_header
@@ -39,7 +40,7 @@ from cmk.gui.logged_in import (
     user,
 )
 from cmk.gui.main import get_page_heading
-from cmk.gui.pages import Page, PageRegistry
+from cmk.gui.pages import Page, PageEndpoint, PageRegistry
 from cmk.gui.session import session, UserContext
 from cmk.gui.theme.current_theme import theme
 from cmk.gui.userdb import get_active_saml_connections
@@ -59,11 +60,11 @@ from cmk.crypto.password import Password
 def register(page_registry: PageRegistry) -> None:
     # TODO: only overwrite this in cse specific files
     if cmk_version.edition(cmk.utils.paths.omd_root) == cmk_version.Edition.CSE:
-        page_registry.register_page("login")(SaasLoginPage)
-        page_registry.register_page("logout")(SaasLogoutPage)
+        page_registry.register(PageEndpoint("login", SaasLoginPage))
+        page_registry.register(PageEndpoint("logout", SaasLogoutPage))
     else:
-        page_registry.register_page("login")(LoginPage)
-        page_registry.register_page("logout")(LogoutPage)
+        page_registry.register(PageEndpoint("login", LoginPage))
+        page_registry.register(PageEndpoint("logout", LogoutPage))
 
 
 @contextlib.contextmanager
@@ -81,7 +82,7 @@ def authenticate() -> Iterator[bool]:
     automation secret authentication."""
     if isinstance(session.user, LoggedInNobody):
         yield False
-    elif isinstance(session.user, (LoggedInSuperUser, LoggedInRemoteSite)):
+    elif isinstance(session.user, LoggedInSuperUser | LoggedInRemoteSite):
         # This is used with the internaltoken auth
         # Let's hope we do not need the transactions for this user...
         yield True
@@ -117,12 +118,14 @@ def del_auth_cookie() -> None:
 
 
 class SaasLoginPage(Page):
-    def page(self) -> None:
+    @override
+    def page(self, config: Config) -> None:
         raise HTTPRedirect("cognito_sso.py")
 
 
 class SaasLogoutPage(Page):
-    def page(self) -> None:
+    @override
+    def page(self, config: Config) -> None:
         raise HTTPRedirect("cognito_logout.py")
 
 
@@ -146,23 +149,24 @@ class LoginPage(Page):
     def set_no_html_output(self, no_html_output: bool) -> None:
         self._no_html_output = no_html_output
 
-    def page(self) -> None:
+    @override
+    def page(self, config: Config) -> None:
         # Initialize the cmk.gui.i18n for the login dialog. This might be
         # overridden later after user login
-        cmk.gui.i18n.localize(request.var("lang", active_config.default_language))
+        cmk.gui.i18n.localize(request.var("lang", config.default_language))
 
-        self._do_login()
+        self._do_login(config)
 
         if self._no_html_output:
             raise MKAuthException(_("Invalid login credentials."))
 
         if is_mobile(request, response):
-            cmk.gui.mobile.page_login()
+            cmk.gui.mobile.page_login(config)
             return
 
-        self._show_login_page()
+        self._show_login_page(config)
 
-    def _do_login(self) -> None:
+    def _do_login(self, config: Config) -> None:
         """handle the login form"""
         if not request.var("_login"):
             return
@@ -170,14 +174,14 @@ class LoginPage(Page):
         try:
             username: UserId | None = None  # make sure it's defined in the except block
 
-            if not active_config.user_login and not is_site_login():
+            if not config.user_login and not is_site_login():
                 raise MKUserError(None, _("Login is not allowed on this site."))
 
             # Login via the GET method is allowed only after manually
             # enabling the property "Enable login via GET" in the
             # Global Settings. Please refer to the Werk 14261 for
             # more details.
-            if request.request_method != "POST" and not active_config.enable_login_via_get:
+            if request.request_method != "POST" and not config.enable_login_via_get:
                 raise MKUserError(None, _("Method not allowed"))
 
             username_var = request.get_str_input(self._username_varname, "")
@@ -276,10 +280,10 @@ class LoginPage(Page):
             )
             user_errors.add(e)
 
-    def _show_login_page(self) -> None:
+    def _show_login_page(self, config: Config) -> None:
         html.render_headfoot = False
         html.add_body_css_class("login")
-        make_header(html, get_page_heading(), Breadcrumb())
+        make_header(html, get_page_heading(config), Breadcrumb())
 
         default_origtarget = (
             "index.py"
@@ -373,16 +377,16 @@ class LoginPage(Page):
 
             html.open_div(id_="foot")
 
-            if active_config.login_screen.get("login_message"):
+            if config.login_screen.get("login_message"):
                 html.open_div(id_="login_message")
-                html.show_message(active_config.login_screen["login_message"])
+                html.show_message(config.login_screen["login_message"])
                 html.close_div()
 
             footer: list[HTML] = []
-            for title, url, target in active_config.login_screen.get("footer_links", []):
+            for title, url, target in config.login_screen.get("footer_links", []):
                 footer.append(HTMLWriter.render_a(title, href=url, target=target))
 
-            if "hide_version" not in active_config.login_screen:
+            if "hide_version" not in config.login_screen:
                 footer.append(HTML.with_escaping("Version: %s" % cmk_version.__version__))
 
             footer.append(
@@ -444,7 +448,8 @@ def _show_remaining_trial_time(remaining_trial_time: RemainingTrialTime) -> None
 
 
 class LogoutPage(Page):
-    def page(self) -> None:
+    @override
+    def page(self, config: Config) -> None:
         assert user.id is not None
 
         session.invalidate()

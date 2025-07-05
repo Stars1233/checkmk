@@ -64,7 +64,9 @@ def test_form_spec_recap() -> None:
             RawFormData({FormSpecId("wrapper"): {"test_dict_element": "I am a test string"}})
         ],
         quick_setup_formspec_map=form_spec_map,
+        site_configs={},
         progress_logger=InfoLogger(),
+        debug=False,
     )
 
     assert len(stage_recap) == 1

@@ -13,13 +13,14 @@ from collections.abc import Collection, Generator, Iterator, Mapping
 from copy import deepcopy
 from dataclasses import asdict
 from datetime import datetime, timedelta
-from typing import Any, cast, Literal, NamedTuple, overload
+from typing import Any, cast, Literal, NamedTuple, NotRequired, overload, TypedDict
 
-from livestatus import LivestatusResponse
+from livestatus import LivestatusResponse, SiteConfiguration
 
 from cmk.ccc import store
 from cmk.ccc.exceptions import MKGeneralException
 from cmk.ccc.site import SiteId
+from cmk.ccc.user import UserId
 from cmk.ccc.version import Edition, edition
 
 from cmk.utils import paths
@@ -32,13 +33,13 @@ from cmk.utils.notify_types import (
     NotificationParameterGeneralInfos,
     NotificationParameterID,
     NotificationParameterItem,
+    NotificationParameterSpec,
     NotificationParameterSpecs,
     NotificationPluginNameStr,
     NotifyAnalysisInfo,
     NotifyPluginInfo,
 )
 from cmk.utils.statename import host_state_name, service_state_name
-from cmk.utils.user import UserId
 
 import cmk.gui.view_utils
 import cmk.gui.watolib.audit_log as _audit_log
@@ -49,7 +50,6 @@ from cmk.gui.config import active_config
 from cmk.gui.default_name import unique_clone_increment_suggestion
 from cmk.gui.exceptions import MKUserError
 from cmk.gui.form_specs.converter import TransformDataForLegacyFormatOrRecomposeFunction
-from cmk.gui.form_specs.private import LegacyValueSpec
 from cmk.gui.form_specs.vue.form_spec_visitor import parse_data_from_frontend, render_form_spec
 from cmk.gui.form_specs.vue.visitors import DataOrigin, DEFAULT_VALUE
 from cmk.gui.form_specs.vue.visitors.recomposers.unknown_form_spec import recompose
@@ -59,7 +59,7 @@ from cmk.gui.htmllib.html import html
 from cmk.gui.http import request
 from cmk.gui.i18n import _, ungettext
 from cmk.gui.logged_in import user
-from cmk.gui.main_menu import mega_menu_registry
+from cmk.gui.main_menu import main_menu_registry
 from cmk.gui.mkeventd import syslog_facilities, syslog_priorities
 from cmk.gui.page_menu import (
     make_display_options_dropdown,
@@ -73,14 +73,9 @@ from cmk.gui.page_menu import (
     PageMenuTopic,
 )
 from cmk.gui.quick_setup.v0_unstable._registry import quick_setup_registry
-from cmk.gui.site_config import (
-    get_site_config,
-    has_wato_slave_sites,
-    site_is_local,
-    wato_slave_sites,
-)
+from cmk.gui.site_config import has_wato_slave_sites, site_is_local, wato_slave_sites
 from cmk.gui.table import Table, table_element
-from cmk.gui.type_defs import ActionResult, HTTPVariables, MegaMenu, PermissionName
+from cmk.gui.type_defs import ActionResult, HTTPVariables, MainMenu, PermissionName, Users
 from cmk.gui.user_async_replication import user_profile_async_replication_dialog
 from cmk.gui.utils.autocompleter_config import ContextAutocompleterConfig
 from cmk.gui.utils.csrf_token import check_csrf_token
@@ -93,6 +88,7 @@ from cmk.gui.utils.notifications import (
     OPTIMIZE_NOTIFICATIONS_ENTRIES,
     SUPPORT_NOTIFICATIONS_ENTRIES,
 )
+from cmk.gui.utils.rule_specs.legacy_converter import convert_to_legacy_valuespec
 from cmk.gui.utils.time import timezone_utc_offset_str
 from cmk.gui.utils.transaction_manager import transactions
 from cmk.gui.utils.urls import (
@@ -132,13 +128,18 @@ from cmk.gui.valuespec import (
     TimePicker,
     Tuple,
     UUID,
+    ValueSpec,
 )
 from cmk.gui.wato._group_selection import ContactGroupSelection
 from cmk.gui.wato.pages.events import ABCEventsMode
 from cmk.gui.wato.pages.user_profile.page_menu import page_menu_dropdown_user_related
 from cmk.gui.wato.pages.users import ModeEditUser
 from cmk.gui.watolib.automation_commands import AutomationCommand, AutomationCommandRegistry
-from cmk.gui.watolib.automations import do_remote_automation
+from cmk.gui.watolib.automations import (
+    do_remote_automation,
+    LocalAutomationConfig,
+    make_automation_config,
+)
 from cmk.gui.watolib.check_mk_automations import (
     notification_analyse,
     notification_get_bulks,
@@ -148,9 +149,7 @@ from cmk.gui.watolib.check_mk_automations import (
 from cmk.gui.watolib.global_settings import load_configuration_settings
 from cmk.gui.watolib.hosts_and_folders import folder_preserving_link, make_action_link
 from cmk.gui.watolib.mode import mode_url, ModeRegistry, redirect, WatoMode
-from cmk.gui.watolib.notification_parameter import (
-    notification_parameter_registry,
-)
+from cmk.gui.watolib.notification_parameter import notification_parameter_registry
 from cmk.gui.watolib.notifications import (
     load_user_notification_rules,
     NotificationParameterConfigFile,
@@ -172,11 +171,12 @@ from cmk.gui.watolib.timeperiods import TimeperiodSelection
 from cmk.gui.watolib.user_scripts import load_notification_scripts
 from cmk.gui.watolib.users import notification_script_choices
 
+from cmk.rulesets.v1.rule_specs import NotificationParameters
 from cmk.shared_typing.notifications import (
-    CoreStats,
-    CoreStatsI18n,
-    FallbackWarning,
-    FallbackWarningI18n,
+    NotificationCoreStats,
+    NotificationCoreStatsI18n,
+    NotificationFallbackWarning,
+    NotificationFallbackWarningI18n,
     NotificationParametersOverview,
     Notifications,
     NotificationStats,
@@ -212,7 +212,14 @@ def register(
     automation_command_registry.register(AutomationNotificationTest)
 
 
-class ABCNotificationsMode(ABCEventsMode):
+class NotificationRuleLinks(NamedTuple):
+    delete: str
+    edit: str
+    drag: str
+    clone: str
+
+
+class ABCNotificationsMode(ABCEventsMode[EventRule]):
     def __init__(self) -> None:
         super().__init__()
 
@@ -220,7 +227,7 @@ class ABCNotificationsMode(ABCEventsMode):
         permissions.load_dynamic_permissions()
 
     @classmethod
-    def _rule_match_conditions(cls):
+    def _rule_match_conditions(cls) -> list[DictionaryEntry | tuple[str, ListChoice]]:
         return (
             cls._generic_rule_match_conditions()
             + cls._event_rule_match_conditions(flavour="notify")
@@ -228,7 +235,7 @@ class ABCNotificationsMode(ABCEventsMode):
         )
 
     @classmethod
-    def _notification_rule_match_conditions(cls):
+    def _notification_rule_match_conditions(cls) -> list[DictionaryEntry]:
         return [
             (
                 "match_escalation",
@@ -304,7 +311,7 @@ class ABCNotificationsMode(ABCEventsMode):
         if edition(paths.omd_root) is Edition.CSE:  # disabled in CSE
             return []
 
-        def migrate_ec_rule_id_match(val):
+        def migrate_ec_rule_id_match(val: list[TextInput] | TextInput) -> list[TextInput]:
             if isinstance(val, list):
                 return val
             return [val]
@@ -322,7 +329,9 @@ class ABCNotificationsMode(ABCEventsMode):
                     ),
                     elements=[
                         FixedValue(
-                            value=False, title=_("Do not match Event Console alerts"), totext=""
+                            value=False,
+                            title=_("Do not match Event Console alerts"),
+                            totext="",
                         ),
                         Dictionary(
                             title=_("Match only Event Console alerts"),
@@ -396,14 +405,14 @@ class ABCNotificationsMode(ABCEventsMode):
 
     def _render_notification_rules(
         self,
-        rules,
-        userid="",
-        show_title=False,
-        show_buttons=True,
-        analyse=False,
-        start_nr=0,
-        profilemode=False,
-    ):
+        rules: list[EventRule],
+        userid: str = "",
+        show_title: bool = False,
+        show_buttons: bool = True,
+        analyse: NotifyAnalysisInfo | None = None,
+        start_nr: int = 0,
+        profilemode: bool = False,
+    ) -> None:
         if not rules:
             html.show_message(_("You have not created any rules yet."))
             return
@@ -436,7 +445,9 @@ class ABCNotificationsMode(ABCEventsMode):
                     links = self._rule_links(rule, nr, profilemode, userid)
                     html.icon_button(links.edit, _("Edit this notification rule"), "edit")
                     html.icon_button(
-                        links.clone, _("Create a copy of this notification rule"), "clone"
+                        links.clone,
+                        _("Create a copy of this notification rule"),
+                        "clone",
                     )
                     html.icon_button(links.delete, _("Delete this notification rule"), "delete")
                     html.element_dragger_url("tr", base_url=links.drag)
@@ -447,7 +458,10 @@ class ABCNotificationsMode(ABCEventsMode):
 
                 table.cell("", css=["narrow"])
                 if rule.get("disabled"):
-                    html.icon("cross", _("This rule is currently disabled and will not be applied"))
+                    html.icon(
+                        "cross",
+                        _("This rule is currently disabled and will not be applied"),
+                    )
                 else:
                     html.empty_icon_button()
 
@@ -475,7 +489,8 @@ class ABCNotificationsMode(ABCEventsMode):
                 table.cell(_("Effect"), css=["narrow"])
                 if notify_method is None:
                     html.icon(
-                        "cancel_notifications", _("Cancel notifications for this plug-in type")
+                        "cancel_notifications",
+                        _("Cancel notifications for this plug-in type"),
                     )
                 else:
                     html.icon(
@@ -494,7 +509,10 @@ class ABCNotificationsMode(ABCEventsMode):
                 url = rule.get("docu_url")
                 if url:
                     html.icon_button(
-                        url, _("Context information about this rule"), "url", target="_blank"
+                        url,
+                        _("Context information about this rule"),
+                        "url",
+                        target="_blank",
                     )
                     html.write_text_permissive("&nbsp;")
                 html.write_text_permissive(rule["description"])
@@ -520,7 +538,9 @@ class ABCNotificationsMode(ABCEventsMode):
                         title=title,
                         indent=False,
                     ):
-                        html.write_text_permissive(vs_match_conditions.value_to_html(rule))
+                        html.write_text_permissive(
+                            vs_match_conditions.value_to_html(cast(dict[str, object], rule))
+                        )
                 else:
                     html.i(_("(no conditions)"))
 
@@ -534,10 +554,16 @@ class ABCNotificationsMode(ABCEventsMode):
         except IndexError:
             return _("Plain email")
 
-    def _add_change(self, log_what, log_text):
-        _changes.add_change(log_what, log_text, need_restart=False)
+    def _add_change(self, *, action_name: str, text: str) -> None:
+        _changes.add_change(
+            action_name=action_name,
+            text=text,
+            user_id=user.id,
+            need_restart=False,
+            use_git=active_config.wato_use_git,
+        )
 
-    def _vs_notification_bulkby(self):
+    def _vs_notification_bulkby(self) -> ListChoice:
         return ListChoice(
             title=_("Create separate notification bulks based on"),
             choices=[
@@ -559,7 +585,7 @@ class ABCNotificationsMode(ABCEventsMode):
             default_value=["host"],
         )
 
-    def _table_title(self, show_title, profilemode, userid):
+    def _table_title(self, show_title: bool, profilemode: bool, userid: str) -> str | HTML:
         if not show_title:
             return ""
         if profilemode:
@@ -570,7 +596,7 @@ class ABCNotificationsMode(ABCEventsMode):
             return code + _("Notification rules of user %s") % userid
         return _("Global notification rules")
 
-    def _rule_infos(self, rule):
+    def _rule_infos(self, rule: EventRule) -> list[str]:
         infos = []
         if rule.get("contact_object"):
             infos.append(_("all contacts of the notified object"))
@@ -586,12 +612,18 @@ class ABCNotificationsMode(ABCEventsMode):
             infos.append(_("email addresses: ") + (", ".join(rule["contact_emails"])))
         return infos
 
-    def _actions_allowed(self, rule):
+    def _actions_allowed(self, rule: EventRule) -> bool:
         # In case a notification plug-in does not exist anymore the permission is completely missing.
         permission_name = "notification_plugin.%s" % rule["notify_plugin"][0]
         return permission_name not in permissions.permission_registry or user.may(permission_name)
 
-    def _rule_links(self, rule, nr, profilemode, userid):
+    def _rule_links(
+        self,
+        rule: EventRule,
+        nr: int,
+        profilemode: bool,
+        userid: str,
+    ) -> NotificationRuleLinks:
         anavar = request.var("analyse", "")
 
         if profilemode:
@@ -608,65 +640,60 @@ class ABCNotificationsMode(ABCEventsMode):
         else:
             mode = "notification_rule_quick_setup"
 
-        back_mode = []
+        back_mode: HTTPVariables = []
         mode_from_vars = request.var("mode")
         if mode_from_vars in ["analyze_notifications", "test_notifications"]:
             back_mode.append(("back_mode", mode_from_vars))
 
-        delete_url = make_confirm_delete_link(
-            url=make_action_link(
-                [
-                    ("mode", listmode),
-                    ("user", userid),
-                    ("_delete", nr),
-                ]
-                + back_mode
-            ),
-            title=_("Delete notification rule #%d") % nr,
-            suffix=rule.get("description", ""),
-        )
-        drag_url = make_action_link(
-            [
+        def _delete_url() -> str:
+            httpvars: HTTPVariables = [
+                ("mode", listmode),
+                ("user", userid),
+                ("_delete", nr),
+            ]
+            return make_confirm_delete_link(
+                url=make_action_link(httpvars + back_mode),
+                title=_("Delete notification rule #%d") % nr,
+                suffix=rule.get("description", ""),
+            )
+
+        def _drag_url() -> str:
+            httpvars: HTTPVariables = [
                 ("mode", listmode),
                 ("analyse", anavar),
                 ("user", userid),
                 ("_move", nr),
             ]
-            + back_mode
-        )
-        edit_url = folder_preserving_link(
-            [
+            return make_action_link(httpvars + back_mode)
+
+        def _edit_url() -> str:
+            httpvars: HTTPVariables = [
                 ("mode", mode),
                 ("edit", nr),
                 ("user", userid),
             ]
-            + back_mode
-        )
-        clone_url = make_confirm_delete_link(
-            url=folder_preserving_link(
-                [
-                    ("mode", mode),
-                    ("clone", nr),
-                    ("user", userid),
-                ]
-                + back_mode
-            ),
-            title=_("Clone & edit notification rule #%d") % nr,
-            suffix=rule.get("description", ""),
-            confirm_button=_("Yes, clone & edit"),
-            cancel_button=_("No, don't clone"),
-        )
+            return folder_preserving_link(httpvars + back_mode)
+
+        def _clone_url() -> str:
+            httpvars: HTTPVariables = [
+                ("mode", mode),
+                ("clone", nr),
+                ("user", userid),
+            ]
+            return make_confirm_delete_link(
+                url=folder_preserving_link(httpvars + back_mode),
+                title=_("Clone & edit notification rule #%d") % nr,
+                suffix=rule.get("description", ""),
+                confirm_button=_("Yes, clone & edit"),
+                cancel_button=_("No, don't clone"),
+            )
 
         return NotificationRuleLinks(
-            delete=delete_url, edit=edit_url, drag=drag_url, clone=clone_url
+            delete=_delete_url(),
+            edit=_edit_url(),
+            drag=_drag_url(),
+            clone=_clone_url(),
         )
-
-
-class NotificationRuleLinks(NamedTuple):
-    delete: str
-    edit: str
-    drag: str
-    clone: str
 
 
 class ModeNotifications(ABCNotificationsMode):
@@ -712,7 +739,12 @@ class ModeNotifications(ABCNotificationsMode):
                                     icon_name="clipboard",
                                     item=make_simple_link(
                                         folder_preserving_link(
-                                            [("mode", ModeNotificationParametersOverview.name())]
+                                            [
+                                                (
+                                                    "mode",
+                                                    ModeNotificationParametersOverview.name(),
+                                                )
+                                            ]
                                         )
                                     ),
                                     is_shortcut=True,
@@ -826,13 +858,16 @@ class ModeNotifications(ABCNotificationsMode):
                 entries=[
                     PageMenuEntry(
                         title=_("Show user rules"),
-                        icon_name="toggle_on" if self._show_user_rules else "toggle_off",
+                        icon_name=("toggle_on" if self._show_user_rules else "toggle_off"),
                         item=make_simple_link(
                             makeactionuri(
                                 request,
                                 transactions,
                                 [
-                                    ("_show_user", "" if self._show_user_rules else "1"),
+                                    (
+                                        "_show_user",
+                                        "" if self._show_user_rules else "1",
+                                    ),
                                 ],
                             )
                         ),
@@ -854,7 +889,9 @@ class ModeNotifications(ABCNotificationsMode):
                 self._get_notification_rules(),
                 "notification",
                 _("notification rule"),
-                NotificationRuleConfigFile().save,
+                lambda c: NotificationRuleConfigFile().save(
+                    c, pprint_value=active_config.wato_pprint_config
+                ),
             )
 
         if back_mode := request.var("back_mode"):
@@ -878,15 +915,16 @@ class ModeNotifications(ABCNotificationsMode):
         self._show_rules(analyse=None)
 
     def _show_overview(self) -> None:
-        html.vue_app(
-            app_name="notification_overview",
+        html.vue_component(
+            component_name="cmk-notification-overview",
             data=asdict(_get_vue_data()),
         )
 
     def _get_date(self, context: NotificationContext) -> str:
         if "MICROTIME" in context:
             return time.strftime(
-                "%Y-%m-%d %H:%M:%S", time.localtime(float(context["MICROTIME"]) / 1000000.0)
+                "%Y-%m-%d %H:%M:%S",
+                time.localtime(float(context["MICROTIME"]) / 1000000.0),
             )
         return (
             context.get("SHORTDATETIME")
@@ -961,7 +999,7 @@ class ModeNotifications(ABCNotificationsMode):
                 )
                 start_nr += len(user_rules)
 
-    def _vs_notification_scripts(self) -> DropdownChoice:
+    def _vs_notification_scripts(self) -> DropdownChoice[str]:
         return DropdownChoice(
             title=_("Notification Script"),
             choices=notification_script_choices,
@@ -1009,8 +1047,8 @@ def _get_vue_data() -> Notifications:
     return Notifications(
         overview_title_i18n=_("Notification overview"),
         fallback_warning=(
-            FallbackWarning(
-                i18n=FallbackWarningI18n(
+            NotificationFallbackWarning(
+                i18n=NotificationFallbackWarningI18n(
                     title=_("No fallback email address configured"),
                     message=_(
                         "Without a fallback email address, you may miss alerts "
@@ -1024,12 +1062,18 @@ def _get_vue_data() -> Notifications:
                 ),
                 setup_link=makeuri_contextless(
                     request,
-                    [("varname", "notification_fallback_email"), ("mode", "edit_configvar")],
+                    [
+                        ("varname", "notification_fallback_email"),
+                        ("mode", "edit_configvar"),
+                    ],
                     filename="wato.py",
                 ),
                 do_not_show_again_link=makeuri_contextless(
                     request,
-                    [("varname", "notification_fallback_email"), ("mode", "edit_configvar")],
+                    [
+                        ("varname", "notification_fallback_email"),
+                        ("mode", "edit_configvar"),
+                    ],
                     filename="wato.py",
                 ),
             )
@@ -1065,9 +1109,9 @@ def _get_vue_data() -> Notifications:
                 failed_notifications_link_title=_("View failed notifications"),
             ),
         ),
-        core_stats=CoreStats(
+        core_stats=NotificationCoreStats(
             sites=sites_with_disabled_notifications,
-            i18n=CoreStatsI18n(
+            i18n=NotificationCoreStatsI18n(
                 title=_("Core status of notifications"),
                 sites_column_title=_("Sites"),
                 status_column_title=_("Notification core status"),
@@ -1286,13 +1330,16 @@ class ModeAnalyzeNotifications(ModeNotifications):
                     ),
                     PageMenuEntry(
                         title=_("Show user rules"),
-                        icon_name="toggle_on" if self._show_user_rules else "toggle_off",
+                        icon_name=("toggle_on" if self._show_user_rules else "toggle_off"),
                         item=make_simple_link(
                             makeactionuri(
                                 request,
                                 transactions,
                                 [
-                                    ("_show_user", "" if self._show_user_rules else "1"),
+                                    (
+                                        "_show_user",
+                                        "" if self._show_user_rules else "1",
+                                    ),
                                 ],
                             )
                         ),
@@ -1302,33 +1349,31 @@ class ModeAnalyzeNotifications(ModeNotifications):
         )
 
     def page(self) -> None:
-        result = self._get_result_from_request()
-        self._show_bulk_notifications()
+        result = self._get_result_from_request(debug=active_config.debug)
+        self._show_bulk_notifications(debug=active_config.debug)
         self._show_notification_backlog()
         if request.var("analyse") and result:
             self._show_resulting_notifications(result=result)
         self._show_rules(result)
 
-    def _get_result_from_request(
-        self,
-    ) -> NotifyAnalysisInfo | None:
+    def _get_result_from_request(self, *, debug: bool) -> NotifyAnalysisInfo | None:
         if request.var("analyse"):
             nr = request.get_integer_input_mandatory("analyse")
-            return notification_analyse(nr).result
+            return notification_analyse(nr, debug=debug).result
 
         return None
 
-    def _show_bulk_notifications(self) -> None:
+    def _show_bulk_notifications(self, *, debug: bool) -> None:
         if self._show_bulks:
             # Warn if there are unsent bulk notifications
-            if not self._render_bulks(only_ripe=False):
+            if not self._render_bulks(only_ripe=False, debug=debug):
                 html.show_message(_("Currently there are no unsent notification bulks pending."))
         else:
             # Warn if there are unsent bulk notifications
-            self._render_bulks(only_ripe=True)
+            self._render_bulks(only_ripe=True, debug=debug)
 
-    def _render_bulks(self, only_ripe: bool) -> bool:
-        bulks = notification_get_bulks(only_ripe).result
+    def _render_bulks(self, *, only_ripe: bool, debug: bool) -> bool:
+        bulks = notification_get_bulks(only_ripe=only_ripe, debug=debug).result
         if not bulks:
             return False
 
@@ -1352,21 +1397,24 @@ class ModeAnalyzeNotifications(ModeNotifications):
                 table.cell(_("Count"), str(len(uuids)), css=["number"])
                 if len(uuids) >= maxcount:
                     html.icon(
-                        "warning", _("Number of notifications exceeds maximum allowed number")
+                        "warning",
+                        _("Number of notifications exceeds maximum allowed number"),
                     )
         return True
 
     def _show_notification_backlog(self) -> None:
         """Show recent notifications. We can use them for rule analysis"""
         backlog = store.load_object_from_file(
-            cmk.utils.paths.var_dir + "/notify/backlog.mk",
+            cmk.utils.paths.var_dir / "notify/backlog.mk",
             default=[],
         )
         if not backlog:
             return
 
         with table_element(
-            table_id="backlog", title=_("Analysis: Recent notifications"), sortable=False
+            table_id="backlog",
+            title=_("Analysis: Recent notifications"),
+            sortable=False,
         ) as table:
             for nr, context in enumerate(backlog):
                 table.row()
@@ -1386,7 +1434,9 @@ class ModeAnalyzeNotifications(ModeNotifications):
 
                 replay_url = makeactionuri(request, transactions, [("_replay", str(nr))])
                 html.icon_button(
-                    replay_url, _("Replay this notification, send it again!"), "reload_cmk"
+                    replay_url,
+                    _("Replay this notification, send it again!"),
+                    "reload_cmk",
                 )
 
                 if request.var("analyse") and nr == request.get_integer_input_mandatory("analyse"):
@@ -1446,7 +1496,7 @@ class ModeAnalyzeNotifications(ModeNotifications):
         if request.has_var("_replay"):
             if transactions.check_transaction():
                 replay_nr = request.get_integer_input_mandatory("_replay")
-                notification_replay(replay_nr)
+                notification_replay(replay_nr, debug=active_config.debug)
                 flash(_("Replayed notification number %d") % (replay_nr + 1))
                 return None
 
@@ -1465,6 +1515,7 @@ class ModeAnalyzeNotifications(ModeNotifications):
 class NotificationTestRequest(NamedTuple):
     context: str
     dispatch: str
+    debug: bool
 
 
 class AutomationNotificationTest(AutomationCommand[NotificationTestRequest]):
@@ -1478,18 +1529,25 @@ class AutomationNotificationTest(AutomationCommand[NotificationTestRequest]):
         return NotificationTestRequest(
             context=context,
             dispatch=request.var("dispatch", ""),
+            debug=request.var("debug", "") == "1",
         )
 
     def execute(self, api_request: NotificationTestRequest) -> NotifyAnalysisInfo | None:
         return notification_test(
             raw_context=json.loads(api_request.context),
             dispatch=api_request.dispatch,
+            debug=api_request.debug,
         ).result
 
 
 class NotificationTestType(enum.StrEnum):
     host = "host_test"
     service = "svc_test"
+
+
+class AdvancedTestOptions(TypedDict):
+    notification_nr: NotRequired[int]
+    date_and_time: NotRequired[tuple[str, str, str]]
 
 
 class ModeTestNotifications(ModeNotifications):
@@ -1653,7 +1711,9 @@ class ModeTestNotifications(ModeNotifications):
 
         analyse = None
         if not user_errors:
-            context, analyse = self._result_from_request()
+            context, analyse = self._result_from_request(
+                site_configs=active_config.sites, debug=active_config.debug
+            )
             self._show_notification_test_overview(context, analyse)
             self._show_notification_test_details(context, analyse)
             if request.var("test_notification") and analyse:
@@ -1661,7 +1721,7 @@ class ModeTestNotifications(ModeNotifications):
         self._show_rules(analyse)
 
     def _result_from_request(
-        self,
+        self, *, site_configs: Mapping[SiteId, SiteConfiguration], debug: bool
     ) -> tuple[NotificationContext | None, NotifyAnalysisInfo | None]:
         if request.var("test_notification"):
             try:
@@ -1675,24 +1735,28 @@ class ModeTestNotifications(ModeNotifications):
             if context["WHAT"] == "SERVICE":
                 self._add_missing_service_context(context)
 
-            if site_is_local(active_config, (site_id := SiteId(context["SITEOFHOST"]))):
+            automation_config = make_automation_config(site_configs[SiteId(context["SITEOFHOST"])])
+            if isinstance(automation_config, LocalAutomationConfig):
                 return (
                     context,
                     notification_test(
                         raw_context=context,
                         dispatch=request.var("dispatch", ""),
+                        debug=debug,
                     ).result,
                 )
 
             remote_result = cast(
                 NotifyAnalysisInfo,
                 do_remote_automation(
-                    get_site_config(active_config, site_id),
+                    automation_config,
                     "notification-test",
                     [
                         ("context", json.dumps(context)),
                         ("dispatch", request.var("dispatch", "")),
+                        ("debug", "1" if debug else ""),
                     ],
+                    debug=debug,
                 ),
             )
 
@@ -1777,8 +1841,8 @@ class ModeTestNotifications(ModeNotifications):
                     notification_sent_count,
                     self._vs_notification_scripts().value_to_html(dispatch_method),
                     ungettext(
-                        "notification has been sent out",
-                        "notifications have been sent out",
+                        "notification has been triggered",
+                        "notifications have been triggered",
                         notification_sent_count,
                     ),
                 )
@@ -1798,7 +1862,9 @@ class ModeTestNotifications(ModeNotifications):
             return
 
         with table_element(
-            table_id="notification_test", title=_("Analysis: Test notifications"), sortable=False
+            table_id="notification_test",
+            title=_("Analysis: Test notifications"),
+            sortable=False,
         ) as table:
             table.row()
             table.cell("&nbsp;", css=["buttons"])
@@ -1832,9 +1898,12 @@ class ModeTestNotifications(ModeNotifications):
                 if context.get("SERVICESTATE"):
                     css = "state svcstate state"
                     last_state_name = context["PREVIOUSSERVICEHARDSTATE"]
-                    last_state = {"OK": "0", "WARNING": "1", "CRITICAL": "2", "UNKNOWN": "3"}[
-                        last_state_name
-                    ]
+                    last_state = {
+                        "OK": "0",
+                        "WARNING": "1",
+                        "CRITICAL": "2",
+                        "UNKNOWN": "3",
+                    }[last_state_name]
                     state = context["SERVICESTATEID"]
                     state_name = context["SERVICESTATE"]
                 else:
@@ -1872,17 +1941,21 @@ class ModeTestNotifications(ModeNotifications):
         table.row(css=["notification_context hidden"])
 
     def _render_test_notifications(self) -> None:
-        if self._test_notification_ongoing() or request.var("test_notification"):
+        general_test_options = self._get_default_options(
+            request.var("host_name"),
+            request.var("service_name"),
+        )
+        advanced_test_options: AdvancedTestOptions = {}
+        notify_plugin = {}
+        if (
+            form_submitted := request.var("test_notification")
+        ) or self._test_notification_ongoing():
             general_test_options = self._vs_general_test_options().from_html_vars("general_opts")
-            advanced_test_options = self._vs_advanced_test_options().from_html_vars("advanced_opts")
-            notify_plugin = self._vs_notify_plugin().from_html_vars("notify_plugin")
-        else:
-            general_test_options = self._get_default_options(
-                request.var("host_name"),
-                request.var("service_name"),
-            )
-            advanced_test_options = ""
-            notify_plugin = {}
+            if form_submitted:
+                advanced_test_options = self._vs_advanced_test_options().from_html_vars(
+                    "advanced_opts"
+                )
+                notify_plugin = self._vs_notify_plugin().from_html_vars("notify_plugin")
 
         self._ensure_correct_default_test_options()
 
@@ -2096,8 +2169,10 @@ class ModeTestNotifications(ModeNotifications):
         html.close_tr()
         html.close_table()
 
-    def _notification_script_choices_with_parameters(self):
-        return_choices = []
+    def _notification_script_choices_with_parameters(
+        self,
+    ) -> list[tuple[str, str, DropdownChoice[None]]]:
+        return_choices: list[tuple[str, str, DropdownChoice[None]]] = []
         all_parameters = NotificationParameterConfigFile().load_for_reading()
         for script_name, title in notification_script_choices():
             choices = []
@@ -2110,7 +2185,7 @@ class ModeTestNotifications(ModeNotifications):
                         )
                     )
 
-            vs: DropdownChoice = DropdownChoice(
+            vs: DropdownChoice[None] = DropdownChoice(
                 title=_("Notification parameter"),
                 choices=choices,
                 empty_text=_(
@@ -2214,7 +2289,7 @@ class ModeTestNotifications(ModeNotifications):
                 ),
             ],
             optional_keys=[],
-            validate=_validate_general_opts,
+            validate=_validate_general_opts,  # type: ignore[arg-type]
         )
 
     def _vs_notify_plugin(self) -> Dictionary:
@@ -2224,7 +2299,7 @@ class ModeTestNotifications(ModeNotifications):
                     "notify_plugin",
                     CascadingDropdown(
                         label=_("Notification method and parameter"),
-                        title=_("Send out notification for specific method"),
+                        title=_("Trigger notification for a specific method"),
                         choices=self._notification_script_choices_with_parameters,
                         default_value=("mail", None),
                         orientation="horizontal",
@@ -2233,9 +2308,9 @@ class ModeTestNotifications(ModeNotifications):
             ],
         )
 
-    def _vs_advanced_test_options(self) -> Foldable:
+    def _vs_advanced_test_options(self) -> Foldable[AdvancedTestOptions]:
         return Foldable(
-            valuespec=Dictionary(
+            valuespec=Dictionary(  # type: ignore[arg-type]
                 title=_("Advanced condition simulation"),
                 elements=[
                     (
@@ -2321,13 +2396,24 @@ def _get_resulting_notifications_count(
     return sum(len(value) for value in method_dict.values())
 
 
-def _validate_general_opts(value: dict, varprefix: str) -> None:
-    if not value["on_hostname_hint"]:
+class GeneralTestOptions(TypedDict):
+    on_hostname_hint: str
+    on_service_hint: str
+    simulation_mode: tuple[str, dict[str, list[int]]]
+    plugin_output: str
+
+
+def _validate_general_opts(general_test_options: GeneralTestOptions, varprefix: str) -> None:
+    if not general_test_options["on_hostname_hint"]:
         raise MKUserError(
-            f"{varprefix}_p_on_hostname_hint", _("Please provide a hostname to test with.")
+            f"{varprefix}_p_on_hostname_hint",
+            _("Please provide a hostname to test with."),
         )
 
-    if request.has_var("_test_service_notifications") and not value["on_service_hint"]:
+    if (
+        request.has_var("_test_service_notifications")
+        and not general_test_options["on_service_hint"]
+    ):
         raise MKUserError(
             f"{varprefix}_p_on_service_hint",
             _("If you want to test service notifications, please provide a service to test with."),
@@ -2339,7 +2425,7 @@ class ABCUserNotificationsMode(ABCNotificationsMode):
         super().__init__()
         self._start_async_repl = False
 
-    def _from_vars(self):
+    def _from_vars(self) -> None:
         self._users = userdb.load_users(
             lock=transactions.is_transaction() or request.has_var("_move")
         )
@@ -2352,7 +2438,7 @@ class ABCUserNotificationsMode(ABCNotificationsMode):
         self._rules = user_spec.setdefault("notification_rules", [])
 
     @abc.abstractmethod
-    def _user_id(self):
+    def _user_id(self) -> UserId:
         raise NotImplementedError()
 
     def title(self) -> str:
@@ -2368,8 +2454,8 @@ class ABCUserNotificationsMode(ABCNotificationsMode):
             del self._rules[nr]
             userdb.save_users(self._users, now)
             self._add_change(
-                "notification-delete-user-rule",
-                _("Deleted notification rule %d of user %s") % (nr, self._user_id()),
+                action_name="notification-delete-user-rule",
+                text=_("Deleted notification rule %d of user %s") % (nr, self._user_id()),
             )
 
         elif request.has_var("_move"):
@@ -2381,8 +2467,8 @@ class ABCUserNotificationsMode(ABCNotificationsMode):
             userdb.save_users(self._users, now)
 
             self._add_change(
-                "notification-move-user-rule",
-                _("Changed position of notification rule %d of user %s")
+                action_name="notification-move-user-rule",
+                text=_("Changed position of notification rule %d of user %s")
                 % (from_pos, self._user_id()),
             )
 
@@ -2404,12 +2490,10 @@ class ABCUserNotificationsMode(ABCNotificationsMode):
 
 
 def _get_notification_sync_sites() -> list[SiteId]:
-    # Astroid 2.x bug prevents us from using NewType https://github.com/PyCQA/pylint/issues/2296
-
     return sorted(
         site_id
         for site_id in wato_slave_sites()
-        if not site_is_local(active_config, SiteId(site_id))
+        if not site_is_local(active_config.sites[SiteId(site_id)])
     )
 
 
@@ -2442,8 +2526,13 @@ class ModeUserNotifications(ABCUserNotificationsMode):
     def _breadcrumb_url(self) -> str:
         return self.mode_url(user=self._user_id())
 
-    def _user_id(self):
-        return request.get_str_input("user")
+    def _user_id(self) -> UserId:
+        if (user_id := request.get_str_input("user")) is None:
+            raise MKUserError("user", _("User ID must not be None"))
+        try:
+            return UserId(user_id)
+        except ValueError as e:
+            raise MKUserError("user", str(e))
 
     def page_menu(self, breadcrumb: Breadcrumb) -> PageMenu:
         menu = PageMenu(
@@ -2510,8 +2599,8 @@ class ModePersonalUserNotifications(ABCUserNotificationsMode):
         super().__init__()
         user.need_permission("general.edit_notifications")
 
-    def main_menu(self) -> MegaMenu:
-        return mega_menu_registry.menu_user()
+    def main_menu(self) -> MainMenu:
+        return main_menu_registry.menu_user()
 
     def page_menu(self, breadcrumb: Breadcrumb) -> PageMenu:
         return PageMenu(
@@ -2542,15 +2631,25 @@ class ModePersonalUserNotifications(ABCUserNotificationsMode):
             inpage_search=PageMenuSearch(),
         )
 
-    def _user_id(self):
+    def _user_id(self) -> UserId:
+        if user.id is None:
+            raise MKUserError("user", _("User ID must not be None"))
         return user.id
 
-    def _add_change(self, log_what: str, log_text: str) -> None:
+    def _add_change(self, *, action_name: str, text: str) -> None:
         if has_wato_slave_sites():
             self._start_async_repl = True
-            _audit_log.log_audit(log_what, log_text)
+            _audit_log.log_audit(
+                action=action_name,
+                message=text,
+                user_id=user.id,
+                use_git=active_config.wato_use_git,
+            )
         else:
-            super()._add_change(log_what, log_text)
+            super()._add_change(
+                action_name=action_name,
+                text=text,
+            )
 
     def title(self) -> str:
         return _("Your personal notification rules")
@@ -2570,7 +2669,7 @@ class ABCEditNotificationRuleMode(ABCNotificationsMode):
         raise NotImplementedError()
 
     @abc.abstractmethod
-    def _user_id(self):
+    def _user_id(self) -> UserId | None:
         raise NotImplementedError()
 
     @abc.abstractmethod
@@ -2614,7 +2713,7 @@ class ABCEditNotificationRuleMode(ABCNotificationsMode):
             except IndexError:
                 raise MKUserError(None, _("This %s does not exist.") % "notification rule")
 
-    def _get_default_notification_rule(self) -> EventRule | dict:
+    def _get_default_notification_rule(self) -> EventRule | dict[str, object]:
         return get_default_notification_rule()
 
     def _valuespec(self) -> Dictionary:
@@ -3001,18 +3100,22 @@ class ABCEditNotificationRuleMode(ABCNotificationsMode):
                 "contact_match_macros",
                 "contact_match_groups",
             ],
-            hidden_keys=["contact_emails"] if edition(paths.omd_root) == Edition.CSE else [],
+            hidden_keys=(["contact_emails"] if edition(paths.omd_root) == Edition.CSE else []),
             headers=headers_part1 + contact_headers + headers_part2,
             render="form",
             form_narrow=True,
-            validate=self._validate_notification_rule,
+            validate=self._validate_notification_rule,  # type: ignore[arg-type]
         )
 
-    def _notification_script_choices_with_parameters(self):
-        choices = []
+    def _notification_script_choices_with_parameters(self) -> list[tuple[str, str, Alternative]]:
+        choices: list[tuple[str, str, Alternative]] = []
         for script_name, title in notification_script_choices():
             if script_name in notification_parameter_registry:
-                vs: Dictionary | ListOfStrings = notification_parameter_registry[script_name]().spec
+                plugin = notification_parameter_registry[script_name]
+                if isinstance(plugin, NotificationParameters):
+                    vs = convert_to_legacy_valuespec(plugin.parameter_form(), _)
+                else:
+                    vs = plugin.spec()
             else:
                 vs = ListOfStrings(
                     title=_("Call with the following parameters:"),
@@ -3037,16 +3140,16 @@ class ABCEditNotificationRuleMode(ABCNotificationsMode):
             choices.append((script_name, title, vs_alternative))
         return choices
 
-    def _validate_notification_rule(self, rule: dict, varprefix: str) -> None:
-        if "bulk" in rule and rule["notify_plugin"][1] is None:
+    def _validate_notification_rule(self, event_rule: EventRule, varprefix: str) -> None:
+        if "bulk" in event_rule and event_rule["notify_plugin"][1] is None:
             raise MKUserError(
                 varprefix + "_p_bulk_USE",
                 _("It does not make sense to add a bulk configuration for cancelling rules."),
             )
 
-        if "bulk" in rule or "bulk_period" in rule:
-            if rule["notify_plugin"][0]:
-                info = load_notification_scripts()[rule["notify_plugin"][0]]
+        if "bulk" in event_rule or "bulk_period" in event_rule:
+            if event_rule["notify_plugin"][0]:
+                info = load_notification_scripts()[event_rule["notify_plugin"][0]]
                 if not info["bulk"]:
                     raise MKUserError(
                         varprefix + "_p_notify_plugin",
@@ -3094,11 +3197,16 @@ class ABCEditNotificationRuleMode(ABCNotificationsMode):
         self._save_rules(self._rules)
 
         log_what = "new-notification-rule" if self._new else "edit-notification-rule"
-        self._add_change(log_what, self._log_text(self._edit_nr))
+        self._add_change(
+            action_name=log_what,
+            text=self._log_text(self._edit_nr),
+        )
         flash(
-            _("New notification rule #%d successfully created!") % (len(self._rules) - 1)
-            if self._new
-            else _("Notification rule number #%d successfully edited!") % self._edit_nr,
+            (
+                _("New notification rule #%d successfully created!") % (len(self._rules) - 1)
+                if self._new
+                else _("Notification rule number #%d successfully edited!") % self._edit_nr
+            ),
         )
 
         if back_mode := request.var("back_mode"):
@@ -3143,9 +3251,9 @@ class ModeEditNotificationRule(ABCEditNotificationRuleMode):
         return NotificationRuleConfigFile().load_for_reading()
 
     def _save_rules(self, rules: list[EventRule]) -> None:
-        NotificationRuleConfigFile().save(rules)
+        NotificationRuleConfigFile().save(rules, pprint_value=active_config.wato_pprint_config)
 
-    def _user_id(self):
+    def _user_id(self) -> None:
         return None
 
     def _back_mode(self) -> ActionResult:
@@ -3162,34 +3270,32 @@ class ModeEditNotificationRule(ABCEditNotificationRuleMode):
         return _("Changed notification rule %d") % edit_nr
 
 
-class ABCEditUserNotificationRuleMode(ABCEditNotificationRuleMode):
-    def _load_rules(self) -> list[EventRule]:
-        self._users = userdb.load_users(lock=transactions.is_transaction())
-        if self._user_id() not in self._users:
-            raise MKUserError(
-                None, _("The user you are trying to edit notification rules for does not exist.")
-            )
-        user_spec = self._users[self._user_id()]
-        return user_spec.setdefault("notification_rules", [])
-
-    def _save_rules(self, rules: list[EventRule]) -> None:
-        userdb.save_users(self._users, datetime.now())
-
-    def _rule_from_valuespec(self, rule: EventRule) -> EventRule:
-        # Force selection of our user
-        rule["contact_users"] = [self._user_id()]
-
-        # User rules are always allow_disable
-        rule["allow_disable"] = True
-        return rule
-
-    def _log_text(self, edit_nr: int) -> str:
-        if self._new:
-            return _("Created new notification rule for user %s") % self._user_id()
-        return _("Changed notification rule %d of user %s") % (edit_nr, self._user_id())
+def _log_text(new: bool, user_id: UserId, edit_nr: int) -> str:
+    if new:
+        return _("Created new notification rule for user %s") % user_id
+    return _("Changed notification rule %d of user %s") % (edit_nr, user_id)
 
 
-class ModeEditUserNotificationRule(ABCEditUserNotificationRuleMode):
+def _set_event_rule_attrs(event_rule: EventRule, user_id: UserId) -> EventRule:
+    # Force selection of our user
+    event_rule["contact_users"] = [user_id]
+
+    # User rules are always allow_disable
+    event_rule["allow_disable"] = True
+    return event_rule
+
+
+def _load_rules_ensure_user(user_id: UserId, users: Users) -> list[EventRule]:
+    if user_id not in users:
+        raise MKUserError(
+            None,
+            _("The user you are trying to edit notification rules for does not exist."),
+        )
+    user_spec = users[user_id]
+    return user_spec.setdefault("notification_rules", [])
+
+
+class ModeEditUserNotificationRule(ABCEditNotificationRuleMode):
     """Edit notification rule of a given user"""
 
     @classmethod
@@ -3204,8 +3310,11 @@ class ModeEditUserNotificationRule(ABCEditUserNotificationRuleMode):
     def parent_mode(cls) -> type[WatoMode] | None:
         return ModeUserNotifications
 
-    def _user_id(self):
-        return request.get_str_input_mandatory("user")
+    def _user_id(self) -> UserId:
+        try:
+            return UserId(request.get_str_input_mandatory("user"))
+        except ValueError as e:
+            raise MKUserError("user", str(e))
 
     def _back_mode(self) -> ActionResult:
         return redirect(mode_url("user_notifications", user=self._user_id()))
@@ -3213,10 +3322,26 @@ class ModeEditUserNotificationRule(ABCEditUserNotificationRuleMode):
     def title(self) -> str:
         if self._new:
             return _("Add notification rule for user %s") % self._user_id()
-        return _("Edit notification rule %d of user %s") % (self._edit_nr, self._user_id())
+        return _("Edit notification rule %d of user %s") % (
+            self._edit_nr,
+            self._user_id(),
+        )
+
+    def _load_rules(self) -> list[EventRule]:
+        self._users = userdb.load_users(lock=transactions.is_transaction())
+        return _load_rules_ensure_user(user_id=self._user_id(), users=self._users)
+
+    def _save_rules(self, rules: list[EventRule]) -> None:
+        userdb.save_users(self._users, datetime.now())
+
+    def _rule_from_valuespec(self, rule: EventRule) -> EventRule:
+        return _set_event_rule_attrs(event_rule=rule, user_id=self._user_id())
+
+    def _log_text(self, edit_nr: int) -> str:
+        return _log_text(self._new, self._user_id(), edit_nr)
 
 
-class ModeEditPersonalNotificationRule(ABCEditUserNotificationRuleMode):
+class ModeEditPersonalNotificationRule(ABCEditNotificationRuleMode):
     @classmethod
     def name(cls) -> str:
         return "notification_rule_p"
@@ -3233,15 +3358,25 @@ class ModeEditPersonalNotificationRule(ABCEditUserNotificationRuleMode):
         super().__init__()
         user.need_permission("general.edit_notifications")
 
-    def _user_id(self):
+    def _user_id(self) -> UserId:
+        if user.id is None:
+            raise MKUserError("user", _("User ID must not be None"))
         return user.id
 
-    def _add_change(self, log_what, log_text):
+    def _add_change(self, action_name: str, text: str) -> None:
         if has_wato_slave_sites():
             self._start_async_repl = True
-            _audit_log.log_audit(log_what, log_text)
+            _audit_log.log_audit(
+                action=action_name,
+                message=text,
+                user_id=self._user_id(),
+                use_git=active_config.wato_use_git,
+            )
         else:
-            super()._add_change(log_what, log_text)
+            super()._add_change(
+                action_name=action_name,
+                text=text,
+            )
 
     def _back_mode(self) -> ActionResult:
         if has_wato_slave_sites():
@@ -3253,11 +3388,24 @@ class ModeEditPersonalNotificationRule(ABCEditUserNotificationRuleMode):
             return _("Create new notification rule")
         return _("Edit notification rule %d") % self._edit_nr
 
-    def _get_default_notification_rule(self) -> EventRule | dict:
+    def _get_default_notification_rule(self) -> EventRule | dict[str, object]:
         # For user notifications, we still need the old way to load the
         # default rule. Parameters are stored within the rule
         # (contacts.mk) so no need for a parameter ID here.
         return {}
+
+    def _load_rules(self) -> list[EventRule]:
+        self._users = userdb.load_users(lock=transactions.is_transaction())
+        return _load_rules_ensure_user(user_id=self._user_id(), users=self._users)
+
+    def _save_rules(self, rules: list[EventRule]) -> None:
+        userdb.save_users(self._users, datetime.now())
+
+    def _rule_from_valuespec(self, rule: EventRule) -> EventRule:
+        return _set_event_rule_attrs(event_rule=rule, user_id=self._user_id())
+
+    def _log_text(self, edit_nr: int) -> str:
+        return _log_text(self._new, self._user_id(), edit_nr)
 
 
 class ModeNotificationParametersOverview(WatoMode):
@@ -3319,8 +3467,8 @@ class ModeNotificationParametersOverview(WatoMode):
         return menu
 
     def page(self) -> None:
-        html.vue_app(
-            app_name="notification_parameters_overview",
+        html.vue_component(
+            component_name="cmk-notification-parameters-overview",
             data=asdict(self._get_notification_parameters_data()),
         )
 
@@ -3355,14 +3503,16 @@ class ModeNotificationParametersOverview(WatoMode):
         all_parameters = NotificationParameterConfigFile().load_for_reading()
         filtered_parameters = list(self._get_parameter_rulesets(all_parameters))
         return NotificationParametersOverview(
-            parameters=[
-                RuleSection(
-                    i18n=_("Parameters for"),
-                    topics=[RuleTopic(i18n=None, rules=filtered_parameters)],
-                )
-            ]
-            if filtered_parameters
-            else [],
+            parameters=(
+                [
+                    RuleSection(
+                        i18n=_("Parameters for"),
+                        topics=[RuleTopic(i18n=None, rules=filtered_parameters)],
+                    )
+                ]
+                if filtered_parameters
+                else []
+            ),
             i18n={
                 "no_parameter_match": _(
                     "Found no matching parameters. Please try another search term."
@@ -3373,7 +3523,7 @@ class ModeNotificationParametersOverview(WatoMode):
 
 class ABCNotificationParameterMode(WatoMode):
     @classmethod
-    def name(cls):
+    def name(cls) -> str:
         return "notification_parameter"
 
     @staticmethod
@@ -3395,10 +3545,18 @@ class ABCNotificationParameterMode(WatoMode):
         self,
         parameters: NotificationParameterSpecs,
     ) -> None:
-        NotificationParameterConfigFile().save(parameters)
+        NotificationParameterConfigFile().save(
+            parameters, pprint_value=active_config.wato_pprint_config
+        )
 
-    def _add_change(self, log_what, log_text):
-        _changes.add_change(log_what, log_text, need_restart=False)
+    def _add_change(self, *, action_name: str, text: str) -> None:
+        _changes.add_change(
+            action_name=action_name,
+            text=text,
+            user_id=user.id,
+            need_restart=False,
+            use_git=active_config.wato_use_git,
+        )
 
     def _log_text(self, edit_nr: int) -> str:
         raise NotImplementedError()
@@ -3426,6 +3584,7 @@ class ABCNotificationParameterMode(WatoMode):
                             param["general"]["description"]
                             for paramId, param in method_parameters.items()
                         ],
+                        "_clone",
                     )
                 except KeyError:
                     raise MKUserError(None, _("This %s does not exist.") % "notification parameter")
@@ -3444,22 +3603,30 @@ class ABCNotificationParameterMode(WatoMode):
             except IndexError:
                 raise MKUserError(None, _("This %s does not exist.") % "notification parameter")
 
-    def _spec(self) -> Dictionary | LegacyValueSpec:
+    def _spec(self) -> ValueSpec[Any]:
         try:
-            return notification_parameter_registry[self._method()]().spec
+            plugin = notification_parameter_registry[self._method()]
         except KeyError:
             if any(
                 self._method() == script_name
                 for script_name, _title in notification_script_choices()
             ):
-                return recompose(notification_parameter_registry.parameter_called())
+                return recompose(notification_parameter_registry.parameter_called()).valuespec
             raise MKUserError(
-                None, _("No notification parameters for method '%s' found") % self._method()
+                None,
+                _("No notification parameters for method '%s' found") % self._method(),
             )
+
+        if isinstance(plugin, NotificationParameters):
+            return convert_to_legacy_valuespec(plugin.parameter_form(), _)
+        return plugin.spec()
 
     def page_menu(self, breadcrumb: Breadcrumb) -> PageMenu:
         return make_simple_form_page_menu(
-            _("Notification parameter"), breadcrumb, form_name="parameter", button_name="_save"
+            _("Notification parameter"),
+            breadcrumb,
+            form_name="parameter",
+            button_name="_save",
         )
 
     def action(self) -> ActionResult:
@@ -3493,8 +3660,8 @@ class ABCNotificationParameterMode(WatoMode):
                 i for i, v in enumerate(method_parameter_list) if v[0] == parameter_id
             )
             self._add_change(
-                "notification-delete-notification-parameter",
-                _("Deleted notification parameter %d") % parameter_number,
+                action_name="notification-delete-notification-parameter",
+                text=_("Deleted notification parameter %d") % parameter_number,
             )
 
         elif request.has_var("_move"):
@@ -3509,8 +3676,8 @@ class ABCNotificationParameterMode(WatoMode):
             self._save_parameters(self._parameters)
 
             self._add_change(
-                "notification-move-notification-parameter",
-                _("Changed position of notification parameter %d") % from_pos,
+                action_name="notification-move-notification-parameter",
+                text=_("Changed position of notification parameter %d") % from_pos,
             )
 
         if back_mode := request.var("back_mode"):
@@ -3521,7 +3688,9 @@ class ABCNotificationParameterMode(WatoMode):
     def _vue_field_id(self) -> str:
         return "_vue_edit_notification_parameter"
 
-    def _get_parameter_value_and_origin(self) -> tuple[NotificationParameterItem, DataOrigin]:
+    def _get_parameter_value_and_origin(
+        self,
+    ) -> tuple[NotificationParameterItem, DataOrigin]:
         if request.has_var(self._vue_field_id()):
             return (
                 json.loads(request.get_str_input_mandatory(self._vue_field_id())),
@@ -3656,8 +3825,8 @@ class ModeNotificationParameters(ABCNotificationParameterMode):
 
     def _render_notification_parameters(
         self,
-        parameters,
-    ):
+        parameters: NotificationParameterSpec,
+    ) -> None:
         spec = self._spec()
         method_name = self._method_name()
         with table_element(title=_("Parameters"), limit=None, sortable=False) as table:
@@ -3670,7 +3839,9 @@ class ModeNotificationParameters(ABCNotificationParameterMode):
                 links = self._parameter_links(parameter, parameter_id, nr)
                 html.icon_button(links.edit, _("Edit this notification parameter"), "edit")
                 html.icon_button(
-                    links.clone, _("Create a copy of this notification parameter"), "clone"
+                    links.clone,
+                    _("Create a copy of this notification parameter"),
+                    "clone",
                 )
                 html.element_dragger_url("tr", base_url=links.drag)
                 html.icon_button(links.delete, _("Delete this notification parameter"), "delete")
@@ -3678,10 +3849,13 @@ class ModeNotificationParameters(ABCNotificationParameterMode):
                 table.cell(_("Method"), method_name)
 
                 table.cell(_("Description"))
-                url = parameter.get("docu_url")
+                url = parameter["general"].get("docu_url")
                 if url:
                     html.icon_button(
-                        url, _("Context information about this parameter"), "url", target="_blank"
+                        url,
+                        _("Context information about this parameter"),
+                        "url",
+                        target="_blank",
                     )
                     html.write_text_permissive("&nbsp;")
                 html.write_text_permissive(parameter["general"]["description"])
@@ -3696,20 +3870,23 @@ class ModeNotificationParameters(ABCNotificationParameterMode):
                     title=title,
                     indent=False,
                 ):
-                    if isinstance(spec, LegacyValueSpec):
-                        spec = spec.valuespec  # type: ignore[assignment]  # expects ValueSpec[Any]
-
                     assert hasattr(spec, "value_to_html")
                     html.write_text_permissive(
                         spec.value_to_html(parameter["parameter_properties"])
                     )
 
-    def _add_change(self, log_what, log_text):
-        _changes.add_change(log_what, log_text, need_restart=False)
+    def _add_change(self, *, action_name: str, text: str) -> None:
+        _changes.add_change(
+            action_name=action_name,
+            user_id=user.id,
+            text=text,
+            need_restart=False,
+            use_git=active_config.wato_use_git,
+        )
 
     def _parameter_links(
         self,
-        parameter: dict[str, Any],
+        parameter: NotificationParameterItem,
         parameter_id: NotificationParameterID,
         nr: int,
     ) -> NotificationRuleLinks:
@@ -3730,7 +3907,7 @@ class ModeNotificationParameters(ABCNotificationParameterMode):
                 + additional_vars
             ),
             title=_("Delete notification parameter #%d") % nr,
-            suffix=parameter.get("description", ""),
+            suffix=parameter["general"].get("description", ""),
         )
         drag_url = make_action_link(
             [
@@ -3788,7 +3965,10 @@ class ModeEditNotificationParameter(ABCNotificationParameterMode):
             if self._clone_id:
                 return _("Clone %s notification parameter") % self._method_name()
             return _("Add %s notification parameter") % self._method_name()
-        return _("Edit %s notification parameter #%s") % (self._method_name(), self._edit_nr)
+        return _("Edit %s notification parameter #%s") % (
+            self._method_name(),
+            self._edit_nr,
+        )
 
     def _log_text(self, edit_nr: int) -> str:
         if self._new:
@@ -3824,7 +4004,10 @@ class ModeEditNotificationParameter(ABCNotificationParameterMode):
         self._save_parameters(self._parameters)
 
         log_what = "new-notification-parameter" if self._new else "edit-notification-parameter"
-        self._add_change(log_what, self._log_text(self._edit_nr))
+        self._add_change(
+            action_name=log_what,
+            text=self._log_text(self._edit_nr),
+        )
 
         if back_mode := request.var("back_mode"):
             return redirect(mode_url(back_mode, method=self._method()))
@@ -3868,7 +4051,9 @@ class ModeEditNotificationRuleQuickSetup(WatoMode):
                 rule = deepcopy(notifications_rules[self._clone_nr])
                 rule["rule_id"] = new_notification_rule_id()
                 notifications_rules.append(rule)
-                NotificationRuleConfigFile().save(notifications_rules)
+                NotificationRuleConfigFile().save(
+                    notifications_rules, pprint_value=active_config.wato_pprint_config
+                )
                 self._edit_nr = len(notifications_rules) - 1
             except IndexError:
                 raise MKUserError(None, _("Notification rule does not exist."))
@@ -3919,8 +4104,8 @@ class ModeEditNotificationRuleQuickSetup(WatoMode):
                 )
             )
 
-        html.vue_app(
-            app_name="quick_setup",
+        html.vue_component(
+            component_name="cmk-quick-setup",
             data={
                 "quick_setup_id": self._quick_setup_id,
                 "mode": "guided" if self._new and self._clone_nr < 0 else "overview",

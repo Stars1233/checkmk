@@ -6,6 +6,7 @@ import logging
 import re
 from re import Pattern
 from typing import override
+from urllib.parse import quote_plus
 
 from playwright.sync_api import expect, Locator
 
@@ -43,12 +44,14 @@ class Dashboard(CmkPage):
     @override
     def navigate(self) -> None:
         logger.info("Navigate to 'Main dashboard' page")
-        self.main_menu.main_page.click()
-        self.page.wait_for_url(url=re.compile("dashboard.py$"), wait_until="load")
-        self._validate_page()
+        self.main_menu.monitor_menu("Main dashboard").click()
+        self.page.wait_for_url(
+            url=re.compile(f"{quote_plus('dashboard.py?name=main')}$"), wait_until="load"
+        )
+        self.validate_page()
 
     @override
-    def _validate_page(self) -> None:
+    def validate_page(self) -> None:
         logger.info("Validate that current page is 'Main dashboard' page")
         self.main_area.check_page_title(self.page_title)
         expect(self.dashlet("Host statistics")).to_be_visible()
@@ -92,7 +95,7 @@ class DashboardMobile(CmkPage):
         """TODO: add navigation"""
 
     @override
-    def _validate_page(self) -> None:
+    def validate_page(self) -> None:
         expect(self.page.get_by_role(role="heading", name=self.page_title)).to_have_count(1)
         expect(self.classical_web_gui).to_be_visible()
         expect(self.logout).to_be_visible()
@@ -128,10 +131,10 @@ class ProblemDashboard(CmkPage):
         logger.info("Navigate to '%s' page", self.page_title)
         self.main_menu.main_page.click()
         self.page.wait_for_url(url=re.compile("dashboard.py$"), wait_until="load")
-        self._validate_page()
+        self.validate_page()
 
     @override
-    def _validate_page(self) -> None:
+    def validate_page(self) -> None:
         logger.info("Validate that current page is '%s' page", self.page_title)
         self.main_area.check_page_title(self.page_title)
         expect(self.dashlet("Host statistics")).to_be_visible()

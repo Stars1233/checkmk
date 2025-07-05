@@ -15,12 +15,13 @@ from typing import Literal
 
 import cmk.ccc.version as cmk_version
 from cmk.ccc.exceptions import MKException
+from cmk.ccc.user import UserId
 
 from cmk.utils import paths
-from cmk.utils.user import UserId
 
 from cmk.gui import crash_handler, visuals
 from cmk.gui.breadcrumb import Breadcrumb
+from cmk.gui.config import Config
 from cmk.gui.crash_handler import GUIDetails
 from cmk.gui.exceptions import MKAuthException, MKMissingDataError, MKUserError
 from cmk.gui.graphing._utils import MKCombinedGraphLimitExceededError
@@ -91,7 +92,7 @@ DASHLET_PADDING = (
 RASTER = 10  # Raster the dashlet coords are measured in (px)
 
 
-def page_dashboard() -> None:
+def page_dashboard(config: Config) -> None:
     name = request.get_ascii_input_mandatory("name", "")
     if not name:
         name = _get_default_dashboard_name()
@@ -329,15 +330,13 @@ def _render_dashlet(
         if missing_infos:
             return (
                 _("Filter context missing"),
-                str(
-                    html.render_warning(
-                        _(
-                            "Unable to render this element, "
-                            "because we miss some required context information (%s). Please update the "
-                            "form on the right to make this element render."
-                        )
-                        % ", ".join(sorted(missing_infos))
+                html.render_warning(
+                    _(
+                        "Unable to render this element, "
+                        "because we miss some required context information (%s). Please update the "
+                        "form on the right to make this element render."
                     )
+                    % ", ".join(sorted(missing_infos))
                 ),
             )
 
@@ -373,7 +372,7 @@ def _render_dashlet_content(
 
 
 def render_dashlet_exception_content(dashlet: Dashlet, e: Exception) -> HTML | str:
-    if isinstance(e, (MKMissingDataError, MKCombinedGraphLimitExceededError)):
+    if isinstance(e, MKMissingDataError | MKCombinedGraphLimitExceededError):
         return html.render_message(str(e))
 
     if not isinstance(e, MKUserError):
@@ -385,17 +384,16 @@ def render_dashlet_exception_content(dashlet: Dashlet, e: Exception) -> HTML | s
             dashlet.type_name(),
         )
 
-    with output_funnel.plugged():
-        if isinstance(e, MKException):
-            html.show_error(
-                _(
-                    "Problem while rendering dashboard element %d of type %s: %s. Have a look at "
-                    "<tt>var/log/web.log</tt> for further information."
-                )
-                % (dashlet.dashlet_id, dashlet.type_name(), str(e))
+    if isinstance(e, MKException):
+        return html.render_error(
+            _(
+                "Problem while rendering dashboard element %d of type %s: %s. Have a look at "
+                "<tt>var/log/web.log</tt> for further information."
             )
-            return output_funnel.drain()
+            % (dashlet.dashlet_id, dashlet.type_name(), str(e))
+        )
 
+    with output_funnel.plugged():
         crash_handler.handle_exception_as_gui_crash_report(
             details=GUIDetails(
                 dashlet_id=dashlet.dashlet_id,
@@ -793,7 +791,9 @@ def _dashboard_add_view_dashlet_link(
     )
 
 
-def _dashboard_add_views_dashlet_entries(name: DashboardName) -> Iterable[PageMenuEntry]:
+def _dashboard_add_views_dashlet_entries(
+    name: DashboardName,
+) -> Iterable[PageMenuEntry]:
     yield PageMenuEntry(
         title=_("New view"),
         icon_name="view",
@@ -831,7 +831,9 @@ def _dashboard_add_non_view_dashlet_link(
     )
 
 
-def _dashboard_add_graphs_dashlet_entries(name: DashboardName) -> Iterable[PageMenuEntry]:
+def _dashboard_add_graphs_dashlet_entries(
+    name: DashboardName,
+) -> Iterable[PageMenuEntry]:
     yield PageMenuEntryCEEOnly(
         title="Single metric graph",
         icon_name={
@@ -866,7 +868,9 @@ def _dashboard_add_graphs_dashlet_entries(name: DashboardName) -> Iterable[PageM
     )
 
 
-def _dashboard_add_state_dashlet_entries(name: DashboardName) -> Iterable[PageMenuEntryCEEOnly]:
+def _dashboard_add_state_dashlet_entries(
+    name: DashboardName,
+) -> Iterable[PageMenuEntryCEEOnly]:
     yield PageMenuEntryCEEOnly(
         title="Host state",
         icon_name="host_state",
@@ -898,7 +902,9 @@ def _dashboard_add_state_dashlet_entries(name: DashboardName) -> Iterable[PageMe
     )
 
 
-def _dashboard_add_inventory_dashlet_entries(name: DashboardName) -> Iterable[PageMenuEntryCEEOnly]:
+def _dashboard_add_inventory_dashlet_entries(
+    name: DashboardName,
+) -> Iterable[PageMenuEntryCEEOnly]:
     yield PageMenuEntryCEEOnly(
         title="HW/SW Inventory of host",
         icon_name="inventory",
@@ -906,7 +912,9 @@ def _dashboard_add_inventory_dashlet_entries(name: DashboardName) -> Iterable[Pa
     )
 
 
-def _dashboard_add_metrics_dashlet_entries(name: DashboardName) -> Iterable[PageMenuEntryCEEOnly]:
+def _dashboard_add_metrics_dashlet_entries(
+    name: DashboardName,
+) -> Iterable[PageMenuEntryCEEOnly]:
     yield PageMenuEntryCEEOnly(
         title="Average scatterplot",
         icon_name="scatterplot",
@@ -938,7 +946,9 @@ def _dashboard_add_metrics_dashlet_entries(name: DashboardName) -> Iterable[Page
     )
 
 
-def _dashboard_add_checkmk_dashlet_entries(name: DashboardName) -> Iterable[PageMenuEntry]:
+def _dashboard_add_checkmk_dashlet_entries(
+    name: DashboardName,
+) -> Iterable[PageMenuEntry]:
     yield PageMenuEntryCEEOnly(
         title="Site overview",
         icon_name="site_overview",
@@ -1014,7 +1024,9 @@ def _dashboard_add_checkmk_dashlet_entries(name: DashboardName) -> Iterable[Page
     )
 
 
-def _dashboard_add_ntop_dashlet_entries(name: DashboardName) -> Iterable[PageMenuEntryCEEOnly]:
+def _dashboard_add_ntop_dashlet_entries(
+    name: DashboardName,
+) -> Iterable[PageMenuEntryCEEOnly]:
     yield PageMenuEntryCEEOnly(
         title="Alerts",
         icon_name={
@@ -1043,7 +1055,9 @@ def _dashboard_add_ntop_dashlet_entries(name: DashboardName) -> Iterable[PageMen
     )
 
 
-def _dashboard_add_other_dashlet_entries(name: DashboardName) -> Iterable[PageMenuEntry]:
+def _dashboard_add_other_dashlet_entries(
+    name: DashboardName,
+) -> Iterable[PageMenuEntry]:
     yield PageMenuEntry(
         title="Custom URL",
         icon_name="dashlet_url",
@@ -1142,7 +1156,7 @@ def draw_dashlet(dashlet: Dashlet, content: HTML | str, title: HTML | str) -> No
     html.close_div()
 
 
-def ajax_dashlet() -> None:
+def ajax_dashlet(config: Config) -> None:
     """Render the inner HTML of a dashlet"""
     name = request.get_ascii_input_mandatory("name", "")
     if not name:

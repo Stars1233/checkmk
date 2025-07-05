@@ -6,23 +6,21 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from livestatus import LivestatusOutputFormat, LivestatusResponse
+from livestatus import LivestatusResponse, Query
 
-from cmk.ccc import store
 from cmk.ccc.exceptions import MKGeneralException
 from cmk.ccc.site import SiteId
 
-from cmk.utils.paths import default_config_dir
-
 from cmk.gui import sites
+from cmk.gui.bi.filesystem import bi_fs
 from cmk.gui.hooks import request_memoize
 from cmk.gui.i18n import _
 
-from cmk.bi.aggregation import BIAggregation
-from cmk.bi.compiler import BICompiler, path_compiled_aggregations
+from cmk.bi.compiler import BICompiler
 from cmk.bi.computer import BIComputer
 from cmk.bi.data_fetcher import BIStatusFetcher
 from cmk.bi.lib import SitesCallback
+from cmk.bi.storage import AggregationNotFound, AggregationStore
 from cmk.bi.trees import BICompiledAggregation, BICompiledRule
 
 
@@ -35,8 +33,8 @@ class BIManager:
         self.computer = BIComputer(self.compiler.compiled_aggregations, self.status_fetcher)
 
     @classmethod
-    def bi_configuration_file(cls) -> str:
-        return str(Path(default_config_dir) / "multisite.d" / "wato" / "bi_config.bi")
+    def bi_configuration_file(cls) -> Path:
+        return bi_fs.etc.config
 
 
 def all_sites_with_id_and_online() -> list[tuple[SiteId, bool]]:
@@ -47,12 +45,11 @@ def all_sites_with_id_and_online() -> list[tuple[SiteId, bool]]:
 
 
 def bi_livestatus_query(
-    query: str,
+    query: Query,
     only_sites: list[SiteId] | None = None,
-    output_format: LivestatusOutputFormat = LivestatusOutputFormat.PYTHON,
     fetch_full_data: bool = False,
 ) -> LivestatusResponse:
-    with sites.output_format(output_format), sites.only_sites(only_sites), sites.prepend_site():
+    with sites.only_sites(only_sites), sites.prepend_site():
         try:
             auth_domain = "bi_fetch_full_data" if fetch_full_data else "bi"
             sites.live().set_auth_domain(auth_domain)
@@ -63,15 +60,16 @@ def bi_livestatus_query(
 
 @request_memoize(maxsize=10000)
 def load_compiled_branch(aggr_id: str, branch_title: str) -> BICompiledRule:
-    compiled_aggregation = _load_compiled_aggregation(aggr_id)
-    for branch in compiled_aggregation.branches:
-        if branch.properties.title == branch_title:
-            return branch
+    if compiled_aggregation := _load_compiled_aggregation(aggr_id):
+        for branch in compiled_aggregation.branches:
+            if branch.properties.title == branch_title:
+                return branch
     raise MKGeneralException(f"Branch {branch_title} not found in aggregation {aggr_id}")
 
 
 @request_memoize(maxsize=10000)
-def _load_compiled_aggregation(aggr_id: str) -> BICompiledAggregation:
-    return BIAggregation.create_trees_from_schema(
-        store.load_object_from_pickle_file(path_compiled_aggregations.joinpath(aggr_id), default={})
-    )
+def _load_compiled_aggregation(aggr_id: str) -> BICompiledAggregation | None:
+    try:
+        return AggregationStore(bi_fs.cache).get(aggr_id)
+    except AggregationNotFound:
+        return None

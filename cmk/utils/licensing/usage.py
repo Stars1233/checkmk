@@ -27,7 +27,6 @@ from cmk.utils import paths
 from cmk.utils.licensing.export import (
     LicenseUsageExtensions,
     LicenseUsageSample,
-    LicensingProtocolVersion,
     make_parser,
     parse_protocol_version,
     RawLicenseUsageExtensions,
@@ -40,6 +39,7 @@ from cmk.utils.licensing.helper import (
     load_instance_id,
     rot47,
 )
+from cmk.utils.licensing.protocol_version import get_licensing_protocol_version
 from cmk.utils.paths import licensing_dir, omd_root
 
 CLOUD_SERVICE_PREFIXES = {"aws", "azure", "gcp"}
@@ -105,7 +105,7 @@ def try_update_license_usage(
         save_license_usage_report(
             report_file_path,
             RawLicenseUsageReport(
-                VERSION=LicensingProtocolVersion,
+                VERSION=get_licensing_protocol_version(),
                 history=history.for_report(),
             ),
         )

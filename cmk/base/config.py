@@ -11,7 +11,6 @@ import contextlib
 import copy
 import dataclasses
 import enum
-import ipaddress
 import itertools
 import logging
 import numbers
@@ -21,43 +20,42 @@ import socket
 import sys
 import time
 from collections.abc import Callable, Container, Iterable, Iterator, Mapping, Sequence
-from enum import Enum
 from pathlib import Path
 from typing import (
     Any,
     AnyStr,
     assert_never,
     Final,
-    Generic,
     Literal,
     NamedTuple,
     overload,
     TypeGuard,
-    TypeVar,
 )
 
+import cmk.ccc.cleanup
 import cmk.ccc.debug
 import cmk.ccc.version as cmk_version
-from cmk.ccc import store
-from cmk.ccc.exceptions import MKGeneralException, MKIPAddressLookupError
+from cmk.ccc import tty
+from cmk.ccc.exceptions import MKGeneralException
+from cmk.ccc.hostaddress import HostAddress, HostName, Hosts
 from cmk.ccc.site import omd_site, SiteId
 
 import cmk.utils
 import cmk.utils.check_utils
-import cmk.utils.cleanup
-import cmk.utils.config_path
 import cmk.utils.paths
 import cmk.utils.tags
 import cmk.utils.translations
-from cmk.utils import config_warnings, ip_lookup, password_store, tty
+from cmk.utils import config_warnings, ip_lookup, password_store
 from cmk.utils.agent_registration import connection_mode_from_host_config, HostAgentConnectionMode
 from cmk.utils.caching import cache_manager
 from cmk.utils.check_utils import maincheckify, section_name_of
-from cmk.utils.config_path import ConfigPath
-from cmk.utils.host_storage import apply_hosts_file_to_object, get_host_storage_loaders
-from cmk.utils.hostaddress import HostAddress, HostName, Hosts
+from cmk.utils.host_storage import (
+    apply_hosts_file_to_object,
+    FolderAttributesForBase,
+    get_host_storage_loaders,
+)
 from cmk.utils.http_proxy_config import http_proxy_config_from_user_setting, HTTPProxyConfig
-from cmk.utils.ip_lookup import IPStackConfig
+from cmk.utils.ip_lookup import IPLookup, IPStackConfig
 from cmk.utils.labels import LabelManager, Labels, LabelSources
 from cmk.utils.log import console
 from cmk.utils.macros import replace_macros_in_str
@@ -515,34 +513,6 @@ class _NestedExitSpec(ExitSpec, total=False):
     individual: dict[str, ExitSpec]
 
 
-IPLookup = Callable[
-    [HostName, Literal[socket.AddressFamily.AF_INET, socket.AddressFamily.AF_INET6]],
-    HostAddress | None,
-]
-
-_TErrHandler = TypeVar("_TErrHandler", bound=Callable[[HostName, Exception], None])
-
-
-class ConfiguredIPLookup(Generic[_TErrHandler]):
-    def __init__(self, config_cache: ConfigCache, *, error_handler: _TErrHandler) -> None:
-        self._config_cache = config_cache
-        self.error_handler: Final[_TErrHandler] = error_handler
-
-    def __call__(
-        self,
-        host_name: HostName,
-        family: Literal[socket.AddressFamily.AF_INET, socket.AddressFamily.AF_INET6],
-    ) -> HostAddress | None:
-        try:
-            return lookup_ip_address(self._config_cache, host_name, family=family)
-        except Exception as e:
-            if host_name in self._config_cache.hosts_config.clusters:
-                return HostAddress("")
-            self.error_handler(host_name, e)
-
-        return ip_lookup.fallback_ip_for(family)
-
-
 def handle_ip_lookup_failure(host_name: HostName, exc: Exception) -> None:
     """Writes error messages to the console (stdout)."""
     console.warning(
@@ -556,7 +526,7 @@ def handle_ip_lookup_failure(host_name: HostName, exc: Exception) -> None:
 def get_default_config() -> dict[str, Any]:
     """Provides a dictionary containing the Check_MK default configuration"""
     return {
-        key: copy.deepcopy(value) if isinstance(value, (dict, list)) else value
+        key: copy.deepcopy(value) if isinstance(value, dict | list) else value
         for key, value in default_config.__dict__.items()
         if key[0] != "_"
     }
@@ -595,6 +565,8 @@ class LoadedConfigFragment:
     (compare cmk/base/default_config/base ...)
     """
 
+    # TODO: get `HostAddress` VS. `str` right! Which is it at what point?!
+    folder_attributes: Mapping[str, FolderAttributesForBase]
     discovery_rules: Mapping[RuleSetName, Sequence[RuleSpec]]
     checkgroup_parameters: Mapping[str, Sequence[RuleSpec[Mapping[str, object]]]]
     service_rule_groups: set[str]
@@ -605,6 +577,26 @@ class LoadedConfigFragment:
     use_new_descriptions_for: Container[str]
     nagios_illegal_chars: str
     cmc_illegal_chars: str
+    all_hosts: Sequence[str]
+    clusters: Mapping[HostAddress, Sequence[HostAddress]]
+    shadow_hosts: ShadowHosts
+    service_dependencies: Sequence[tuple]
+    agent_config: Mapping[str, Sequence[RuleSpec]]
+    agent_ports: Sequence[RuleSpec[int]]
+    agent_encryption: Sequence[RuleSpec[str | None]]
+    agent_exclude_sections: Sequence[RuleSpec[dict[str, str]]]
+    cmc_real_time_checks: RealTimeChecks | None
+    apply_bake_revision: bool
+    bake_agents_on_restart: bool
+    agent_bakery_logging: int | None
+    is_wato_slave_site: bool
+    simulation_mode: bool
+    use_dns_cache: bool
+    ipaddresses: Mapping[HostName, HostAddress]
+    ipv6addresses: Mapping[HostName, HostAddress]
+    fake_dns: str | None
+    tag_config: cmk.utils.tags.TagConfigSpec
+    host_tags: ruleset_matcher.TagsOfHosts
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
@@ -654,7 +646,7 @@ def load(
 # This function still mostly manipulates a global state.
 # Passing the discovery rulesets as an argument is a first step to make it more functional.
 def load_packed_config(
-    config_path: ConfigPath, discovery_rulesets: Iterable[RuleSetName]
+    config_path: Path, discovery_rulesets: Iterable[RuleSetName]
 ) -> LoadingResult:
     """Load the configuration for the CMK helpers of CMC
 
@@ -691,6 +683,7 @@ def _perform_post_config_loading_actions(
     _drop_invalid_ssc_rules(global_dict)
 
     loaded_config = LoadedConfigFragment(
+        folder_attributes=folder_attributes,
         discovery_rules=discovery_settings,
         checkgroup_parameters=checkgroup_parameters,
         service_rule_groups=service_rule_groups,
@@ -699,6 +692,26 @@ def _perform_post_config_loading_actions(
         use_new_descriptions_for=use_new_descriptions_for,
         nagios_illegal_chars=nagios_illegal_chars,
         cmc_illegal_chars=cmc_illegal_chars,
+        all_hosts=all_hosts,
+        clusters=clusters,
+        shadow_hosts=shadow_hosts,
+        service_dependencies=service_dependencies,
+        agent_config=agent_config,
+        agent_ports=agent_ports,
+        agent_encryption=agent_encryption,
+        agent_exclude_sections=agent_exclude_sections,
+        cmc_real_time_checks=cmc_real_time_checks,
+        agent_bakery_logging=agent_bakery_logging,
+        apply_bake_revision=apply_bake_revision,
+        bake_agents_on_restart=bake_agents_on_restart,
+        is_wato_slave_site=is_wato_slave_site,
+        simulation_mode=simulation_mode,
+        use_dns_cache=use_dns_cache,
+        ipaddresses=ipaddresses,
+        ipv6addresses=ipv6addresses,
+        fake_dns=fake_dns,
+        tag_config=tag_config,
+        host_tags=host_tags,
     )
 
     config_cache = _create_config_cache(loaded_config).initialize()
@@ -787,7 +800,6 @@ def _load_config(with_conf_d: bool) -> set[str]:
         _load_config_file(experimental_config, global_dict)
 
     host_storage_loaders = get_host_storage_loaders(config_storage_format)
-    config_dir_path = Path(cmk.utils.paths.check_mk_config_dir)
     for path in get_config_file_paths(with_conf_d):
         try:
             # Make the config path available as a global variable to be used
@@ -797,7 +809,7 @@ def _load_config(with_conf_d: bool) -> set[str]:
             current_path: str | None = None
             folder_path: str | None = None
             with contextlib.suppress(ValueError):
-                relative_path = path.relative_to(config_dir_path)
+                relative_path = path.relative_to(cmk.utils.paths.check_mk_config_dir)
                 current_path = f"/{relative_path}"
                 folder_path = str(relative_path.parent)
             global_dict["FOLDER_PATH"] = folder_path
@@ -878,13 +890,13 @@ def _collect_parameter_rulesets_from_globals(
 
 # Create list of all files to be included during configuration loading
 def get_config_file_paths(with_conf_d: bool) -> list[Path]:
-    list_of_files = [Path(cmk.utils.paths.main_config_file)]
+    list_of_files = [cmk.utils.paths.main_config_file]
     if with_conf_d:
-        all_files = Path(cmk.utils.paths.check_mk_config_dir).rglob("*")
+        all_files = cmk.utils.paths.check_mk_config_dir.rglob("*")
         list_of_files += sorted(
             [p for p in all_files if p.suffix in {".mk"}], key=cmk.utils.key_config_paths
         )
-    for path in [Path(cmk.utils.paths.final_config_file), Path(cmk.utils.paths.local_config_file)]:
+    for path in [cmk.utils.paths.final_config_file, cmk.utils.paths.local_config_file]:
         if path.exists():
             list_of_files.append(path)
     return list_of_files
@@ -906,7 +918,7 @@ def get_derived_config_variable_names() -> set[str]:
 
 
 def save_packed_config(
-    config_path: ConfigPath,
+    config_path: Path,
     config_cache: ConfigCache,
     discovery_rules: Mapping[RuleSetName, Sequence[RuleSpec]],
 ) -> None:
@@ -1042,12 +1054,12 @@ class PackedConfigStore:
         self.path: Final = path
 
     @classmethod
-    def from_serial(cls, config_path: ConfigPath) -> PackedConfigStore:
+    def from_serial(cls, config_path: Path) -> PackedConfigStore:
         return cls(cls.make_packed_config_store_path(config_path))
 
     @classmethod
-    def make_packed_config_store_path(cls, config_path: ConfigPath) -> Path:
-        return Path(config_path) / "precompiled_check_config.mk"
+    def make_packed_config_store_path(cls, config_path: Path) -> Path:
+        return config_path / "precompiled_check_config.mk"
 
     def write(self, helper_config: Mapping[str, Any]) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -1078,7 +1090,7 @@ def set_use_core_config(
     orig_autochecks_dir: Final = cmk.utils.paths.autochecks_dir
     orig_discovered_host_labels_dir: Final = cmk.utils.paths.discovered_host_labels_dir
     try:
-        cmk.utils.paths.autochecks_dir = str(autochecks_dir)
+        cmk.utils.paths.autochecks_dir = autochecks_dir
         cmk.utils.paths.discovered_host_labels_dir = discovered_host_labels_dir
         yield
     finally:
@@ -1106,14 +1118,6 @@ def strip_tags(tagged_hostlist: Iterable[str]) -> Sequence[HostName]:
     with contextlib.suppress(KeyError):
         return cache[cache_id]
     return cache.setdefault(cache_id, [HostName(h.split("|", 1)[0]) for h in tagged_hostlist])
-
-
-def _get_shadow_hosts() -> ShadowHosts:
-    try:
-        # Only available with CEE
-        return shadow_hosts  # type: ignore[name-defined,unused-ignore]
-    except NameError:
-        return {}
 
 
 # .
@@ -1161,37 +1165,38 @@ def _make_service_description_cb(
 # b) It only affects the Nagios core - CMC does not implement service dependencies
 # c) This function implements some specific regex replacing match+replace which makes it incompatible to
 #    regular service rulesets. Therefore service_extra_conf() can not easily be used :-/
-def service_depends_on(
-    config_cache: ConfigCache, hostname: HostName, servicedesc: ServiceName
-) -> list[ServiceName]:
-    """Return a list of services this service depends upon"""
-    deps = []
-    for entry in service_dependencies:
-        entry, rule_options = tuple_rulesets.get_rule_options(entry)
-        if rule_options.get("disabled"):
-            continue
+@dataclasses.dataclass(frozen=True)
+class ServiceDependsOn:
+    tag_list: Callable[[HostName], Sequence[TagID]]
+    service_dependencies: Sequence[tuple]  # :-(
 
-        if len(entry) == 3:
-            depname, hostlist, patternlist = entry
-            tags: list[TagID] = []
-        elif len(entry) == 4:
-            depname, tags, hostlist, patternlist = entry
-        else:
-            raise MKGeneralException(
-                "Invalid entry '%r' in service dependencies: must have 3 or 4 entries" % entry
-            )
-
-        if tuple_rulesets.hosttags_match_taglist(
-            config_cache.tag_list(hostname), tags
-        ) and tuple_rulesets.in_extraconf_hostlist(hostlist, hostname):
-            for pattern in patternlist:
-                if matchobject := regex(pattern).search(servicedesc):
-                    try:
-                        item = matchobject.groups()[-1]
-                        deps.append(depname % item)
-                    except Exception:
-                        deps.append(depname)
-    return deps
+    def __call__(self, hostname: HostName, servicedesc: ServiceName) -> list[ServiceName]:
+        """Return a list of services this service depends on"""
+        deps = []
+        for entry in self.service_dependencies:
+            entry, rule_options = tuple_rulesets.get_rule_options(entry)
+            if rule_options.get("disabled"):
+                continue
+            if len(entry) == 3:
+                depname, hostlist, patternlist = entry
+                tags: list[TagID] = []
+            elif len(entry) == 4:
+                depname, tags, hostlist, patternlist = entry
+            else:
+                raise MKGeneralException(
+                    "Invalid entry '%r' in service dependencies: must have 3 or 4 entries" % entry
+                )
+            if tuple_rulesets.hosttags_match_taglist(
+                self.tag_list(hostname), tags
+            ) and tuple_rulesets.in_extraconf_hostlist(hostlist, hostname):
+                for pattern in patternlist:
+                    if matchobject := regex(pattern).search(servicedesc):
+                        try:
+                            item = matchobject.groups()[-1]
+                            deps.append(depname % item)
+                        except (IndexError, TypeError):
+                            deps.append(depname)
+        return deps
 
 
 # .
@@ -1273,9 +1278,7 @@ service_rule_groups = {"temperature"}
 #   '----------------------------------------------------------------------'
 
 
-def load_all_plugins(
-    checks_dir: str,
-) -> AgentBasedPlugins:
+def load_all_pluginX(checks_dir: Path) -> AgentBasedPlugins:
     with tracer.span("load_legacy_check_plugins"):
         with tracer.span("discover_legacy_check_plugins"):
             filelist = find_plugin_files(checks_dir)
@@ -1298,7 +1301,7 @@ def load_and_convert_legacy_checks(
         filelist,
         FileLoader(
             precomile_path=cmk.utils.paths.precompiled_checks_dir,
-            makedirs=store.makedirs,
+            makedirs=lambda path: Path(path).mkdir(mode=0o770, parents=True, exist_ok=True),
         ),
         raise_errors=cmk.ccc.debug.enabled(),
     )
@@ -1350,61 +1353,6 @@ def compute_enforced_service_parameters(
 
     return TimespecificParameters(
         [configured_parameters, TimespecificParameterSet.from_parameters(defaults)]
-    )
-
-
-def lookup_mgmt_board_ip_address(
-    config_cache: ConfigCache, host_name: HostName
-) -> HostAddress | None:
-    mgmt_address: Final = config_cache.management_address(host_name)
-    try:
-        mgmt_ipa = (
-            None if mgmt_address is None else HostAddress(str(ipaddress.ip_address(mgmt_address)))
-        )
-    except (ValueError, TypeError):
-        mgmt_ipa = None
-
-    try:
-        return ip_lookup.lookup_ip_address(
-            # host name is ignored, if mgmt_ipa is trueish.
-            host_name=mgmt_address or host_name,
-            family=config_cache.default_address_family(host_name),
-            configured_ip_address=mgmt_ipa,
-            simulation_mode=simulation_mode,
-            is_snmp_usewalk_host=(
-                config_cache.get_snmp_backend(host_name) is SNMPBackendEnum.STORED_WALK
-                and (config_cache.management_protocol(host_name) == "snmp")
-            ),
-            override_dns=HostAddress(fake_dns) if fake_dns is not None else None,
-            is_dyndns_host=config_cache.is_dyndns_host(host_name),
-            force_file_cache_renewal=not use_dns_cache,
-        )
-    except MKIPAddressLookupError:
-        return None
-
-
-def lookup_ip_address(
-    config_cache: ConfigCache,
-    host_name: HostName | HostAddress,
-    *,
-    family: Literal[socket.AddressFamily.AF_INET, socket.AddressFamily.AF_INET6] | None = None,
-) -> HostAddress:
-    if family is None:
-        family = config_cache.default_address_family(host_name)
-    return ip_lookup.lookup_ip_address(
-        host_name=host_name,
-        family=family,
-        configured_ip_address=(
-            ipaddresses if family is socket.AddressFamily.AF_INET else ipv6addresses
-        ).get(host_name),
-        simulation_mode=simulation_mode,
-        is_snmp_usewalk_host=(
-            config_cache.get_snmp_backend(host_name) is SNMPBackendEnum.STORED_WALK
-            and config_cache.computed_datasources(host_name).is_snmp
-        ),
-        override_dns=HostAddress(fake_dns) if fake_dns is not None else None,
-        is_dyndns_host=config_cache.is_dyndns_host(host_name),
-        force_file_cache_renewal=not use_dns_cache,
     )
 
 
@@ -1487,17 +1435,17 @@ def get_ssc_host_config(
 #   +----------------------------------------------------------------------+
 
 
-def make_hosts_config() -> Hosts:
+def make_hosts_config(loaded_config: LoadedConfigFragment) -> Hosts:
     return Hosts(
-        hosts=strip_tags(all_hosts),
-        clusters=strip_tags(clusters),
-        shadow_hosts=list(_get_shadow_hosts()),
+        hosts=strip_tags(loaded_config.all_hosts),
+        clusters=strip_tags(loaded_config.clusters),
+        shadow_hosts=list(loaded_config.shadow_hosts),
     )
 
 
-def _make_clusters_nodes_maps() -> tuple[
-    Mapping[HostName, Sequence[HostName]], Mapping[HostName, Sequence[HostName]]
-]:
+def _make_clusters_nodes_maps(
+    clusters: Mapping[HostName, Sequence[HostName]],
+) -> tuple[Mapping[HostName, Sequence[HostName]], Mapping[HostName, Sequence[HostName]]]:
     clusters_of_cache: dict[HostName, list[HostName]] = {}
     nodes_cache: dict[HostName, Sequence[HostName]] = {}
     for cluster, hosts in clusters.items():
@@ -1600,12 +1548,11 @@ class ConfigCache:
         self._check_table_cache = cache_manager.obtain_cache("check_tables")
         self._cache_section_name_of: dict[str, str] = {}
         self._host_paths: dict[HostName, str] = ConfigCache._get_host_paths(host_paths)
-        self._hosttags: dict[HostName, Sequence[TagID]] = {}
 
         (
             self._clusters_of_cache,
             self._nodes_cache,
-        ) = _make_clusters_nodes_maps()
+        ) = _make_clusters_nodes_maps(self._loaded_config.clusters)
 
         # TODO: remove this from the config cache. It is a completely
         # self-contained object that should be passed around (if it really
@@ -1617,13 +1564,18 @@ class ConfigCache:
         ] = {}
         self._check_mk_check_interval: dict[HostName, float] = {}
 
-        self.hosts_config = make_hosts_config()
+        self.hosts_config = make_hosts_config(self._loaded_config)
 
-        tag_to_group_map = ConfigCache.get_tag_to_group_map()
-        self._collect_hosttags(tag_to_group_map)
+        self.host_tags = cmk.utils.tags.HostTags.make(
+            self._host_paths,
+            self._loaded_config.tag_config,
+            self._loaded_config.host_tags,
+            [*self._loaded_config.all_hosts, *self._loaded_config.clusters],
+            self._loaded_config.shadow_hosts,
+        )
 
         self.ruleset_matcher = ruleset_matcher.RulesetMatcher(
-            host_tags=host_tags,
+            host_tags=self.host_tags.host_tags_maps,
             host_paths=self._host_paths,
             clusters_of=self._clusters_of_cache,
             nodes_of=self._nodes_cache,
@@ -1636,7 +1588,7 @@ class ConfigCache:
             ),
         )
         builtin_host_labels = {
-            hostname: get_builtin_host_labels(_site_of_host(hostname))
+            hostname: get_builtin_host_labels(self._site_of_host(hostname))
             for hostname in self.hosts_config
         }
         self.label_manager = LabelManager(
@@ -1698,8 +1650,10 @@ class ConfigCache:
             ),
         )
 
-    def fetcher_factory(self, service_configurer: ServiceConfigurer) -> FetcherFactory:
-        return FetcherFactory(self, self.ruleset_matcher, service_configurer)
+    def fetcher_factory(
+        self, service_configurer: ServiceConfigurer, ip_lookup: ip_lookup.IPLookup
+    ) -> FetcherFactory:
+        return FetcherFactory(self, ip_lookup, self.ruleset_matcher, service_configurer)
 
     def parser_factory(self) -> ParserFactory:
         return ParserFactory(self, self.ruleset_matcher)
@@ -1715,7 +1669,7 @@ class ConfigCache:
         return ParentScanConfig(
             active=self.is_active(host_name),
             online=self.is_online(host_name),
-            ip_stack_config=ConfigCache.ip_stack_config(host_name),
+            ip_stack_config=self.ip_stack_config(host_name),
             parents=self.parents(host_name),
         )
 
@@ -1724,25 +1678,29 @@ class ConfigCache:
             host_name, datasource_programs, self.label_manager.labels_of_host
         )
 
-    @staticmethod
-    def get_tag_to_group_map() -> Mapping[TagID, TagGroupID]:
-        tags = cmk.utils.tags.get_effective_tag_config(tag_config)
-        return ruleset_matcher.get_tag_to_group_map(tags)
-
-    def ip_lookup_config(self, host_name: HostName) -> ip_lookup.IPLookupConfig:
+    def ip_lookup_config(self) -> ip_lookup.IPLookupConfig:
         return ip_lookup.IPLookupConfig(
-            hostname=host_name,
-            ip_stack_config=ConfigCache.ip_stack_config(host_name),
-            is_snmp_host=self.computed_datasources(host_name).is_snmp,
-            is_use_walk_host=self.get_snmp_backend(host_name) is SNMPBackendEnum.STORED_WALK,
-            default_address_family=self.default_address_family(host_name),
-            management_address=self.management_address(host_name),
-            is_dyndns_host=self.is_dyndns_host(host_name),
+            ip_stack_config=self.ip_stack_config,
+            is_snmp_host=lambda host_name: self.computed_datasources(host_name).is_snmp,
+            is_snmp_management=lambda host_name: self.management_protocol(host_name) == "snmp",
+            is_use_walk_host=lambda host_name: self.get_snmp_backend(host_name)
+            is SNMPBackendEnum.STORED_WALK,
+            default_address_family=self.default_address_family,
+            management_address=self.management_address,
+            is_dyndns_host=self.is_dyndns_host,
+            simulation_mode=self._loaded_config.simulation_mode,
+            fake_dns=None
+            if self._loaded_config.fake_dns is None
+            else HostAddress(self._loaded_config.fake_dns),
+            use_dns_cache=self._loaded_config.use_dns_cache,
+            ipv4_addresses=self._loaded_config.ipaddresses,
+            ipv6_addresses=self._loaded_config.ipv6addresses,
         )
 
     def make_snmp_config(
         self,
         host_name: HostName,
+        host_ip_family: Literal[socket.AddressFamily.AF_INET, socket.AddressFamily.AF_INET6],
         ip_address: HostAddress,
         source_type: SourceType,
         *,
@@ -1779,7 +1737,7 @@ class ConfigCache:
         snmp_config = self.__snmp_config.setdefault(
             (host_name, ip_address, source_type),
             SNMPHostConfig(
-                is_ipv6_primary=self.default_address_family(host_name) is socket.AF_INET6,
+                is_ipv6_primary=host_ip_family is socket.AF_INET6,
                 hostname=host_name,
                 ipaddress=ip_address,
                 credentials=credentials,
@@ -1849,7 +1807,7 @@ class ConfigCache:
             checking_sections = frozenset(
                 agent_based_register.filter_relevant_raw_sections(
                     consumers=[
-                        plugins.check_plugins[n]
+                        p
                         for n in self.check_table(
                             hostname,
                             plugins.check_plugins,
@@ -1858,7 +1816,8 @@ class ConfigCache:
                             filter_mode=FilterMode.INCLUDE_CLUSTERED,
                             skip_ignored=True,
                         ).needed_check_names()
-                        if n in plugins.check_plugins
+                        if (p := agent_based_register.get_check_plugin(n, plugins.check_plugins))
+                        is not None
                     ],
                     sections=itertools.chain(
                         plugins.agent_sections.values(), plugins.snmp_sections.values()
@@ -1952,12 +1911,13 @@ class ConfigCache:
         plugins: Mapping[CheckPluginName, CheckPlugin],
         service_configurer: ServiceConfigurer,
         service_name_config: PassiveServiceNameConfig,
+        service_depends_on: Callable[[HostAddress, ServiceName], Sequence[ServiceName]],
     ) -> Sequence[ConfiguredService]:
         services = self._sorted_services(hostname, plugins, service_configurer, service_name_config)
         if is_cmc():
             return services
 
-        unresolved = [(s, set(service_depends_on(self, hostname, s.description))) for s in services]
+        unresolved = [(s, set(service_depends_on(hostname, s.description))) for s in services]
 
         resolved: list[ConfiguredService] = []
         while unresolved:
@@ -2089,11 +2049,15 @@ class ConfigCache:
     def has_management_board(self, host_name: HostName) -> bool:
         return self.management_protocol(host_name) is not None
 
-    def management_address(self, host_name: HostName) -> HostAddress | None:
+    def management_address(
+        self,
+        host_name: HostName,
+        host_ip_family: Literal[socket.AddressFamily.AF_INET, socket.AddressFamily.AF_INET6],
+    ) -> HostAddress | None:
         if mgmt_host_address := host_attributes.get(host_name, {}).get("management_address"):
             return mgmt_host_address
 
-        if self.default_address_family(host_name) is socket.AF_INET6:
+        if host_ip_family is socket.AF_INET6:
             return ipv6addresses.get(host_name)
 
         return ipaddresses.get(host_name)
@@ -2217,12 +2181,12 @@ class ConfigCache:
             return self.__computed_datasources[host_name]
 
         return self.__computed_datasources.setdefault(
-            host_name, cmk.utils.tags.compute_datasources(ConfigCache.tags(host_name))
+            host_name, cmk.utils.tags.compute_datasources(self.host_tags.tags(host_name))
         )
 
     def is_piggyback_host(self, host_name: HostName) -> bool:
         def get_is_piggyback_host() -> bool:
-            tag_groups: Final = ConfigCache.tags(host_name)
+            tag_groups: Final = self.host_tags.tags(host_name)
             if tag_groups[TagGroupID("piggyback")] == TagID("piggyback"):
                 return True
             if tag_groups[TagGroupID("piggyback")] == TagID("no-piggyback"):
@@ -2283,7 +2247,7 @@ class ConfigCache:
             return True
 
         # hosts without a site: tag belong to all sites
-        return _site_of_host(host_name) == distributed_wato_site
+        return self._site_of_host(host_name) == distributed_wato_site
 
     def is_dyndns_host(self, host_name: HostName | HostAddress) -> bool:
         return self.ruleset_matcher.get_host_bool_value(
@@ -2392,6 +2356,8 @@ class ConfigCache:
     def active_check_services(
         self,
         host_name: HostName,
+        host_ip_stack_config: ip_lookup.IPStackConfig,
+        host_ip_family: Literal[socket.AddressFamily.AF_INET, socket.AddressFamily.AF_INET6],
         host_attrs: ObjectAttributes,
         final_service_name_config: FinalServiceNameConfig,
         ip_address_of: IPLookup,
@@ -2424,8 +2390,8 @@ class ConfigCache:
             get_ssc_host_config(
                 host_name,
                 self.alias(host_name),
-                self.default_address_family(host_name),
-                self.ip_stack_config(host_name),
+                host_ip_family,
+                host_ip_stack_config,
                 additional_addresses_ipv4,
                 additional_addresses_ipv6,
                 macros,
@@ -2521,6 +2487,7 @@ class ConfigCache:
     def special_agent_command_lines(
         self,
         host_name: HostName,
+        host_ip_family: Literal[socket.AddressFamily.AF_INET, socket.AddressFamily.AF_INET6],
         ip_address: HostAddress | None,
         passwords: Mapping[str, str],
         password_store_file: Path,
@@ -2529,7 +2496,7 @@ class ConfigCache:
         if not (host_special_agents := self.special_agents(host_name)):
             return
 
-        host_attrs = self.get_host_attributes(host_name, ip_address_of)
+        host_attrs = self.get_host_attributes(host_name, host_ip_family, ip_address_of)
         special_agent = SpecialAgent(
             load_special_agents(raise_errors=cmk.ccc.debug.enabled()),
             host_name,
@@ -2537,7 +2504,7 @@ class ConfigCache:
             get_ssc_host_config(
                 host_name,
                 self.alias(host_name),
-                self.default_address_family(host_name),
+                host_ip_family,
                 self.ip_stack_config(host_name),
                 *self.additional_ipaddresses(host_name),
                 {
@@ -2552,7 +2519,9 @@ class ConfigCache:
             passwords,
             password_store_file,
             ExecutableFinder(
-                cmk.utils.paths.local_special_agents_dir, cmk.utils.paths.special_agents_dir
+                # NOTE: we can't ignore these, they're an API promise.
+                cmk.utils.paths.local_special_agents_dir,
+                cmk.utils.paths.special_agents_dir,
             ),
         )
         for agentname, params_seq in host_special_agents:
@@ -2667,7 +2636,7 @@ class ConfigCache:
         explicit_command = self.explicit_check_command(host_name)
         if explicit_command is not None:
             return explicit_command
-        if ConfigCache.ip_stack_config(host_name) is IPStackConfig.NO_IP:
+        if self.ip_stack_config(host_name) is IPStackConfig.NO_IP:
             return "ok"
         return default_host_check_command
 
@@ -2698,102 +2667,6 @@ class ConfigCache:
             return self.__snmp_fetch_interval[host_name]
 
         return self.__snmp_fetch_interval.setdefault(host_name, snmp_fetch_interval_impl())
-
-    def _collect_hosttags(self, tag_to_group_map: Mapping[TagID, TagGroupID]) -> None:
-        """Calculate the effective tags for all configured hosts
-
-        WATO ensures that all hosts configured with WATO have host_tags set, but there may also be hosts defined
-        by the etc/check_mk/conf.d directory that are not managed by WATO. They may use the old style pipe separated
-        all_hosts configuration. Detect it and try to be compatible.
-        """
-        for tagged_host in all_hosts + list(clusters):
-            parts = tagged_host.split("|")
-            hostname = parts[0]
-
-            if hostname in host_tags:
-                # New dict host_tags are available: only need to compute the tag list
-                self._hosttags[hostname] = ConfigCache._tag_groups_to_tag_list(
-                    self._host_paths.get(hostname, "/"), host_tags[hostname]
-                )
-            else:
-                # Only tag list available. Use it and compute the tag groups.
-                self._hosttags[hostname] = tuple(parts[1:])
-                host_tags[hostname] = ConfigCache._tag_list_to_tag_groups(
-                    tag_to_group_map, self._hosttags[hostname]
-                )
-
-        for shadow_host_name, shadow_host_spec in list(_get_shadow_hosts().items()):
-            self._hosttags[shadow_host_name] = tuple(
-                set(shadow_host_spec.get("custom_variables", {}).get("TAGS", TagID("")).split())
-            )
-            host_tags[shadow_host_name] = ConfigCache._tag_list_to_tag_groups(
-                tag_to_group_map, self._hosttags[shadow_host_name]
-            )
-
-    @staticmethod
-    def _tag_groups_to_tag_list(
-        host_path: str, tag_groups: Mapping[TagGroupID, TagID]
-    ) -> Sequence[TagID]:
-        # The pre 1.6 tags contained only the tag group values (-> chosen tag id),
-        # but there was a single tag group added with it's leading tag group id. This
-        # was the internal "site" tag that is created by HostAttributeSite.
-        tags = {v for k, v in tag_groups.items() if k != TagGroupID("site")}
-        tags.add(TagID(host_path))
-        tags.add(TagID(f"site:{tag_groups[TagGroupID('site')]}"))
-        return tuple(tags)
-
-    @staticmethod
-    def _tag_list_to_tag_groups(
-        tag_to_group_map: Mapping[TagID, TagGroupID], tag_list: Iterable[TagID]
-    ) -> Mapping[TagGroupID, TagID]:
-        # This assumes all needed aux tags of grouped are already in the tag_list
-
-        # Ensure the internal mandatory tag groups are set for all hosts
-        # TODO: This immitates the logic of cmk.gui.watolib.Host.tag_groups which
-        # is currently responsible for calculating the host tags of a host.
-        # Would be better to untie the GUI code there and move it over to cmk.utils.tags.
-        return {
-            TagGroupID("piggyback"): TagID("auto-piggyback"),
-            TagGroupID("networking"): TagID("lan"),
-            TagGroupID("agent"): TagID("cmk-agent"),
-            TagGroupID("criticality"): TagID("prod"),
-            TagGroupID("snmp_ds"): TagID("no-snmp"),
-            TagGroupID("site"): TagID(omd_site()),
-            TagGroupID("address_family"): TagID("ip-v4-only"),
-            # Assume it's an aux tag in case there is a tag configured without known group
-            **{tag_to_group_map.get(tag_id, TagGroupID(tag_id)): tag_id for tag_id in tag_list},
-        }
-
-    def tag_list(self, hostname: HostName) -> Sequence[TagID]:
-        """Returns the list of all configured tags of a host. In case
-        a host has no tags configured or is not known, it returns an
-        empty list."""
-        if hostname in self._hosttags:
-            return self._hosttags[hostname]
-
-        # Handle not existing hosts (No need to performance optimize this)
-        return ConfigCache._tag_groups_to_tag_list("/", ConfigCache.tags(hostname))
-
-    # TODO: check all call sites and remove this or make it private?
-    @staticmethod
-    def tags(hostname: HostName | HostAddress) -> Mapping[TagGroupID, TagID]:
-        """Returns the dict of all configured tag groups and values of a host."""
-        with contextlib.suppress(KeyError):
-            return host_tags[hostname]
-
-        # Handle not existing hosts (No need to performance optimize this)
-        # TODO: This immitates the logic of cmk.gui.watolib.Host.tag_groups which
-        # is currently responsible for calculating the host tags of a host.
-        # Would be better to untie the GUI code there and move it over to cmk.utils.tags.
-        return {
-            TagGroupID("piggyback"): TagID("auto-piggyback"),
-            TagGroupID("networking"): TagID("lan"),
-            TagGroupID("agent"): TagID("cmk-agent"),
-            TagGroupID("criticality"): TagID("prod"),
-            TagGroupID("snmp_ds"): TagID("no-snmp"),
-            TagGroupID("site"): TagID(omd_site()),
-            TagGroupID("address_family"): TagID("ip-v4-only"),
-        }
 
     def checkmk_check_parameters(self, host_name: HostName) -> CheckmkCheckParameters:
         return CheckmkCheckParameters(enabled=not self.is_ping_host(host_name))
@@ -3060,10 +2933,9 @@ class ConfigCache:
             * 60,
         )
 
-    @staticmethod
-    def ip_stack_config(host_name: HostName | HostAddress) -> IPStackConfig:
+    def ip_stack_config(self, host_name: HostName | HostAddress) -> IPStackConfig:
         # TODO(ml): [IPv6] clarify tag_groups vs tag_groups["address_family"]
-        tag_groups = ConfigCache.tags(host_name)
+        tag_groups = self.host_tags.tags(host_name)
         if (
             TagGroupID("no-ip") in tag_groups
             or TagID("no-ip") == tag_groups[TagGroupID("address_family")]
@@ -3105,8 +2977,8 @@ class ConfigCache:
 
         def is_ipv6_primary() -> bool:
             # Whether or not the given host is configured to be monitored primarily via IPv6
-            return ConfigCache.ip_stack_config(hostname) is IPStackConfig.IPv6 or (
-                ConfigCache.ip_stack_config(hostname) is IPStackConfig.DUAL_STACK
+            return self.ip_stack_config(hostname) is IPStackConfig.IPv6 or (
+                self.ip_stack_config(hostname) is IPStackConfig.DUAL_STACK
                 and primary_ip_address_family_of() is socket.AF_INET6
             )
 
@@ -3119,7 +2991,7 @@ class ConfigCache:
                 fetcher_type=FetcherType.PIGGYBACK,
                 host_name=host_name,
                 ident="piggyback",
-                section_cache_path=Path(cmk.utils.paths.var_dir),
+                section_cache_path=cmk.utils.paths.var_dir,
             ).exists()
         )
 
@@ -3417,30 +3289,16 @@ class ConfigCache:
     def get_host_attributes(
         self,
         hostname: HostName,
+        host_ip_family: Literal[socket.AddressFamily.AF_INET, socket.AddressFamily.AF_INET6],
         ip_address_of: IPLookup,
     ) -> ObjectAttributes:
-        def _set_addresses(
-            attrs: ObjectAttributes,
-            addresses: list[HostAddress] | None,
-            what: Literal["4", "6"],
-        ) -> None:
-            key_base = f"_ADDRESSES_{what}"
-            if not addresses:
-                # If other addresses are not available, set to empty string in order to avoid unresolved macros
-                attrs[key_base] = ""
-                return
-            attrs[key_base] = " ".join(addresses)
-            for nr, address in enumerate(addresses):
-                key = f"{key_base}_{nr + 1}"
-                attrs[key] = address
-
         attrs = self.extra_host_attributes(hostname)
 
         # Pre 1.6 legacy attribute. We have changed our whole code to use the
         # livestatus column "tags" which is populated by all attributes starting with
         # "__TAG_" instead. We may deprecate this is one day.
-        attrs["_TAGS"] = " ".join(sorted(self.tag_list(hostname)))
-        attrs.update(ConfigCache._get_tag_attributes(self.tags(hostname), "TAG"))
+        attrs["_TAGS"] = " ".join(sorted(self.host_tags.tag_list(hostname)))
+        attrs.update(ConfigCache._get_tag_attributes(self.host_tags.tags(hostname), "TAG"))
         attrs.update(
             ConfigCache._get_tag_attributes(self.label_manager.labels_of_host(hostname), "LABEL")
         )
@@ -3453,43 +3311,40 @@ class ConfigCache:
         if "alias" not in attrs:
             attrs["alias"] = self.alias(hostname)
 
-        ip_stack_config = ConfigCache.ip_stack_config(hostname)
+        ip_stack_config = self.ip_stack_config(hostname)
 
-        # Now lookup configured IP addresses
-        v4address: str | None = None
-        if IPStackConfig.IPv4 in ip_stack_config:
-            v4address = ip_address_of(hostname, socket.AddressFamily.AF_INET)
+        v4address = (
+            ip_address_of(hostname, socket.AddressFamily.AF_INET)
+            if IPStackConfig.IPv4 in ip_stack_config
+            else None
+        )
+        attrs["_ADDRESS_4"] = "" if v4address is None else v4address
 
-        if v4address is None:
-            v4address = ""
-        attrs["_ADDRESS_4"] = v4address
+        v6address = (
+            ip_address_of(hostname, socket.AddressFamily.AF_INET6)
+            if IPStackConfig.IPv6 in ip_stack_config
+            else None
+        )
+        attrs["_ADDRESS_6"] = "" if v6address is None else v6address
 
-        v6address: str | None = None
-        if IPStackConfig.IPv6 in ip_stack_config:
-            v6address = ip_address_of(hostname, socket.AddressFamily.AF_INET6)
-        if v6address is None:
-            v6address = ""
-        attrs["_ADDRESS_6"] = v6address
-
-        if self.default_address_family(hostname) is socket.AF_INET6:
-            attrs["address"] = attrs["_ADDRESS_6"]
-            attrs["_ADDRESS_FAMILY"] = "6"
-        else:
-            attrs["address"] = attrs["_ADDRESS_4"]
-            attrs["_ADDRESS_FAMILY"] = "4"
+        ipv6_is_default = host_ip_family is socket.AF_INET6
+        attrs["address"] = attrs["_ADDRESS_6"] if ipv6_is_default else attrs["_ADDRESS_4"]
+        attrs["_ADDRESS_FAMILY"] = "6" if ipv6_is_default else "4"
 
         add_ipv4addrs, add_ipv6addrs = self.additional_ipaddresses(hostname)
-        _set_addresses(attrs, add_ipv4addrs, "4")
-        _set_addresses(attrs, add_ipv6addrs, "6")
 
-        # Add the optional WATO folder path
-        path = host_paths.get(hostname)
-        if path:
+        attrs["_ADDRESSES_4"] = " ".join(add_ipv4addrs)
+        for n, address in enumerate(add_ipv4addrs, start=1):
+            attrs[f"_ADDRESSES_4_{n}"] = address
+
+        attrs["_ADDRESSES_6"] = " ".join(add_ipv6addrs)
+        for n, address in enumerate(add_ipv6addrs, start=1):
+            attrs[f"_ADDRESSES_6_{n}"] = address
+
+        if path := host_paths.get(hostname):
             attrs["_FILENAME"] = path
 
-        # Add custom user icons and actions
-        actions = self.icons_and_actions(hostname)
-        if actions:
+        if actions := self.icons_and_actions(hostname):
             attrs["_ACTIONS"] = ",".join(actions)
 
         if cmk_version.edition(cmk.utils.paths.omd_root) is cmk_version.Edition.CME:
@@ -3500,6 +3355,7 @@ class ConfigCache:
     def get_cluster_attributes(
         self,
         hostname: HostName,
+        host_ip_family: Literal[socket.AddressFamily.AF_INET, socket.AddressFamily.AF_INET6],
         nodes: Sequence[HostName],
         ip_address_of: IPLookup,
     ) -> dict:
@@ -3508,7 +3364,7 @@ class ConfigCache:
         attrs = {
             "_NODENAMES": " ".join(sorted_nodes),
         }
-        ip_stack_config = ConfigCache.ip_stack_config(hostname)
+        ip_stack_config = self.ip_stack_config(hostname)
         node_ips_4 = []
         if IPStackConfig.IPv4 in ip_stack_config:
             family: Literal[socket.AddressFamily.AF_INET, socket.AddressFamily.AF_INET6] = (
@@ -3531,9 +3387,7 @@ class ConfigCache:
                 else:
                     node_ips_6.append(ip_lookup.fallback_ip_for(family))
 
-        node_ips = (
-            node_ips_6 if self.default_address_family(hostname) is socket.AF_INET6 else node_ips_4
-        )
+        node_ips = node_ips_6 if host_ip_family is socket.AF_INET6 else node_ips_4
 
         for suffix, val in [("", node_ips), ("_4", node_ips_4), ("_6", node_ips_6)]:
             attrs[f"_NODEIPS{suffix}"] = " ".join(val)
@@ -3564,7 +3418,7 @@ class ConfigCache:
         host_name: HostName,
         nodes: Iterable[HostName],
     ) -> None:
-        if ConfigCache.ip_stack_config(host_name) is IPStackConfig.NO_IP:
+        if self.ip_stack_config(host_name) is IPStackConfig.NO_IP:
             cluster_host_family = None
             address_families = []
         else:
@@ -3595,11 +3449,11 @@ class ConfigCache:
         host_name: HostName,
         nodes: Iterable[HostName],
     ) -> None:
-        cluster_tg = self.tags(host_name)
+        cluster_tg = self.host_tags.tags(host_name)
         cluster_agent_ds = cluster_tg.get(TagGroupID("agent"))
         cluster_snmp_ds = cluster_tg.get(TagGroupID("snmp_ds"))
         for nodename in nodes:
-            node_tg = self.tags(nodename)
+            node_tg = self.host_tags.tags(nodename)
             node_agent_ds = node_tg.get(TagGroupID("agent"))
             node_snmp_ds = node_tg.get(TagGroupID("snmp_ds"))
             warn_text = f"Cluster '{host_name}' has different datasources as its node"
@@ -3644,7 +3498,7 @@ class ConfigCache:
     @staticmethod
     def replace_macros(s: str, macros: ObjectMacros) -> str:
         for key, value in macros.items():
-            if isinstance(value, (numbers.Integral, float)):
+            if isinstance(value, numbers.Integral | float):
                 value = str(value)  # e.g. in _EC_SL (service level)
 
             # TODO: Clean this up
@@ -3660,27 +3514,16 @@ class ConfigCache:
 
         return s
 
-    def translate_commandline(
+    def translate_fetcher_commandline(
         self,
         host_name: HostName,
+        host_ip_family: Literal[socket.AddressFamily.AF_INET, socket.AddressFamily.AF_INET6],
         ip_address: HostAddress | None,
         template: str,
         ip_address_of: IPLookup,
     ) -> str:
         def _translate_host_macros(cmd: str) -> str:
-            attrs = self.get_host_attributes(host_name, ip_address_of)
-            if host_name in self.hosts_config.clusters:
-                # TODO(ml): What is the difference between this and `self.parents()`?
-                parents_list = self.get_cluster_nodes_for_config(host_name)
-                attrs.setdefault("alias", f"cluster of {', '.join(parents_list)}")
-                attrs.update(
-                    self.get_cluster_attributes(
-                        host_name,
-                        parents_list,
-                        ip_address_of,
-                    )
-                )
-
+            attrs = self.get_host_attributes(host_name, host_ip_family, ip_address_of)
             macros = ConfigCache.get_host_macros_from_attributes(host_name, attrs)
             return ConfigCache.replace_macros(cmd, macros)
 
@@ -3915,11 +3758,12 @@ class ConfigCache:
             )
         )
 
-
-def _site_of_host(host_name: HostName) -> SiteId:
-    return SiteId(
-        ConfigCache.tags(host_name).get(TagGroupID("site"), distributed_wato_site or omd_site())
-    )
+    def _site_of_host(self, host_name: HostName) -> SiteId:
+        return SiteId(
+            self.host_tags.tags(host_name).get(
+                TagGroupID("site"), distributed_wato_site or omd_site()
+            )
+        )
 
 
 def access_globally_cached_config_cache() -> ConfigCache:
@@ -3939,83 +3783,6 @@ def _create_config_cache(loaded_config: LoadedConfigFragment) -> ConfigCache:
     if cmk_version.edition(cmk.utils.paths.omd_root) is cmk_version.Edition.CME:
         return CMEConfigCache(loaded_config)
     return CEEConfigCache(loaded_config)
-
-
-# TODO(au): Find a way to retreive the matchtype_information directly from the
-# rulespecs. This is not possible atm because they live in cmk.gui
-class _Matchtype(Enum):
-    LIST = "list"
-    FIRST = "first"
-    DICT = "dict"
-    ALL = "all"
-
-
-_BAKERY_PLUGINS_WITH_SPECIAL_MATCHTYPES = {
-    "agent_paths": _Matchtype.DICT,
-    "cmk_update_agent": _Matchtype.DICT,
-    "custom_files": _Matchtype.LIST,
-    "fileinfo": _Matchtype.LIST,
-    "logging": _Matchtype.DICT,
-    "lnx_remote_alert_handlers": _Matchtype.ALL,
-    "mk_logwatch": _Matchtype.ALL,
-    "mk_filestats": _Matchtype.DICT,
-    "mk_oracle": _Matchtype.DICT,
-    "mrpe": _Matchtype.LIST,
-    "bakery_packages": _Matchtype.DICT,
-    "real_time_checks": _Matchtype.DICT,
-    "runas": _Matchtype.LIST,
-    "win_script_cache_age": _Matchtype.ALL,
-    "win_script_execution": _Matchtype.ALL,
-    "win_script_retry_count": _Matchtype.ALL,
-    "win_script_runas": _Matchtype.ALL,
-    "win_script_timeout": _Matchtype.ALL,
-    "unix_plugins_cache_age": _Matchtype.ALL,
-}
-
-
-def boil_down_agent_rules(
-    *, defaults: Mapping[str, Any], rulesets: Mapping[str, Any]
-) -> Mapping[str, Any]:
-    boiled_down = {**defaults}
-
-    # TODO: Better move whole computation to cmk.base.config for making
-    # ruleset matching transparent
-    for varname, entries in rulesets.items():
-        if not entries:
-            continue
-
-        if (
-            len(entries) > 0
-            and isinstance(first_entry := entries[0], dict)
-            and (cmk_match_type := first_entry.get("cmk-match-type", None)) is not None
-        ):
-            # new Ruleset API will use merge as default match_type
-            match_type = _Matchtype(cmk_match_type)
-        else:
-            match_type = _BAKERY_PLUGINS_WITH_SPECIAL_MATCHTYPES.get(varname, _Matchtype.FIRST)
-
-        if match_type is _Matchtype.FIRST:
-            boiled_down[varname] = entries[0]
-        elif match_type is _Matchtype.LIST:
-            boiled_down[varname] = [it for entry in entries for it in entry]
-        elif match_type is _Matchtype.DICT:
-            # Watch out! In this case we have to merge all rules on top of the defaults!
-            # Compare #14868
-            boiled_down[varname] = {
-                **defaults.get(varname, {}),
-                **{
-                    k: v
-                    for entry in entries[::-1]
-                    for k, v in entry.items()
-                    if k != "cmk-match-type"
-                },
-            }
-        elif match_type is _Matchtype.ALL:
-            boiled_down[varname] = entries
-        else:
-            assert_never(match_type)
-
-    return boiled_down
 
 
 class ParserFactory:
@@ -4068,10 +3835,12 @@ class FetcherFactory:
     def __init__(
         self,
         config_cache: ConfigCache,
+        ip_lookup: ip_lookup.IPLookup,
         ruleset_matcher_: RulesetMatcher,
         service_configurer: ServiceConfigurer,
     ) -> None:
         self._config_cache: Final = config_cache
+        self._ip_lookup: Final = ip_lookup
         self._label_manager: Final = config_cache.label_manager
         self._ruleset_matcher: Final = ruleset_matcher_
         self._service_configurer: Final = service_configurer
@@ -4126,6 +3895,7 @@ class FetcherFactory:
         self,
         plugins: AgentBasedPlugins,
         host_name: HostName,
+        host_ip_family: Literal[socket.AddressFamily.AF_INET, socket.AddressFamily.AF_INET6],
         ip_address: HostAddress,
         *,
         source_type: SourceType,
@@ -4133,6 +3903,7 @@ class FetcherFactory:
     ) -> SNMPFetcher:
         snmp_config = self._config_cache.make_snmp_config(
             host_name,
+            host_ip_family,
             ip_address,
             source_type,
             backend_override=fetcher_config.backend_override,
@@ -4158,7 +3929,7 @@ class FetcherFactory:
                 host_name,
                 fetcher_type=FetcherType.SNMP,
                 ident="snmp",
-                section_cache_path=Path(cmk.utils.paths.var_dir),
+                section_cache_path=cmk.utils.paths.var_dir,
             ),
             snmp_config=snmp_config,
             stored_walk_path=fetcher_config.stored_walk_path,
@@ -4207,6 +3978,7 @@ class FetcherFactory:
     def make_tcp_fetcher(
         self,
         host_name: HostName,
+        host_ip_family: Literal[socket.AddressFamily.AF_INET, socket.AddressFamily.AF_INET6],
         ip_address: HostAddress,
         *,
         tls_config: TLSConfig,
@@ -4214,7 +3986,7 @@ class FetcherFactory:
         return TCPFetcher(
             host_name=host_name,
             address=(ip_address, self._agent_port(host_name)),
-            family=self._config_cache.default_address_family(host_name),
+            family=host_ip_family,
             timeout=self._tcp_connect_timeout(host_name),
             encryption_handling=self._encryption_handling(host_name),
             pre_shared_secret=self._symmetric_agent_encryption(host_name),
@@ -4229,30 +4001,29 @@ class FetcherFactory:
             password=ipmi_credentials.get("password"),
         )
 
-    def _make_program_commandline(
+    def _make_fetcher_program_commandline(
         self,
         host_name: HostName,
+        host_ip_family: Literal[socket.AddressFamily.AF_INET, socket.AddressFamily.AF_INET6],
         ip_address: HostAddress | None,
         ip_address_of: IPLookup,
         program: str,
     ) -> str:
-        return self._config_cache.translate_commandline(
-            host_name, ip_address, program, ip_address_of
+        return self._config_cache.translate_fetcher_commandline(
+            host_name, host_ip_family, ip_address, program, ip_address_of
         )
 
     def make_program_fetcher(
         self,
         host_name: HostName,
+        host_ip_family: Literal[socket.AddressFamily.AF_INET, socket.AddressFamily.AF_INET6],
         ip_address: HostAddress | None,
         *,
         program: str,
         stdin: str | None,
     ) -> ProgramFetcher:
-        cmdline = self._make_program_commandline(
-            host_name,
-            ip_address,
-            ConfiguredIPLookup(self._config_cache, error_handler=handle_ip_lookup_failure),
-            program,
+        cmdline = self._make_fetcher_program_commandline(
+            host_name, host_ip_family, ip_address, self._ip_lookup, program
         )
         return ProgramFetcher(cmdline=cmdline, stdin=stdin, is_cmc=is_cmc())
 
@@ -4268,6 +4039,7 @@ class FetcherFactory:
             time_settings=self._config_cache.get_piggybacked_hosts_time_settings(
                 piggybacked_hostname=host_name
             ),
+            omd_root=cmk.utils.paths.omd_root,
         )
 
 
@@ -4401,49 +4173,6 @@ class CEEConfigCache(ConfigCache):
 
         return self.__lnx_remote_alert_handlers.setdefault(host_name, _impl())
 
-    def rtc_secret(self, host_name: HostName) -> str | None:
-        def _impl() -> str | None:
-            default: Sequence[RuleSpec[object]] = []
-            if not (
-                settings := self.ruleset_matcher.get_host_values(
-                    host_name,
-                    agent_config.get("real_time_checks", default),
-                    self.label_manager.labels_of_host,
-                )
-            ):
-                return None
-            match settings[0]["encryption"]:
-                case ("disabled", None):
-                    return None
-                case ("enabled", password_spec):
-                    return password_store.extract(password_spec)
-                case unknown_value:
-                    raise ValueError(unknown_value)
-
-        with contextlib.suppress(KeyError):
-            return self.__rtc_secret[host_name]
-
-        return self.__rtc_secret.setdefault(host_name, _impl())
-
-    @staticmethod
-    def cmc_real_time_checks() -> object:
-        return cmc_real_time_checks  # type: ignore[name-defined,unused-ignore]
-
-    def agent_config(self, host_name: HostName, default: Mapping[str, Any]) -> Mapping[str, Any]:
-        def _impl() -> Mapping[str, Any]:
-            return {
-                **boil_down_agent_rules(
-                    defaults=default,
-                    rulesets=self.matched_agent_config_entries(host_name),
-                ),
-                "is_ipv6_primary": (self.default_address_family(host_name) is socket.AF_INET6),
-            }
-
-        with contextlib.suppress(KeyError):
-            return self.__agent_config[host_name]
-
-        return self.__agent_config.setdefault(host_name, _impl())
-
     def rrd_config_of_service(
         self, host_name: HostName, service_name: ServiceName
     ) -> RRDObjectConfig | None:
@@ -4560,77 +4289,6 @@ class CEEConfigCache(ConfigCache):
             self.label_manager.labels_of_host,
         )
         return out[0] if out else None
-
-    def matched_agent_config_entries(self, hostname: HostName) -> dict[str, Any]:
-        return {
-            varname: self.ruleset_matcher.get_host_values(
-                hostname, ruleset, self.label_manager.labels_of_host
-            )
-            for varname, ruleset in CEEConfigCache._agent_config_rulesets()
-        }
-
-    @staticmethod
-    def generic_agent_config_entries(
-        *, defaults: Mapping[str, object]
-    ) -> Iterable[tuple[str, Mapping[str, object]]]:
-        yield from (
-            (
-                match_path,
-                boil_down_agent_rules(
-                    defaults=defaults,
-                    rulesets={
-                        varname: CEEConfigCache._get_values_for_generic_agent(ruleset, match_path)
-                        for varname, ruleset in CEEConfigCache._agent_config_rulesets()
-                    },
-                ),
-            )
-            for match_path, attributes in folder_attributes.items()
-            if attributes.get("bake_agent_package", False)
-        )
-
-    @staticmethod
-    def _get_values_for_generic_agent(
-        ruleset: Iterable[RuleSpec[tuple[str, Any]]], path_for_rule_matching: str
-    ) -> Sequence[tuple[str, Any]]:
-        """Compute rulesets for "generic" hosts
-
-        This fictious host has no name and no tags.
-        It matches all rules that do not require specific hosts or tags.
-        It matches rules that e.g. except specific hosts or tags (is not, has not set).
-        """
-        entries: list[tuple[str, Any]] = []
-        for rule in ruleset:
-            if ruleset_matcher.is_disabled(rule):
-                continue
-
-            rule_path = (cond := rule["condition"]).get("host_folder")
-            if rule_path is not None and not path_for_rule_matching.startswith(rule_path):
-                continue
-
-            if (tags := cond.get("host_tags", {})) and not ruleset_matcher.matches_host_tags(
-                set(), tags
-            ):
-                continue
-
-            if (
-                label_groups := cond.get("host_label_groups", [])
-            ) and not ruleset_matcher.matches_labels({}, label_groups):
-                continue
-
-            if not ruleset_matcher.matches_host_name(cond.get("host_name"), HostName("")):
-                continue
-
-            entries.append(rule["value"])
-
-        return entries
-
-    @staticmethod
-    def _agent_config_rulesets() -> Iterable[tuple[str, Any]]:
-        return list(agent_config.items()) + [
-            ("agent_port", agent_ports),
-            ("agent_encryption", agent_encryption),
-            ("agent_exclude_sections", agent_exclude_sections),
-        ]
 
 
 class CMEConfigCache(CEEConfigCache):

@@ -8,8 +8,10 @@ from collections.abc import Iterable, Sequence
 
 from livestatus import LivestatusResponse, OnlySites
 
-from cmk.utils.hostaddress import HostName
-from cmk.utils.structured_data import RetentionInterval, SDValue
+from cmk.ccc.hostaddress import HostName
+
+import cmk.utils.paths
+from cmk.utils.structured_data import InventoryStore, RetentionInterval, SDValue
 
 from cmk.gui import sites
 from cmk.gui.config import active_config
@@ -18,12 +20,7 @@ from cmk.gui.display_options import display_options
 from cmk.gui.exceptions import MKUserError
 from cmk.gui.htmllib.html import html
 from cmk.gui.i18n import _
-from cmk.gui.inventory._history import get_history
-from cmk.gui.inventory._tree import (
-    get_short_inventory_filepath,
-    InventoryPath,
-    load_filtered_and_merged_tree,
-)
+from cmk.gui.inventory._tree import get_history, InventoryPath, load_tree
 from cmk.gui.painter.v0 import Cell
 from cmk.gui.type_defs import ColumnName, Row, Rows, SingleInfos, VisualContext
 from cmk.gui.utils.user_errors import user_errors
@@ -118,9 +115,13 @@ class RowTableInventory(ABCRowTable):
         if not (self._info_names and (info_name := self._info_names[0])):
             return
 
+        host_name = hostrow.get("host_name")
         try:
             table_rows = (
-                load_filtered_and_merged_tree(hostrow)
+                load_tree(
+                    host_name=host_name,
+                    raw_status_data_tree=hostrow.get("host_structured_status", b""),
+                )
                 .get_tree(self._inventory_path.path)
                 .table.rows_with_retentions
             )
@@ -130,8 +131,11 @@ class RowTableInventory(ABCRowTable):
             user_errors.add(
                 MKUserError(
                     "load_inventory_tree",
-                    _("Cannot load HW/SW Inventory tree %s. Please remove the corrupted file.")
-                    % get_short_inventory_filepath(hostrow.get("host_name", "")),
+                    _(
+                        "Cannot load HW/SW Inventory tree of host %s."
+                        " Please remove the corrupted file."
+                    )
+                    % host_name,
                 )
             )
             return
@@ -151,7 +155,10 @@ class RowTableInventoryHistory(ABCRowTable):
 
     def _get_rows(self, hostrow: Row) -> Iterable[Row]:
         hostname: HostName = hostrow["host_name"]
-        history, corrupted_history_files = get_history(hostname)
+        history, corrupted_history_files = get_history(
+            InventoryStore(cmk.utils.paths.omd_root),
+            hostname,
+        )
         if corrupted_history_files:
             user_errors.add(
                 MKUserError(

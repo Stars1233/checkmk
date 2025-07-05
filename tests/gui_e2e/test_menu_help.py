@@ -11,14 +11,12 @@ from playwright.sync_api import Page, Request, Route
 
 from tests.gui_e2e.testlib.playwright.pom.dashboard import Dashboard
 from tests.gui_e2e.testlib.playwright.timeouts import handle_playwright_timeouterror
-from tests.testlib.pytest_helpers.marks import skip_if_not_saas_edition
 
 
 @dataclass
 class HelpMenuButton:
-    def __init__(self, name: str, url_pattern: str) -> None:
-        self.name = name
-        self.url_pattern = url_pattern
+    name: str
+    url_pattern: str
 
 
 @pytest.fixture(
@@ -63,7 +61,7 @@ class HelpMenuButton:
         pytest.param(
             HelpMenuButton("help_saas_status_page", "status.checkmk.com"),
             id="saas_status_page",
-            marks=skip_if_not_saas_edition,
+            marks=pytest.mark.skip_if_not_edition("saas"),
         ),
         pytest.param(
             HelpMenuButton("help_suggest_product_improvement", "ideas.checkmk.com"),
@@ -72,7 +70,7 @@ class HelpMenuButton:
     ],
 )
 def fixture_help_menu_button(
-    request: pytest.FixtureRequest, page: Page
+    request: pytest.FixtureRequest, cmk_page: Page
 ) -> Iterator[HelpMenuButton]:
     def update_user_agent(route: Route, request: Request) -> None:
         headers = request.headers
@@ -82,7 +80,7 @@ def fixture_help_menu_button(
         route.continue_(headers=headers)
 
     help_menu_button: HelpMenuButton = request.param
-    browser_context = page.context
+    browser_context = cmk_page.context
     if "ideas" in help_menu_button.url_pattern:
         # "ideas.checkmk.com" requires a reliable user_agent to be initialized,
         # not an automated one.

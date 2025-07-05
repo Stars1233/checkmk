@@ -1,7 +1,7 @@
 load("@aspect_rules_py//py:defs.bzl", "py_library", "py_pytest_main")
 load("@cmk_requirements//:requirements.bzl", "requirement")
 load("@rules_python//python:packaging.bzl", "py_wheel")
-load("//:bazel_variables.bzl", "edition_deps")
+load("//:bazel_variables.bzl", "edition_python_deps")
 load("//bazel/rules:doctest.bzl", "py_doc_test")
 
 exports_files(["requirements.in"])
@@ -102,55 +102,78 @@ REQUIRED_EXTERNAL_DEPS = [
     "werkzeug",
 ]
 
-CRE_PY = glob([
-    "**/cre/**/*.py",
-    "**/cre.py",
-    "**/raw/**/*.py",
-    "**/raw.py",
-])
+CRE_PY = glob(
+    [
+        "**/cre/**/*.py",
+        "**/cre.py",
+        "**/raw/**/*.py",
+        "**/raw.py",
+    ],
+    allow_empty = True,
+)
 
-CCE_PY = glob([
-    "**/cce/**/*.py",
-    "**/cce.py",
-])
+CCE_PY = glob(
+    [
+        "**/cce/**/*.py",
+        "**/cce.py",
+    ],
+    allow_empty = True,
+)
 
-CEE_PY = glob([
-    "**/cee/**/*.py",
-    "**/cee.py",
-])
+CEE_PY = glob(
+    [
+        "**/cee/**/*.py",
+        "**/cee.py",
+    ],
+    allow_empty = True,
+)
 
-CME_PY = glob([
-    "**/cme/**/*.py",
-    "**/cme.py",
-])
+CME_PY = glob(
+    [
+        "**/cme/**/*.py",
+        "**/cme.py",
+    ],
+    allow_empty = True,
+)
 
-CSE_PY = glob([
-    "**/cse/**/*.py",
-    "**/cse.py",
-])
+CSE_PY = glob(
+    [
+        "**/cse/**/*.py",
+        "**/cse.py",
+    ],
+    allow_empty = True,
+)
 
 CMK_PACKAGES = [
-    "//packages/cmk-agent-based",
+    "//packages/cmk-shared-typing:cmk_shared_typing_py",
     "//packages/cmk-agent-receiver",
+    "//packages/cmk-ccc:cleanup",
+    "//packages/cmk-ccc:cpu-tracking",
     "//packages/cmk-ccc:crash-reporting",
     "//packages/cmk-ccc:daemon",
     "//packages/cmk-ccc:debug",
     "//packages/cmk-ccc:exceptions",
+    "//packages/cmk-ccc:hostaddress",
     "//packages/cmk-ccc:i18n",
     "//packages/cmk-ccc:plugin-registry",
     "//packages/cmk-ccc:profile",
+    "//packages/cmk-ccc:resulttype",
     "//packages/cmk-ccc:site",
     "//packages/cmk-ccc:store",
+    "//packages/cmk-ccc:tty",
+    "//packages/cmk-ccc:user",
+    "//packages/cmk-ccc:validatedstr",
     "//packages/cmk-ccc:version",
     "//packages/cmk-crypto",
     "//packages/cmk-events",
-    "//packages/cmk-graphing",
     "//packages/cmk-livestatus-client",
     "//packages/cmk-livestatus-client:py_livestatus",
     "//packages/cmk-messaging",
     "//packages/cmk-mkp-tool",
-    "//packages/cmk-rulesets",
-    "//packages/cmk-server-side-calls",
+    "//packages/cmk-plugin-apis:agent_based",
+    "//packages/cmk-plugin-apis:graphing",
+    "//packages/cmk-plugin-apis:rulesets",
+    "//packages/cmk-plugin-apis:server_side_calls",
     "//packages/cmk-trace",
     "//packages/cmk-werks",
 ] + select({
@@ -204,7 +227,7 @@ py_library(
     visibility = ["//tests:__subpackages__"],
     deps = CMC_PROTO_DEPS + [
         "lib_cmk",
-    ] + edition_deps[edition],
+    ] + edition_python_deps[edition],
 ) for edition, srcs in [
     ("cce", CCE_PY),
     ("cee", CEE_PY),
@@ -217,7 +240,7 @@ py_library(
     name = "lib_cmk_repo_no_meraki",
     srcs = glob(
         include = ["**/*.py"],
-        exclude = ["special_agents/agent_cisco_meraki.py"],
+        exclude = ["plugins/cisco_meraki/special_agent/agent_cisco_meraki.py"],
     ),
     data = ["gui/wsgi/applications/index.wsgi"],
     imports = [".."],

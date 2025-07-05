@@ -6,10 +6,12 @@
 from collections.abc import Callable, Mapping, Sequence
 from uuid import uuid4
 
+from livestatus import SiteConfiguration
+
+from cmk.ccc.hostaddress import HostName
 from cmk.ccc.site import omd_site, SiteId
 
 from cmk.utils.global_ident_type import GlobalIdent, PROGRAM_ID_QUICK_SETUP
-from cmk.utils.hostaddress import HostName
 from cmk.utils.password_store import Password as StorePassword
 from cmk.utils.rulesets.definition import RuleGroup
 from cmk.utils.rulesets.ruleset_matcher import RuleConditionsSpec, RuleOptionsSpec, RuleSpec
@@ -35,10 +37,13 @@ from cmk.gui.quick_setup.v0_unstable.predefined._utils import (
 )
 from cmk.gui.quick_setup.v0_unstable.setups import ProgressLogger, StepStatus
 from cmk.gui.quick_setup.v0_unstable.type_defs import ParsedFormData
-from cmk.gui.site_config import site_is_local
+from cmk.gui.site_config import is_replication_enabled, site_is_local
 from cmk.gui.utils.urls import makeuri_contextless
 from cmk.gui.watolib.automations import (
     fetch_service_discovery_background_job_status,
+    LocalAutomationConfig,
+    make_automation_config,
+    RemoteAutomationConfig,
 )
 from cmk.gui.watolib.changes import add_change
 from cmk.gui.watolib.configuration_bundle_store import BundleId, ConfigBundle
@@ -64,6 +69,7 @@ from cmk.gui.watolib.services import (
     get_check_table,
     perform_fix_all,
 )
+from cmk.gui.watolib.sites import ReplicationStatusFetcher
 
 from cmk.rulesets.v1.form_specs import Dictionary
 
@@ -74,7 +80,7 @@ class DCDHook:
     ] = lambda *_args: []
 
 
-def sanitize_folder_path(folder_path: str) -> Folder:
+def sanitize_folder_path(folder_path: str, *, pprint_value: bool) -> Folder:
     """Attempt to get the folder from the folder path. If the folder does not exist, create it.
     Returns the folder object."""
     sanitized_folder_path = normalize_folder_path_str(folder_path)
@@ -91,6 +97,7 @@ def sanitize_folder_path(folder_path: str) -> Folder:
                 name=name,
                 title=title,
                 attributes={},
+                pprint_value=pprint_value,
             )
         )
     return folder
@@ -118,6 +125,11 @@ def create_passwords(
     passwords: Mapping[str, str],
     bundle_id: BundleId,
 ) -> Sequence[CreatePassword]:
+    """Create the password entities.
+
+    The owner is set to Administrators! So this should only be used for users that are allowed to
+    edit all passwords.
+    """
     return [
         CreatePassword(
             id=pw_id,
@@ -126,7 +138,7 @@ def create_passwords(
                 comment="",
                 docu_url="",
                 password=password,
-                owned_by=user.id,
+                owned_by=None,
                 shared_with=[],
             ),
         )
@@ -230,6 +242,30 @@ def _convert_explicit_passwords_to_stored_passwords(
     return params_with_converted_passwords
 
 
+def _extract_explicit_password_entities(
+    bundle_id: BundleId,
+    parameter_form: Dictionary,
+    all_stages_form_data: ParsedFormData,
+    params: Mapping[str, object],
+) -> tuple[Mapping[str, object], Sequence[CreatePassword]]:
+    """Extracts the explicit passwords from the form data and creates password entities for them."""
+    collected_passwords = _collect_passwords_from_form_data(all_stages_form_data, parameter_form)
+
+    stored_passwords = load_passwords()
+    # We need to filter out the passwords that are already stored in the password store since
+    # they should be independent of the configuration bundle
+    explicit_passwords = {
+        pwid: pw for pwid, pw in collected_passwords.items() if pwid not in stored_passwords
+    }
+    params = _convert_explicit_passwords_to_stored_passwords(params, set(explicit_passwords.keys()))
+
+    password_entities = create_passwords(
+        passwords=explicit_passwords,
+        bundle_id=bundle_id,
+    )
+    return params, password_entities
+
+
 def _create_and_save_special_agent_bundle(
     special_agent_name: str,
     parameter_form: Dictionary,
@@ -250,18 +286,18 @@ def _create_and_save_special_agent_bundle(
     site_id = SiteId(site_selection) if site_selection else omd_site()
     params = collect_params(all_stages_form_data, parameter_form)
 
-    collected_passwords = _collect_passwords_from_form_data(all_stages_form_data, parameter_form)
-
-    stored_passwords = load_passwords()
-    # We need to filter out the passwords that are already stored in the password store since they
-    # should be independent of the configuration bundle
-    explicit_passwords = {
-        pwid: pw for pwid, pw in collected_passwords.items() if pwid not in stored_passwords
-    }
-    params = _convert_explicit_passwords_to_stored_passwords(params, set(explicit_passwords.keys()))
+    password_entities: Sequence[CreatePassword] | None
+    if user.may("wato.edit_all_passwords"):
+        # We only extract the passwords if the user can edit all passwords. This is mainly because
+        # we would otherwise need to specify a contact group for the passwords.
+        params, password_entities = _extract_explicit_password_entities(
+            bundle_id, parameter_form, all_stages_form_data, params
+        )
+    else:
+        password_entities = None
 
     # TODO: The sanitize function is likely to change once we have a folder FormSpec.
-    folder = sanitize_folder_path(host_path)
+    folder = sanitize_folder_path(host_path, pprint_value=active_config.wato_pprint_config)
     validated_host_name = HostName(host_name)
     progress_logger.log_new_progress_step(
         "create_config_bundle", "Create underlying configurations"
@@ -281,10 +317,7 @@ def _create_and_save_special_agent_bundle(
                     host_name=validated_host_name, folder=folder, site_id=site_id
                 )
             ],
-            passwords=create_passwords(
-                passwords=explicit_passwords,
-                bundle_id=bundle_id,
-            ),
+            passwords=password_entities,
             rules=[
                 create_rule(
                     params=params,
@@ -299,44 +332,56 @@ def _create_and_save_special_agent_bundle(
                 bundle_id, site_id, validated_host_name, folder
             ),
         ),
+        user_id=user.id,
+        pprint_value=active_config.wato_pprint_config,
+        use_git=active_config.wato_use_git,
+        debug=active_config.debug,
     )
     progress_logger.update_progress_step_status("create_config_bundle", StepStatus.COMPLETED)
-    progress_logger.log_new_progress_step("service_discovery", "Run service discovery")
-    try:
-        host: Host = Host.load_host(HostName(host_name))
-        if not site_is_local(active_config, site_id):
-            get_check_table(host, DiscoveryAction.REFRESH, raise_errors=False)
-            snapshot = fetch_service_discovery_background_job_status(site_id, host_name)
-            if not snapshot.exists:
-                raise Exception(
-                    _("Could not find a running service discovery for host %s on remote site %s")
-                    % (host_name, site_id)
-                )
-            while snapshot.is_active:
-                snapshot = fetch_service_discovery_background_job_status(site_id, host_name)
-
-        check_table = get_check_table(host, DiscoveryAction.FIX_ALL, raise_errors=False)
-        perform_fix_all(
-            discovery_result=check_table,
-            host=host,
-            raise_errors=False,
+    if not _service_discovery_possible(
+        site_id, site_config=active_config.sites[site_id], debug=active_config.debug
+    ):
+        progress_logger.log_new_progress_step(
+            "service_discovery",
+            "Skipping service discovery as target site is unreachable",
+            status=StepStatus.COMPLETED,
         )
-    except Exception as e:
-        progress_logger.update_progress_step_status("service_discovery", StepStatus.ERROR)
+    else:
+        progress_logger.log_new_progress_step("service_discovery", "Run service discovery")
+        try:
+            _run_service_discovery(
+                host_name,
+                site_id,
+                automation_config=make_automation_config(active_config.sites[site_id]),
+                pprint_value=active_config.wato_pprint_config,
+                debug=active_config.debug,
+            )
+        except Exception as e:
+            progress_logger.update_progress_step_status("service_discovery", StepStatus.ERROR)
 
-        progress_logger.log_new_progress_step("delete_config_bundle", "Revert changes")
-        delete_config_bundle(BundleId(bundle_id))
-        progress_logger.update_progress_step_status("delete_config_bundle", StepStatus.COMPLETED)
-        raise e
+            progress_logger.log_new_progress_step("delete_config_bundle", "Revert changes")
+            delete_config_bundle(
+                BundleId(bundle_id),
+                user_id=user.id,
+                pprint_value=active_config.wato_pprint_config,
+                use_git=active_config.wato_use_git,
+                debug=active_config.debug,
+            )
+            progress_logger.update_progress_step_status(
+                "delete_config_bundle", StepStatus.COMPLETED
+            )
+            raise e
 
-    progress_logger.update_progress_step_status("service_discovery", StepStatus.COMPLETED)
+        progress_logger.update_progress_step_status("service_discovery", StepStatus.COMPLETED)
 
     # revert changes does not work correctly when a config sync to another site occurred
     # for consistency reasons we always prevent the user from reverting the changes
     add_change(
-        "create-quick-setup",
-        _("Created Quick setup {bundle_id}").format(bundle_id=bundle_id),
+        action_name="create-quick-setup",
+        text=_("Created Quick setup {bundle_id}").format(bundle_id=bundle_id),
+        user_id=user.id,
         prevent_discard_changes=True,
+        use_git=active_config.wato_use_git,
     )
 
     return makeuri_contextless(
@@ -347,4 +392,71 @@ def _create_and_save_special_agent_bundle(
             ("special_agent_name", special_agent_name),
         ],
         filename="wato.py",
+    )
+
+
+def _service_discovery_possible(
+    site_id: SiteId, *, site_config: SiteConfiguration, debug: bool
+) -> bool:
+    if site_is_local(active_config.sites[site_id]):
+        return True
+
+    if not is_replication_enabled(site_config):
+        return False
+
+    remote_status = ReplicationStatusFetcher().fetch(
+        [(site_id, RemoteAutomationConfig.from_site_config(site_config))], debug=debug
+    )
+    if not remote_status[site_id].success:
+        return False
+
+    return True
+
+
+def _run_service_discovery(
+    host_name: str,
+    site_id: SiteId,
+    *,
+    automation_config: LocalAutomationConfig | RemoteAutomationConfig,
+    pprint_value: bool,
+    debug: bool,
+) -> None:
+    host: Host = Host.load_host(HostName(host_name))
+    if isinstance(automation_config, RemoteAutomationConfig):
+        # this also implicitly syncs the pending changes to the remote site to run the discovery
+        get_check_table(
+            host,
+            DiscoveryAction.REFRESH,
+            automation_config=automation_config,
+            raise_errors=False,
+            debug=debug,
+        )
+
+        snapshot = fetch_service_discovery_background_job_status(
+            automation_config, host_name, debug=debug
+        )
+        if not snapshot.exists:
+            raise Exception(
+                _("Could not find a running service discovery for host %s on remote site %s")
+                % (host_name, site_id)
+            )
+        while snapshot.is_active:
+            snapshot = fetch_service_discovery_background_job_status(
+                automation_config, host_name, debug=debug
+            )
+
+    check_table = get_check_table(
+        host,
+        DiscoveryAction.FIX_ALL,
+        automation_config=automation_config,
+        raise_errors=False,
+        debug=debug,
+    )
+    perform_fix_all(
+        discovery_result=check_table,
+        host=host,
+        raise_errors=False,
+        automation_config=LocalAutomationConfig(),
+        pprint_value=pprint_value,
+        debug=debug,
     )

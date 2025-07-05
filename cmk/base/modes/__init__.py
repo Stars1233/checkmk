@@ -8,10 +8,10 @@ from __future__ import annotations
 import textwrap
 from collections.abc import Callable, Sequence
 
+from cmk.ccc import tty
 from cmk.ccc.exceptions import MKBailOut, MKGeneralException
+from cmk.ccc.hostaddress import HostName, Hosts
 
-from cmk.utils import tty
-from cmk.utils.hostaddress import HostName, Hosts
 from cmk.utils.log import console
 from cmk.utils.plugin_loader import import_plugins
 from cmk.utils.rulesets.tuple_rulesets import hosttags_match_taglist
@@ -173,7 +173,7 @@ class Modes:
                 num_found = 0
                 for hostname in valid_hosts:
                     if hosttags_match_taglist(
-                        config_cache.tag_list(hostname), (TagID(_) for _ in tagspec)
+                        config_cache.host_tags.tag_list(hostname), (TagID(_) for _ in tagspec)
                     ):
                         hostlist.append(hostname)
                         num_found += 1

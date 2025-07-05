@@ -52,10 +52,11 @@ inpath() {
 
 init_sudo() {
     if inpath sudo && [ "$(whoami)" != "root" ]; then
-        sudo_as_root() { sudo --non-interactive "$@"; }
+        ROOT_OR_SUDO="sudo --non-interactive"
     else
-        sudo_as_root() { "$@"; }
+        ROOT_OR_SUDO=""
     fi
+    export ROOT_OR_SUDO
 }
 
 get_file_atime() {
@@ -501,7 +502,7 @@ run_purely_synchronous_sections() {
     fi
 
     # Filesystem usage for ZFS
-    if inpath zfs; then
+    if kldstat -m zfs -q && inpath zfs; then
         echo '<<<zfsget>>>'
         zfs get -t filesystem,volume -Hp name,quota,used,avail,mountpoint,type ||
             zfs get -Hp name,quota,used,avail,mountpoint,type
@@ -573,7 +574,7 @@ run_purely_synchronous_sections() {
 
     # Multipathing is supported in FreeBSD by now
     # http://www.mywushublog.com/2010/06/freebsd-and-multipath/
-    if kldstat -v | grep g_multipath >/dev/null; then
+    if kldstat -m g_multipath -q; then
         echo '<<<freebsd_multipath>>>'
         gmultipath status | grep -v ^Name
     fi
@@ -684,7 +685,7 @@ run_purely_synchronous_sections() {
         fi
     elif [ -x /usr/sbin/ssmtp ]; then
         echo '<<<postfix_mailq>>>'
-        sudo_as_root mailq 2>&1 | sed 's/^[^:]*: \(.*\)/\1/' | tail -n 6
+        ${ROOT_OR_SUDO} mailq 2>&1 | sed 's/^[^:]*: \(.*\)/\1/' | tail -n 6
     fi
 
     # Check status of qmail mailqueue
@@ -694,7 +695,7 @@ run_purely_synchronous_sections() {
     fi
 
     # check zpool status
-    if inpath zpool; then
+    if kldstat -m zfs -q && inpath zpool; then
         echo "<<<zpool_status>>>"
         zpool status -x | grep -v "errors: No known data errors"
     fi
@@ -750,11 +751,11 @@ fi
 
 _run_cached_internal() {
     # Run a command asynchronous by use of a cache file.
-    # Usage: _run_cached_internal NAME REFRESH_INTERVAL MAXAGE OUTPUT_TIMEOUT OUTPUT_TIMEOUT CREATION_TIMEOUT [COMMAND ...]
+    # Usage: _run_cached_internal NAME REFRESH_INTERVAL MAXAGE OUTPUT_TIMEOUT CREATION_TIMEOUT [COMMAND ...]
     # Note that while multiple COMMAND arguments are considered, they are evaluated in a string.
     # This means that extra escaping is required.
     # For example:
-    # To run a cat command every two minutes, considering the created data valid for one three minutes,
+    # To run a cat command every two minutes, considering the created data valid for three minutes,
     # send the created data for four minutes and allowing the command to run for 12 minutes, you'll have to call
     #
     #   _run_cached_interal "my_file_content" 120 180 240 720 "cat \"My File\""
@@ -777,12 +778,13 @@ _run_cached_internal() {
     # threshold in seconds for how long the process is allowed to be running before it is killed (see below for details)
 
     shift 5
-    # $* is now the command to run
 
     if ${DISABLE_CACHING:-false}; then
-        # We need the re-splitting to be compatible with the caching case, so:
-        # shellcheck disable=SC2068
-        $@
+        # We need to be compatible with the caching case. This section mirrors the implementation
+        # below.
+        cat <<HERE | "${CURRENT_SHELL}"
+            $*
+HERE
         return
     fi
 
@@ -809,37 +811,33 @@ _run_cached_internal() {
     fi
 
     if ${MK_RUN_ASYNC_PARTS}; then
-        # This does the right thing, regardless whether the pattern matches!
-        _cfile_in_use() {
-            for cfile in "${CACHEFILE}.new."*; do
-                printf "%s\n" "${cfile}"
-                break
-            done
-        }
+
+        CACHEFILE_NEW="${CACHEFILE}.new"
+        _cleanup_leftover_files "${CACHEFILE_NEW}" "${CREATION_TIMEOUT}" "${NOW}"
 
         # Time to refresh cache file and new job not yet running?
-        if [ $((NOW - MTIME)) -gt "${REFRESH_INTERVAL}" ] && [ ! -e "$(_cfile_in_use)" ]; then
+        if [ $((NOW - MTIME)) -gt "${REFRESH_INTERVAL}" ] && [ ! -e "${CACHEFILE_NEW}" ]; then
 
             # Start it.
-            # We're running two parrallel blocks, implementing a timeout. Roughly:
+            # We're running two parallel blocks, implementing a timeout. Roughly:
             # First block: Run command then kill ourselves (including the other block!)
             # Second block: Sleep for a while. If I survive: Handle the fact that block one did not kill me.
             cat <<HERE | _nohup "${CURRENT_SHELL}" >/dev/null 2>&1 &
              {
+                trap 'rm -f "${CACHEFILE_NEW}"' INT HUP TERM KILL
                 eval '${MK_DEFINE_LOG_SECTION_TIME}'
-                exec > "${CACHEFILE}.new.\$\$" || exit 1
+                exec > "${CACHEFILE_NEW}" || exit 1
                 $* \
-                && mv -f "${CACHEFILE}.new.\$\$" "${CACHEFILE}" && rm -f "${FAIL_REPORT_FILE}" \
-                || rm -f "${CACHEFILE}.new.\$\$"
+                && mv -f "${CACHEFILE_NEW}" "${CACHEFILE}" && rm -f "${FAIL_REPORT_FILE}"
                 kill $(_nohup_kill_id)
              } &
              {
+                trap 'rm -f "${CACHEFILE_NEW}"' INT HUP TERM KILL
                 sleep ${CREATION_TIMEOUT}
                 {
                       printf "<<<checkmk_cached_plugins:sep(124)>>>\\n"
                       printf "timeout|${NAME}|${CREATION_TIMEOUT}|\$\$\\n"
                 } >"${FAIL_REPORT_FILE}" 2>&1
-                rm -f "${CACHEFILE}.new.\$\$"
                 kill -9 $(_nohup_kill_id)
              } &
 HERE
@@ -847,7 +845,25 @@ HERE
 
     fi
 
-    unset NAME MAXAGE CREATION_TIMEOUT REFRESH_INTERVAL CACHEFILE NOW MTIME CACHE_INFO TRYING_SINCE OUTPUT_TIMEOUT
+    unset NAME MAXAGE CREATION_TIMEOUT REFRESH_INTERVAL CACHEFILE CACHEFILE_NEW NOW MTIME CACHE_INFO TRYING_SINCE OUTPUT_TIMEOUT
+}
+
+_cleanup_leftover_files() {
+    file="${1}"
+    creation_timeout="${2}"
+    now="${3}"
+
+    # No file: nothig to do
+    [ -e "${file}" ] || return
+
+    # young enough file: all good, we're working on it
+    [ $((NOW - "$(get_file_mtime "${file}")")) -le "${creation_timeout}" ] && return
+
+    # `file` is surprisingly old. This should have been prevented by the `trap`.
+    # Creation seems to have been interrupted somehow.
+    # Just clean up.
+    rm -rf "${file}"
+    unset file creation_timeout now
 }
 
 run_local_checks() {
@@ -1119,4 +1135,4 @@ main() {
 
 }
 
-[ -z "${MK_SOURCE_AGENT}" ] && main "$@"
+[ -n "${MK_SOURCE_AGENT}" ] || main "$@"

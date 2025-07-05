@@ -10,10 +10,9 @@ from functools import partial
 from cmk.ccc.site import SiteId
 
 from cmk.gui import query_filters
-from cmk.gui.config import active_config
+from cmk.gui.config import active_config, Config
 from cmk.gui.htmllib.html import html
 from cmk.gui.i18n import _l
-from cmk.gui.site_config import get_site_config
 from cmk.gui.type_defs import Choices, FilterHTTPVariables, Row
 from cmk.gui.utils.autocompleter_config import AutocompleterConfig
 from cmk.gui.utils.speaklater import LazyString
@@ -110,7 +109,10 @@ class SiteFilter(Filter):
 
 def default_site_filter_heading_info(value: FilterHTTPVariables) -> str | None:
     current_value = value.get("site")
-    return get_site_config(active_config, SiteId(current_value))["alias"] if current_value else None
+    try:
+        return active_config.sites[SiteId(current_value)]["alias"] if current_value else None
+    except KeyError:
+        return None
 
 
 class MultipleSitesFilter(SiteFilter):
@@ -137,7 +139,7 @@ class MultipleSitesFilter(SiteFilter):
 
 
 def sites_autocompleter(
-    value: str, params: dict, sites_options: Callable[[], list[tuple[str, str]]]
+    config: Config, value: str, params: dict, sites_options: Callable[[], list[tuple[str, str]]]
 ) -> Choices:
     """Return the matching list of dropdown choices
     Called by the webservice with the current input field value and the completions_params to get the list of choices

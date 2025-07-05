@@ -8,25 +8,22 @@ import os
 import shutil
 import socket
 import sys
-from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, Sequence
-from contextlib import contextmanager, nullcontext, suppress
+from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
+from contextlib import contextmanager, suppress
 from pathlib import Path
 from typing import Literal
 
 import cmk.ccc.debug
 from cmk.ccc.exceptions import MKGeneralException
-from cmk.ccc.store import lock_checkmk_configuration
+from cmk.ccc.hostaddress import HostAddress, HostName, Hosts
 
-import cmk.utils.config_path
 import cmk.utils.password_store
 import cmk.utils.paths
 from cmk.utils import config_warnings, ip_lookup
 from cmk.utils.config_path import VersionedConfigPath
-from cmk.utils.hostaddress import HostAddress, HostName
 from cmk.utils.labels import Labels
 from cmk.utils.licensing.handler import LicensingHandler
 from cmk.utils.licensing.helper import get_licensed_state_file_path
-from cmk.utils.paths import configuration_lockfile
 from cmk.utils.rulesets import RuleSetName
 from cmk.utils.rulesets.ruleset_matcher import RuleSpec
 from cmk.utils.servicename import Item, ServiceName
@@ -34,7 +31,6 @@ from cmk.utils.tags import TagGroupID, TagID
 
 from cmk.checkengine.plugins import AgentBasedPlugins, ServiceID
 
-from cmk.base import config
 from cmk.base.config import ConfigCache, ObjectAttributes
 from cmk.base.configlib.servicename import PassiveServiceNameConfig
 from cmk.base.nagios_utils import do_check_nagiosconfig
@@ -65,25 +61,37 @@ class MonitoringCore(abc.ABC):
         self,
         config_path: VersionedConfigPath,
         config_cache: ConfigCache,
+        hosts_config: Hosts,
         service_name_config: PassiveServiceNameConfig,
         plugins: AgentBasedPlugins,
         discovery_rules: Mapping[RuleSetName, Sequence[RuleSpec]],
-        ip_address_of: config.ConfiguredIPLookup[ip_lookup.CollectFailedHosts],
+        get_ip_stack_config: Callable[[HostName], ip_lookup.IPStackConfig],
+        default_address_family: Callable[
+            [HostName], Literal[socket.AddressFamily.AF_INET, socket.AddressFamily.AF_INET6]
+        ],
+        ip_address_of: ip_lookup.ConfiguredIPLookup[ip_lookup.CollectFailedHosts],
+        ip_address_of_mgmt: ip_lookup.IPLookupOptional,
         passwords: Mapping[str, str],
-        hosts_to_update: set[HostName] | None = None,
+        hosts_to_update: set[HostName] | None,
+        service_depends_on: Callable[[HostAddress, ServiceName], Sequence[ServiceName]],
     ) -> None:
         licensing_handler = self._licensing_handler_type.make()
         licensing_handler.persist_licensed_state(get_licensed_state_file_path())
         self._create_config(
             config_path,
             config_cache,
+            hosts_config,
             service_name_config,
+            get_ip_stack_config,
+            default_address_family,
             ip_address_of,
+            ip_address_of_mgmt,
             licensing_handler,
             plugins,
             discovery_rules,
             passwords,
-            hosts_to_update,
+            hosts_to_update=hosts_to_update,
+            service_depends_on=service_depends_on,
         )
 
     @abc.abstractmethod
@@ -91,13 +99,21 @@ class MonitoringCore(abc.ABC):
         self,
         config_path: VersionedConfigPath,
         config_cache: ConfigCache,
+        hosts_config: Hosts,
         service_name_config: PassiveServiceNameConfig,
-        ip_address_of: config.ConfiguredIPLookup[ip_lookup.CollectFailedHosts],
+        get_ip_stack_config: Callable[[HostName], ip_lookup.IPStackConfig],
+        default_address_family: Callable[
+            [HostName], Literal[socket.AddressFamily.AF_INET, socket.AddressFamily.AF_INET6]
+        ],
+        ip_address_of: ip_lookup.ConfiguredIPLookup[ip_lookup.CollectFailedHosts],
+        ip_address_of_mgmt: ip_lookup.IPLookupOptional,
         licensing_handler: LicensingHandler,
         plugins: AgentBasedPlugins,
         discovery_rules: Mapping[RuleSetName, Sequence[RuleSpec]],
         passwords: Mapping[str, str],
+        *,
         hosts_to_update: set[HostName] | None = None,
+        service_depends_on: Callable[[HostAddress, ServiceName], Sequence[ServiceName]],
     ) -> None:
         raise NotImplementedError
 
@@ -124,20 +140,22 @@ def duplicate_service_warning(
 
 # TODO: Just for documentation purposes for now.
 #
-# HostCheckCommand = NewType('HostCheckCommand',
-#                            Union[Literal["smart"],
-#                                  Literal["ping"],
-#                                  Literal["ok"],
-#                                  Literal["agent"],
-#                                  Tuple[Literal["service"], TextInput],
-#                                  Tuple[Literal["tcp"], Integer],
-#                                  Tuple[Literal["custom"], TextInput]])
+# HostCheckCommand = NewType(
+#     "HostCheckCommand",
+#     Literal["smart", "ping", "ok", "agent"]
+#     | tuple[Literal["service"], TextInput]
+#     | tuple[Literal["tcp"], Integer]
+#     | tuple[Literal["custom"], TextInput],
+# )
 
 
 def _cluster_ping_command(
-    config_cache: ConfigCache, host_name: HostName, ip: HostAddress
+    config_cache: ConfigCache,
+    host_name: HostName,
+    family: Literal[socket.AddressFamily.AF_INET, socket.AddressFamily.AF_INET6],
+    ip: HostAddress,
 ) -> CoreCommand | None:
-    ping_args = check_icmp_arguments_of(config_cache, host_name)
+    ping_args = check_icmp_arguments_of(config_cache, host_name, family)
     if ip:  # Do check cluster IP address if one is there
         return "check-mk-host-ping!%s" % ping_args
     if ping_args:  # use check_icmp in cluster mode
@@ -148,6 +166,7 @@ def _cluster_ping_command(
 def host_check_command(
     config_cache: ConfigCache,
     host_name: HostName,
+    family: Literal[socket.AddressFamily.AF_INET, socket.AddressFamily.AF_INET6],
     ip: HostAddress,
     is_clust: bool,
     default_host_check_command: str,
@@ -158,13 +177,13 @@ def host_check_command(
 
     if value == "smart":
         if is_clust:
-            return _cluster_ping_command(config_cache, host_name, ip)
+            return _cluster_ping_command(config_cache, host_name, family, ip)
         return "check-mk-host-smart"
 
     if value == "ping":
         if is_clust:
-            return _cluster_ping_command(config_cache, host_name, ip)
-        ping_args = check_icmp_arguments_of(config_cache, host_name)
+            return _cluster_ping_command(config_cache, host_name, family, ip)
+        ping_args = check_icmp_arguments_of(config_cache, host_name, family)
         if ping_args:  # use special arguments
             return "check-mk-host-ping!%s" % ping_args
         return None
@@ -210,19 +229,16 @@ def autodetect_plugin(command_line: str) -> str:
 def check_icmp_arguments_of(
     config_cache: ConfigCache,
     hostname: HostName,
+    family: Literal[socket.AddressFamily.AF_INET, socket.AddressFamily.AF_INET6],
     add_defaults: bool = True,
-    family: socket.AddressFamily | None = None,
 ) -> str:
     levels = config_cache.ping_levels(hostname)
     if not add_defaults and not levels:
         return ""
 
-    if family is None:
-        family = config_cache.default_address_family(hostname)
-
     args = []
 
-    if family is socket.AF_INET6:
+    if family is socket.AddressFamily.AF_INET6:
         args.append("-6")
 
     rta = 200.0, 500.0
@@ -265,15 +281,21 @@ def check_icmp_arguments_of(
 def do_create_config(
     core: MonitoringCore,
     config_cache: ConfigCache,
+    hosts_config: Hosts,
     service_name_config: PassiveServiceNameConfig,
     plugins: AgentBasedPlugins,
     discovery_rules: Mapping[RuleSetName, Sequence[RuleSpec]],
-    ip_address_of: config.ConfiguredIPLookup[ip_lookup.CollectFailedHosts],
-    all_hosts: Iterable[HostName],
-    hosts_to_update: set[HostName] | None = None,
+    get_ip_stack_config: Callable[[HostName], ip_lookup.IPStackConfig],
+    default_address_family: Callable[
+        [HostName], Literal[socket.AddressFamily.AF_INET, socket.AddressFamily.AF_INET6]
+    ],
+    ip_address_of: ip_lookup.ConfiguredIPLookup[ip_lookup.CollectFailedHosts],
+    ip_address_of_mgmt: ip_lookup.IPLookupOptional,
+    hosts_to_update: set[HostName] | None,
+    service_depends_on: Callable[[HostAddress, ServiceName], Sequence[ServiceName]],
     *,
     duplicates: Collection[HostName],
-    skip_config_locking_for_bakery: bool = False,
+    bake_on_restart: Callable[[], None],
 ) -> None:
     """Creating the monitoring core configuration and additional files
 
@@ -297,11 +319,16 @@ def do_create_config(
             _create_core_config(
                 core,
                 config_cache,
+                hosts_config,
                 service_name_config,
                 plugins,
                 discovery_rules,
+                get_ip_stack_config,
+                default_address_family,
                 ip_address_of,
+                ip_address_of_mgmt,
                 hosts_to_update=hosts_to_update,
+                service_depends_on=service_depends_on,
                 duplicates=duplicates,
             )
     except Exception as e:
@@ -309,50 +336,16 @@ def do_create_config(
             raise
         raise MKGeneralException("Error creating configuration: %s" % e)
 
-    if config.bake_agents_on_restart and not config.is_wato_slave_site:
-        with tracer.span("bake_on_restart"):
-            _bake_on_restart(config_cache, all_hosts, skip_config_locking_for_bakery)
-
-
-def _bake_on_restart(
-    config_cache: config.ConfigCache, all_hosts: Iterable[HostName], skip_locking: bool
-) -> None:
-    try:
-        # Local import is needed, because this is not available in all environments
-        from cmk.base.cee.bakery import (  # type: ignore[import-not-found, import-untyped, unused-ignore]
-            agent_bakery,
-        )
-
-        from cmk.cee.bakery.type_defs import (  # type: ignore[import-not-found, import-untyped, unused-ignore]
-            BakeRevisionMode,
-        )
-
-    except ImportError:
-        return
-
-    assert isinstance(config_cache, config.CEEConfigCache)
-
-    with nullcontext() if skip_locking else lock_checkmk_configuration(configuration_lockfile):
-        target_configs = agent_bakery.BakeryTargetConfigs.from_config_cache(
-            config_cache, all_hosts=all_hosts, selected_hosts=None
-        )
-
-    agent_bakery.bake_agents(
-        target_configs,
-        bake_revision_mode=(
-            BakeRevisionMode.INACTIVE if config.apply_bake_revision else BakeRevisionMode.DISABLED
-        ),
-        logging_level=config.agent_bakery_logging,
-        call_site="config creation",
-    )
+    with tracer.span("bake_on_restart"):
+        bake_on_restart()
 
 
 @contextmanager
 def _backup_objects_file(core: MonitoringCore) -> Iterator[None]:
     if core.name() == "nagios":
-        objects_file = cmk.utils.paths.nagios_objects_file
+        objects_file = str(cmk.utils.paths.nagios_objects_file)
     else:
-        objects_file = cmk.utils.paths.var_dir + "/core/config"
+        objects_file = str(cmk.utils.paths.var_dir / "core/config")
 
     backup_path = None
     if os.path.exists(objects_file):
@@ -369,7 +362,7 @@ def _backup_objects_file(core: MonitoringCore) -> Iterator[None]:
 
         if (
             core.name() == "nagios"
-            and Path(cmk.utils.paths.nagios_config_file).exists()
+            and cmk.utils.paths.nagios_config_file.exists()
             and not do_check_nagiosconfig()
         ):
             broken_config_path = cmk.utils.paths.tmp_dir / "check_mk_objects.cfg.broken"
@@ -392,11 +385,18 @@ def _backup_objects_file(core: MonitoringCore) -> Iterator[None]:
 def _create_core_config(
     core: MonitoringCore,
     config_cache: ConfigCache,
+    hosts_config: Hosts,
     service_name_config: PassiveServiceNameConfig,
     plugins: AgentBasedPlugins,
     discovery_rules: Mapping[RuleSetName, Sequence[RuleSpec]],
-    ip_address_of: config.ConfiguredIPLookup[ip_lookup.CollectFailedHosts],
-    hosts_to_update: set[HostName] | None = None,
+    get_ip_stack_config: Callable[[HostName], ip_lookup.IPStackConfig],
+    default_address_family: Callable[
+        [HostName], Literal[socket.AddressFamily.AF_INET, socket.AddressFamily.AF_INET6]
+    ],
+    ip_address_of: ip_lookup.ConfiguredIPLookup[ip_lookup.CollectFailedHosts],
+    ip_address_of_mgmt: ip_lookup.IPLookupOptional,
+    hosts_to_update: set[HostName] | None,
+    service_depends_on: Callable[[HostAddress, ServiceName], Sequence[ServiceName]],
     *,
     duplicates: Collection[HostName],
 ) -> None:
@@ -408,21 +408,26 @@ def _create_core_config(
     passwords = config_cache.collect_passwords()
     cmk.utils.password_store.save(passwords, cmk.utils.password_store.pending_password_store_path())
 
-    config_path = next(VersionedConfigPath.current())
+    config_path = VersionedConfigPath.next()
     with config_path.create(is_cmc=core.is_cmc()), _backup_objects_file(core):
         core.create_config(
             config_path,
             config_cache,
+            hosts_config,
             service_name_config,
             plugins,
             discovery_rules,
+            get_ip_stack_config,
+            default_address_family,
             ip_address_of,
+            ip_address_of_mgmt,
             hosts_to_update=hosts_to_update,
+            service_depends_on=service_depends_on,
             passwords=passwords,
         )
 
     cmk.utils.password_store.save(
-        passwords, cmk.utils.password_store.core_password_store_path(config_path)
+        passwords, cmk.utils.password_store.core_password_store_path(Path(config_path))
     )
 
 

@@ -8,13 +8,14 @@ from collections.abc import Mapping, Sequence
 from typing import cast, Literal
 
 import cmk.ccc.version as cmk_version
+from cmk.ccc.hostaddress import HostName
 
 from cmk.utils import paths
-from cmk.utils.hostaddress import HostName
 from cmk.utils.rulesets.definition import RuleGroup
 
 from cmk.gui import forms
 from cmk.gui.config import active_config
+from cmk.gui.exceptions import MKUserError
 from cmk.gui.htmllib.generator import HTMLWriter
 from cmk.gui.htmllib.html import html
 from cmk.gui.http import request
@@ -30,7 +31,12 @@ from cmk.gui.watolib.host_attributes import (
     get_sorted_host_attribute_topics,
     get_sorted_host_attributes_by_topic,
 )
-from cmk.gui.watolib.hosts_and_folders import Folder, folder_from_request, Host, SearchFolder
+from cmk.gui.watolib.hosts_and_folders import (
+    Folder,
+    folder_from_request,
+    Host,
+    SearchFolder,
+)
 
 #   "host"        -> normal host edit dialog
 #   "cluster"     -> normal host edit dialog
@@ -175,9 +181,11 @@ def configure_attributes(
 
             if attr.show_inherited_value():
                 if for_what in ["host", "cluster"]:
-                    url = folder_from_request(
-                        request.var("folder"), request.get_ascii_input("host")
-                    ).edit_url()
+                    try:
+                        host_name = request.get_ascii_input("host")
+                    except MKUserError:
+                        host_name = None
+                    url = folder_from_request(request.var("folder"), host_name).edit_url()
 
                 container = parent  # container is of type Folder
                 while container:

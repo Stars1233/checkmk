@@ -3,14 +3,12 @@
 # This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
 # conditions defined in the file COPYING, which is part of this source code package.
 
-from __future__ import annotations
-
 import abc
 import math
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from itertools import repeat
-from typing import Self
+from typing import assert_never, Self
 
 from cmk.gui.config import active_config
 from cmk.gui.log import logger
@@ -82,9 +80,9 @@ class _MetricNamesOrScalars:
     def from_perfometers(cls, *perfometers_: perfometers_api.Perfometer) -> Self:
         instance = cls([], [])
         for perfometer in perfometers_:
-            if not isinstance(perfometer.focus_range.lower.value, (int, float)):
+            if not isinstance(perfometer.focus_range.lower.value, int | float):
                 instance.collect_quantity_names(perfometer.focus_range.lower.value)
-            if not isinstance(perfometer.focus_range.upper.value, (int, float)):
+            if not isinstance(perfometer.focus_range.upper.value, int | float):
                 instance.collect_quantity_names(perfometer.focus_range.upper.value)
             for s in perfometer.segments:
                 instance.collect_quantity_names(s)
@@ -251,79 +249,129 @@ def _evaluate_quantity(
 MetricRendererStack = Sequence[Sequence[tuple[int | float, str]]]
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class _Linear:
     slope: float
-    shift: float
+    intercept: float
 
     @classmethod
-    def from_points(cls, lower_x: float, lower_y: float, upper_x: float, upper_y: float) -> _Linear:
-        slope = (upper_y - lower_y) / (upper_x - lower_x)
-        shift = -1.0 * slope * lower_x + lower_y
-        return cls(slope, shift)
-
-    def __call__(self, value: int | float) -> float:
-        return self.slope * value + self.shift
-
-
-@dataclass(frozen=True)
-class _ArcTan:
-    x_shift: float
-    y_shift: float
-    stretch_factor: float
-
-    @classmethod
-    def from_parameters(
+    def fit_to_two_points(
         cls,
-        lower_x: float,
-        upper_x: float,
-        linear: _Linear,
-        y_shift: float,
-        scale: float,
-    ) -> _ArcTan:
+        *,
+        p_1: tuple[float, float],
+        p_2: tuple[float, float],
+    ) -> Self:
+        slope = (p_2[1] - p_1[1]) / (p_2[0] - p_1[0])
         return cls(
-            (y_shift - linear.shift) / linear.slope,
-            y_shift,
-            scale * (upper_x - lower_x),
+            slope=slope,
+            intercept=p_1[1] - slope * p_1[0],
         )
 
     def __call__(self, value: int | float) -> float:
+        return self.slope * value + self.intercept
+
+
+class _Cutoff: ...
+
+
+@dataclass(frozen=True, kw_only=True)
+class _ArcTan:
+    """
+    Evaluates the following function:
+    f(x) = (2 / π) * s * atan((π / 2) * (mᵢ / s) * (x - xᵢ)) + yᵢ
+    (xᵢ|yᵢ) is the inflection point.
+    mᵢ is the slope at the inflection point.
+    s is the scale in units of π/2. The range of f is (yᵢ - s, yᵢ + s).
+    """
+
+    x_inflection: float
+    y_inflection: float
+    slope_inflection: float
+    scale_in_units_of_pi_half: float
+
+    def __call__(self, x: int | float) -> float:
+        scale = self.scale_in_units_of_pi_half * 2 / math.pi
         return (
-            30.0
-            / math.pi
-            * math.atan(math.pi / (30.0 * self.stretch_factor) * (value - self.x_shift))
-            + self.y_shift
+            scale * math.atan(self.slope_inflection / scale * (x - self.x_inflection))
+            + self.y_inflection
         )
 
 
 @dataclass(frozen=True, kw_only=True)
-class _Projection:
-    lower_x: float
-    upper_x: float
-    lower_atan: Callable[[int | float], float]
-    focus_linear: Callable[[int | float], float]
-    upper_atan: Callable[[int | float], float]
-    limit: float
+class _ProjectionFromMetricValueToPerfFillLevel:
+    """
+    Map arbitrarily large or small metric values to an interval (lower_limit, upper_limit), which
+    indicates the fill level of a perfometer. lower_limit means that the perfometer is empty.
+    upper_limit means that the perfometer is completely filled. The values of lower_limit and
+    upper_limit depend on the type of the perfometer.
+
+    The idea is to split the interval (lower_limit, upper_limit) into three parts:
+    - A lower non-linear part, which has a lower limit of lower_limit.
+    - A focus part in the middle (linear).
+    - An upper non-linear part which has an upper limit of upper_limit.
+
+    For the non-linear parts, there are currently two options:
+    1) Hard cutoff ("Closed" in terms of graphing API)
+      Values smaller than the lower end of the linear part are simply mapped to lower_limit.
+      Values larger than the upper end of the linear part are simply mapped to upper_limit.
+      In this case, the linear part starts/ends at lower_limit/upper_limit.
+
+    2) Arcus tangent ("Open" in terms of graphing API)
+      We splice the lower and/or upper end of the linear part with an arctan function. The splicing
+      fulfills the following conditions:
+      * At the splicing point, the values of the linear and the arctan function match (continuity).
+      * At the splicing point, the slope of the linear and the arctan function match (continuously differentiable).
+      * The splicing point is the inflection point of the arctan function. As a consequence, also the
+        second derivatives match at the splicing point, since they both vanish. Note that there is
+        no obvious reason for this choice, it is however a convenient point to use. Also, we need to
+        make a choice (or two choices, one for the lower and one for the upper non-linear part) to
+        nail down all four parameters of
+        a * atan(b * x + c) + d.
+      In this case, the linear part starts/ends above/below lower_limit/upper_limit.
+    """
+
+    start_of_focus_range: float
+    end_of_focus_range: float
+    lower_end_projection: _Cutoff | _ArcTan
+    focus_projection: _Linear
+    upper_end_projection: _Cutoff | _ArcTan
 
     def __call__(self, value: int | float) -> float:
-        if value < self.lower_x:
-            return self.lower_atan(value)
-        if value > self.upper_x:
-            return self.upper_atan(value)
-        return self.focus_linear(value)
+        if value < self.start_of_focus_range:
+            return self._project_to_upper_or_lower_end(
+                value,
+                self.lower_end_projection,
+                self.start_of_focus_range,
+            )
+        if value > self.end_of_focus_range:
+            return self._project_to_upper_or_lower_end(
+                value,
+                self.upper_end_projection,
+                self.end_of_focus_range,
+            )
+        return self.focus_projection(value)
+
+    @staticmethod
+    def _project_to_upper_or_lower_end(
+        value: float | int,
+        projection: _Cutoff | _ArcTan,
+        cutoff_value: float,
+    ) -> float:
+        match projection:
+            case _Cutoff():
+                return cutoff_value
+            case _ArcTan():
+                return projection(value)
+            case _:
+                assert_never(projection)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class _ProjectionParameters:
-    lower_closed: float
-    lower_open: float
-    upper_open: float
-    upper_closed: float
-    scale: float
-
-
-_PERFOMETER_PROJECTION_PARAMETERS = _ProjectionParameters(0.0, 15.0, 85.0, 100.0, 0.15)
-_BIDIRECTIONAL_PROJECTION_PARAMETERS = _ProjectionParameters(0.0, 5.0, 45.0, 50.0, 0.03)
+    perfometer_empty_at: float
+    lower_open_end: float
+    upper_open_start: float
+    perfometer_full_at: float
 
 
 def _make_projection(
@@ -331,7 +379,7 @@ def _make_projection(
     projection_parameters: _ProjectionParameters,
     translated_metrics: Mapping[str, TranslatedMetric],
     perfometer_name: str,
-) -> _Projection:
+) -> _ProjectionFromMetricValueToPerfFillLevel:
     # TODO At the moment we have a unit conversion only for temperature metrics and we want to have
     # the orig value at the same place as the converted value, eg.:
     #              20 °C
@@ -346,12 +394,12 @@ def _make_projection(
         else lambda v: v
     )
 
-    if isinstance(focus_range.lower.value, (int, float)):
+    if isinstance(focus_range.lower.value, int | float):
         lower_x = conversion(float(focus_range.lower.value))
     else:
         lower_x = _evaluate_quantity(focus_range.lower.value, translated_metrics).value
 
-    if isinstance(focus_range.upper.value, (int, float)):
+    if isinstance(focus_range.upper.value, int | float):
         upper_x = conversion(float(focus_range.upper.value))
     else:
         upper_x = _evaluate_quantity(focus_range.upper.value, translated_metrics).value
@@ -363,13 +411,12 @@ def _make_projection(
             upper_x,
             perfometer_name,
         )
-        return _Projection(
-            lower_x=float("nan"),
-            upper_x=float("nan"),
-            lower_atan=lambda v: float("nan"),
-            focus_linear=lambda v: float("nan"),
-            upper_atan=lambda v: float("nan"),
-            limit=float("nan"),
+        return _ProjectionFromMetricValueToPerfFillLevel(
+            start_of_focus_range=float("nan"),
+            end_of_focus_range=float("nan"),
+            lower_end_projection=_Cutoff(),
+            focus_projection=_Linear(slope=float("nan"), intercept=float("nan")),
+            upper_end_projection=_Cutoff(),
         )
 
     # Note: if we have closed boundaries and a value exceeds the lower or upper limit then we use
@@ -377,90 +424,78 @@ def _make_projection(
     # perfometer is not filled resp. completely filled.
     match focus_range.lower, focus_range.upper:
         case perfometers_api.Closed(), perfometers_api.Closed():
-            return _Projection(
-                lower_x=lower_x,
-                upper_x=upper_x,
-                lower_atan=lambda v: lower_x,
-                focus_linear=_Linear.from_points(
-                    lower_x,
-                    projection_parameters.lower_closed,
-                    upper_x,
-                    projection_parameters.upper_closed,
+            return _ProjectionFromMetricValueToPerfFillLevel(
+                start_of_focus_range=lower_x,
+                end_of_focus_range=upper_x,
+                lower_end_projection=_Cutoff(),
+                focus_projection=_Linear.fit_to_two_points(
+                    p_1=(lower_x, projection_parameters.perfometer_empty_at),
+                    p_2=(upper_x, projection_parameters.perfometer_full_at),
                 ),
-                upper_atan=lambda v: upper_x,
-                limit=projection_parameters.upper_closed,
+                upper_end_projection=_Cutoff(),
             )
 
         case perfometers_api.Open(), perfometers_api.Closed():
-            linear = _Linear.from_points(
-                lower_x,
-                projection_parameters.lower_open,
-                upper_x,
-                projection_parameters.upper_closed,
+            linear = _Linear.fit_to_two_points(
+                p_1=(lower_x, projection_parameters.lower_open_end),
+                p_2=(upper_x, projection_parameters.perfometer_full_at),
             )
-            return _Projection(
-                lower_x=lower_x,
-                upper_x=upper_x,
-                lower_atan=_ArcTan.from_parameters(
-                    lower_x,
-                    upper_x,
-                    linear,
-                    projection_parameters.lower_open,
-                    projection_parameters.scale,
+            return _ProjectionFromMetricValueToPerfFillLevel(
+                start_of_focus_range=lower_x,
+                end_of_focus_range=upper_x,
+                lower_end_projection=_ArcTan(
+                    x_inflection=lower_x,
+                    y_inflection=projection_parameters.lower_open_end,
+                    slope_inflection=linear.slope,
+                    scale_in_units_of_pi_half=projection_parameters.lower_open_end
+                    - projection_parameters.perfometer_empty_at,
                 ),
-                focus_linear=linear,
-                upper_atan=lambda v: upper_x,
-                limit=projection_parameters.upper_closed,
+                focus_projection=linear,
+                upper_end_projection=_Cutoff(),
             )
 
         case perfometers_api.Closed(), perfometers_api.Open():
-            linear = _Linear.from_points(
-                lower_x,
-                projection_parameters.lower_closed,
-                upper_x,
-                projection_parameters.upper_open,
+            linear = _Linear.fit_to_two_points(
+                p_1=(lower_x, projection_parameters.perfometer_empty_at),
+                p_2=(upper_x, projection_parameters.upper_open_start),
             )
-            return _Projection(
-                lower_x=lower_x,
-                upper_x=upper_x,
-                lower_atan=lambda v: lower_x,
-                focus_linear=linear,
-                upper_atan=_ArcTan.from_parameters(
-                    lower_x,
-                    upper_x,
-                    linear,
-                    projection_parameters.upper_open,
-                    projection_parameters.scale,
+            return _ProjectionFromMetricValueToPerfFillLevel(
+                start_of_focus_range=lower_x,
+                end_of_focus_range=upper_x,
+                lower_end_projection=_Cutoff(),
+                focus_projection=linear,
+                upper_end_projection=_ArcTan(
+                    x_inflection=upper_x,
+                    y_inflection=projection_parameters.upper_open_start,
+                    slope_inflection=linear.slope,
+                    scale_in_units_of_pi_half=projection_parameters.perfometer_full_at
+                    - projection_parameters.upper_open_start,
                 ),
-                limit=projection_parameters.upper_closed,
             )
 
         case perfometers_api.Open(), perfometers_api.Open():
-            linear = _Linear.from_points(
-                lower_x,
-                projection_parameters.lower_open,
-                upper_x,
-                projection_parameters.upper_open,
+            linear = _Linear.fit_to_two_points(
+                p_1=(lower_x, projection_parameters.lower_open_end),
+                p_2=(upper_x, projection_parameters.upper_open_start),
             )
-            return _Projection(
-                lower_x=lower_x,
-                upper_x=upper_x,
-                lower_atan=_ArcTan.from_parameters(
-                    lower_x,
-                    upper_x,
-                    linear,
-                    projection_parameters.lower_open,
-                    projection_parameters.scale,
+            return _ProjectionFromMetricValueToPerfFillLevel(
+                start_of_focus_range=lower_x,
+                end_of_focus_range=upper_x,
+                lower_end_projection=_ArcTan(
+                    x_inflection=lower_x,
+                    y_inflection=projection_parameters.lower_open_end,
+                    slope_inflection=linear.slope,
+                    scale_in_units_of_pi_half=projection_parameters.lower_open_end
+                    - projection_parameters.perfometer_empty_at,
                 ),
-                focus_linear=linear,
-                upper_atan=_ArcTan.from_parameters(
-                    lower_x,
-                    upper_x,
-                    linear,
-                    projection_parameters.upper_open,
-                    projection_parameters.scale,
+                focus_projection=linear,
+                upper_end_projection=_ArcTan(
+                    x_inflection=upper_x,
+                    y_inflection=projection_parameters.upper_open_start,
+                    slope_inflection=linear.slope,
+                    scale_in_units_of_pi_half=projection_parameters.perfometer_full_at
+                    - projection_parameters.upper_open_start,
                 ),
-                limit=projection_parameters.upper_closed,
             )
 
     assert False, focus_range
@@ -473,8 +508,9 @@ def _evaluate_segments(
 
 
 def _project_segments(
-    projection: _Projection,
+    projection: _ProjectionFromMetricValueToPerfFillLevel,
     segments: Sequence[_EvaluatedQuantity],
+    fully_filled_at: float,
     themed_perfometer_bg_color: str,
 ) -> list[tuple[float, str]]:
     """Compute which portion of the perfometer needs to be filled with which color.
@@ -502,7 +538,7 @@ def _project_segments(
     ]
     projections.append(
         (
-            round(projection.limit - sum(p[0] for p in projections), 2),
+            round(fully_filled_at - sum(p[0] for p in projections), 2),
             themed_perfometer_bg_color,
         )
     )
@@ -547,6 +583,13 @@ class MetricometerRenderer(abc.ABC):
 
 
 class MetricometerRendererPerfometer(MetricometerRenderer):
+    _PROJECTION_PARAMETERS = _ProjectionParameters(
+        perfometer_empty_at=0.0,
+        lower_open_end=15.0,
+        upper_open_start=85.0,
+        perfometer_full_at=100.0,
+    )
+
     def __init__(
         self,
         perfometer: perfometers_api.Perfometer,
@@ -566,7 +609,7 @@ class MetricometerRendererPerfometer(MetricometerRenderer):
         if projections := _project_segments(
             _make_projection(
                 self.perfometer.focus_range,
-                _PERFOMETER_PROJECTION_PARAMETERS,
+                self._PROJECTION_PARAMETERS,
                 self.translated_metrics,
                 self.perfometer.name,
             ),
@@ -574,6 +617,7 @@ class MetricometerRendererPerfometer(MetricometerRenderer):
                 self.perfometer.segments,
                 self.translated_metrics,
             ),
+            self._PROJECTION_PARAMETERS.perfometer_full_at,
             self.themed_perfometer_bg_color,
         ):
             return [projections]
@@ -600,6 +644,13 @@ class MetricometerRendererPerfometer(MetricometerRenderer):
 
 
 class MetricometerRendererBidirectional(MetricometerRenderer):
+    _PROJECTION_PARAMETERS = _ProjectionParameters(
+        perfometer_empty_at=0.0,
+        lower_open_end=5.0,
+        upper_open_start=45.0,
+        perfometer_full_at=50.0,
+    )
+
     def __init__(
         self,
         perfometer: perfometers_api.Bidirectional,
@@ -624,7 +675,7 @@ class MetricometerRendererBidirectional(MetricometerRenderer):
                     perfometers_api.Closed(0),
                     self.perfometer.left.focus_range.upper,
                 ),
-                _BIDIRECTIONAL_PROJECTION_PARAMETERS,
+                self._PROJECTION_PARAMETERS,
                 self.translated_metrics,
                 self.perfometer.name,
             ),
@@ -632,6 +683,7 @@ class MetricometerRendererBidirectional(MetricometerRenderer):
                 self.perfometer.left.segments,
                 self.translated_metrics,
             ),
+            self._PROJECTION_PARAMETERS.perfometer_full_at,
             self.themed_perfometer_bg_color,
         ):
             projections.extend(left_projections[::-1])
@@ -642,7 +694,7 @@ class MetricometerRendererBidirectional(MetricometerRenderer):
                     perfometers_api.Closed(0),
                     self.perfometer.right.focus_range.upper,
                 ),
-                _BIDIRECTIONAL_PROJECTION_PARAMETERS,
+                self._PROJECTION_PARAMETERS,
                 self.translated_metrics,
                 self.perfometer.name,
             ),
@@ -650,6 +702,7 @@ class MetricometerRendererBidirectional(MetricometerRenderer):
                 self.perfometer.right.segments,
                 self.translated_metrics,
             ),
+            self._PROJECTION_PARAMETERS.perfometer_full_at,
             self.themed_perfometer_bg_color,
         ):
             projections.extend(right_projections)

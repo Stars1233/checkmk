@@ -10,17 +10,21 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from livestatus import SiteConfiguration
+
 from cmk.ccc import version
 from cmk.ccc.exceptions import MKGeneralException
+from cmk.ccc.hostaddress import HostName
+from cmk.ccc.site import SiteId
 from cmk.ccc.version import edition_supports_nagvis
 
 from cmk.utils import paths
-from cmk.utils.hostaddress import HostName
 from cmk.utils.regex import regex
 
 from cmk.gui import forms
 from cmk.gui.background_job import BackgroundProcessInterface, InitialStatusArgs, JobTarget
 from cmk.gui.breadcrumb import Breadcrumb
+from cmk.gui.config import active_config
 from cmk.gui.exceptions import FinalizeRequest, MKAuthException, MKUserError
 from cmk.gui.htmllib.generator import HTMLWriter
 from cmk.gui.htmllib.html import html
@@ -175,7 +179,13 @@ class ModeBulkRenameHost(WatoMode):
                 result := host_renaming_job.start(
                     JobTarget(
                         callable=rename_hosts_job_entry_point,
-                        args=RenameHostsJobArgs(renamings=_renamings_to_job_args(renamings)),
+                        args=RenameHostsJobArgs(
+                            renamings=_renamings_to_job_args(renamings),
+                            site_configs=active_config.sites,
+                            pprint_value=active_config.wato_pprint_config,
+                            use_git=active_config.wato_use_git,
+                            debug=active_config.debug,
+                        ),
                     ),
                     InitialStatusArgs(
                         title=title,
@@ -434,6 +444,10 @@ def _confirm(html_title, message):
 
 class RenameHostsJobArgs(BaseModel, frozen=True):
     renamings: Sequence[tuple[str, AnnotatedHostName, AnnotatedHostName]]
+    pprint_value: bool
+    use_git: bool
+    debug: bool
+    site_configs: Mapping[SiteId, SiteConfiguration]
 
 
 def rename_hosts_job_entry_point(
@@ -442,8 +456,14 @@ def rename_hosts_job_entry_point(
 ) -> None:
     with job_interface.gui_context():
         renamings = _renamings_from_job_args(args.renamings)
+
         actions, auth_problems = _rename_hosts(
-            renamings, job_interface
+            renamings,
+            job_interface,
+            site_configs=args.site_configs,
+            pprint_value=args.pprint_value,
+            use_git=args.use_git,
+            debug=args.debug,
         )  # Already activates the changes!
 
         for site_id in group_renamings_by_site(renamings):
@@ -564,7 +584,13 @@ class ModeRenameHost(WatoMode):
             result := host_renaming_job.start(
                 JobTarget(
                     callable=rename_hosts_job_entry_point,
-                    args=RenameHostsJobArgs(renamings=_renamings_to_job_args(renamings)),
+                    args=RenameHostsJobArgs(
+                        renamings=_renamings_to_job_args(renamings),
+                        site_configs=active_config.sites,
+                        pprint_value=active_config.wato_pprint_config,
+                        use_git=active_config.wato_use_git,
+                        debug=active_config.debug,
+                    ),
                 ),
                 InitialStatusArgs(
                     title=_("Renaming of %s -> %s") % (self._host.name(), newname),
@@ -639,8 +665,20 @@ def _renamings_from_job_args(
 def _rename_hosts(
     renamings: Sequence[tuple[Folder, HostName, HostName]],
     job_interface: BackgroundProcessInterface,
+    *,
+    site_configs: Mapping[SiteId, SiteConfiguration],
+    pprint_value: bool,
+    use_git: bool,
+    debug: bool,
 ) -> tuple[list[str], list[tuple[HostName, MKAuthException]]]:
-    action_counts, auth_problems = perform_rename_hosts(renamings, job_interface)
+    action_counts, auth_problems = perform_rename_hosts(
+        renamings,
+        job_interface,
+        site_configs=site_configs,
+        pprint_value=pprint_value,
+        use_git=use_git,
+        debug=debug,
+    )
     action_texts = render_renaming_actions(action_counts)
     return action_texts, auth_problems
 

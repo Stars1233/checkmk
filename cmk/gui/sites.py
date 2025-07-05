@@ -11,7 +11,6 @@ from typing import cast, Literal, NamedTuple, NewType, TypedDict
 
 from livestatus import (
     ConnectedSite,
-    LivestatusOutputFormat,
     lqencode,
     MKLivestatusQueryError,
     MultiSiteConnection,
@@ -24,23 +23,23 @@ from livestatus import (
 )
 
 from cmk.ccc.site import omd_site, SiteId
+from cmk.ccc.user import UserId
 from cmk.ccc.version import __version__, Edition, edition, Version, VersionsIncompatible
 
 from cmk.utils import paths
 from cmk.utils.licensing.handler import LicenseState
 from cmk.utils.licensing.registry import get_license_state
 from cmk.utils.paths import livestatus_unix_socket
-from cmk.utils.user import UserId
 
 from cmk.gui.config import active_config
 from cmk.gui.ctx_stack import g
 from cmk.gui.flask_app import current_app
+from cmk.gui.groups import GroupType
 from cmk.gui.http import request
 from cmk.gui.i18n import _
 from cmk.gui.log import logger
 from cmk.gui.logged_in import LoggedInUser
 from cmk.gui.logged_in import user as global_user
-from cmk.gui.site_config import get_site_config
 from cmk.gui.utils.compatibility import (
     is_distributed_monitoring_compatible_for_licensing,
     LicensingCompatibility,
@@ -66,7 +65,7 @@ def live(
     """Get Livestatus connection object matching the current site configuration
     and user settings. On the first call the actual connection is being made."""
     _ensure_connected(user, force_authuser)
-    return g.live
+    return g.live  # type: ignore[no-any-return]
 
 
 class SiteStatus(TypedDict, total=False):
@@ -90,7 +89,7 @@ SiteStates = NewType("SiteStates", dict[SiteId, SiteStatus])
 def states(user: LoggedInUser | None = None, force_authuser: UserId | None = None) -> SiteStates:
     """Returns dictionary of all known site states."""
     _ensure_connected(user, force_authuser)
-    return g.site_status
+    return g.site_status  # type: ignore[no-any-return]
 
 
 @contextmanager
@@ -121,13 +120,13 @@ def disconnect() -> None:
 
 
 # TODO: This should live somewhere else, it's just a random helper...
-def all_groups(what: str) -> list[tuple[str, str]]:
+def all_groups(group_type: GroupType) -> list[tuple[str, str]]:
     """Returns a list of host/service/contact groups (pairs of name/alias)
 
     Groups are collected via livestatus from all sites. In case no alias is defined
     the name is used as second element. The list is sorted by lower case alias in the first place.
     """
-    query = "GET %sgroups\nCache: reload\nColumns: name alias\n" % what
+    query = "GET %sgroups\nCache: reload\nColumns: name alias\n" % group_type
     groups = cast(list[tuple[str, str]], live().query(query))
     # The dict() removes duplicate group names. Aliases don't need be deduplicated.
     return sorted(
@@ -141,7 +140,7 @@ def get_alias_of_host(site_id: SiteId | None, host_name: str) -> SiteId:
 
     with only_sites(site_id):
         try:
-            return live().query_value(query)
+            return live().query_value(query)  # type: ignore[no-any-return]
         except Exception as e:
             logger.warning(
                 "Could not determine alias of host %s on site %s: %s",
@@ -253,7 +252,7 @@ def _get_distributed_monitoring_compatibility(
 def _get_distributed_monitoring_connection_from_site_id(site_id: str) -> ConnectedSite | None:
     for connected_site in g.live.connections:
         if connected_site.id == site_id:
-            return connected_site
+            return connected_site  # type: ignore[no-any-return]
     return None
 
 
@@ -415,18 +414,16 @@ def encode_socket_for_livestatus(site_id: SiteId, site_spec: SiteConfiguration) 
         return f"unix:{livestatus_unix_socket}proxy/{site_id}"
 
     if socket_spec[0] == "local":
-        return "unix:%s" % livestatus_unix_socket
+        return f"unix:{livestatus_unix_socket}"
 
     if socket_spec[0] == "unix":
         unix_family_spec, unix_address_spec = cast(UnixSocketInfo, socket_spec)
-        return "{}:{}".format(unix_family_spec, unix_address_spec["path"])
+        return f"{unix_family_spec}:{unix_address_spec['path']}"
 
     if socket_spec[0] in ("tcp", "tcp6"):
         tcp_family_spec, tcp_address_spec = cast(NetworkSocketInfo, socket_spec)
-        return "%s:%s:%d" % (
-            tcp_family_spec,
-            tcp_address_spec["address"][0],
-            tcp_address_spec["address"][1],
+        return (
+            f"{tcp_family_spec}:{tcp_address_spec['address'][0]}:{tcp_address_spec['address'][1]}"
         )
 
     raise NotImplementedError()
@@ -536,16 +533,6 @@ def only_sites(sites: None | list[SiteId] | SiteId) -> Iterator[None]:
 
 
 @contextmanager
-def output_format(use_format: LivestatusOutputFormat) -> Iterator[None]:
-    previous_format = live().get_output_format()
-    live().set_output_format(use_format)
-    try:
-        yield
-    finally:
-        live().set_output_format(previous_format)
-
-
-@contextmanager
 def prepend_site() -> Iterator[None]:
     live().set_prepend_site(True)
     try:
@@ -613,7 +600,7 @@ def filter_available_site_choices(choices: list[tuple[SiteId, str]]) -> list[tup
 def site_choices() -> list[tuple[str, str]]:
     return sorted(
         [
-            (sitename, get_site_config(active_config, sitename)["alias"])
+            (sitename, active_config.sites[sitename]["alias"])
             for sitename, state in states().items()
             if state["state"] == "online"
         ],

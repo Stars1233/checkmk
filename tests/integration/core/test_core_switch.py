@@ -7,7 +7,6 @@ from collections.abc import Iterator
 
 import pytest
 
-from tests.testlib.pytest_helpers.marks import skip_if_not_enterprise_edition
 from tests.testlib.site import Site
 
 logger = logging.getLogger(__name__)
@@ -20,12 +19,12 @@ def _switch_core(site: Site) -> Iterator[None]:
 
     site.stop()
 
-    p = site.run(["omd", "config", "show", "CORE"])
+    p = site.omd("config", "show", "CORE", check=True)
     initial_core = p.stdout.strip()
     assert initial_core != desired_core, "Initial core is already the desired core."
 
-    site.run(["omd", "config", "set", "CORE", desired_core])
-    p = site.run(["omd", "config", "show", "CORE"])
+    site.omd("config", "set", "CORE", desired_core, check=True)
+    p = site.omd("config", "show", "CORE", check=True)
     assert p.stdout.strip() == desired_core
 
     site.start()
@@ -34,14 +33,14 @@ def _switch_core(site: Site) -> Iterator[None]:
 
     logger.info("Switching core back to %s", initial_core)
     site.stop()
-    site.run(["omd", "config", "set", "CORE", initial_core])
-    p = site.run(["omd", "config", "show", "CORE"])
+    site.omd("config", "set", "CORE", initial_core, check=True)
+    p = site.omd("config", "show", "CORE", check=True)
     assert p.stdout.strip() == initial_core
 
     site.start()
 
 
-@skip_if_not_enterprise_edition
+@pytest.mark.skip_if_not_edition("enterprise")
 def test_core_switch(site: Site, switch_core: Iterator[None]) -> None:
     """Test switching the core from cmc to nagios.
 

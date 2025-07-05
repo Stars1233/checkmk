@@ -9,12 +9,11 @@ from cmk.gui.form_specs.private.labels import Labels
 from cmk.gui.form_specs.vue.validators import build_vue_validators
 from cmk.gui.i18n import _, translate_to_current_language
 
-from cmk.rulesets.v1 import Title
 from cmk.shared_typing import vue_formspec_components as shared_type_defs
 
 from ._base import FormSpecVisitor
 from ._type_defs import InvalidValue
-from ._utils import create_validation_error, get_title_and_help
+from ._utils import get_title_and_help
 
 _ParsedValueModel = Mapping[str, str]
 _FrontendModel = Mapping[str, str]
@@ -32,9 +31,7 @@ class LabelsVisitor(FormSpecVisitor[Labels, _ParsedValueModel, _FrontendModel]):
         return raw_value
 
     def _to_vue(
-        self,
-        raw_value: object,
-        parsed_value: _ParsedValueModel | InvalidValue[_FrontendModel],
+        self, parsed_value: _ParsedValueModel | InvalidValue[_FrontendModel]
     ) -> tuple[shared_type_defs.Labels, Mapping[str, str]]:
         title, help_text = get_title_and_help(self.form_spec)
 
@@ -71,20 +68,6 @@ class LabelsVisitor(FormSpecVisitor[Labels, _ParsedValueModel, _FrontendModel]):
                 else parsed_value
             ),
         )
-
-    def _validate(
-        self, raw_value: object, parsed_value: _ParsedValueModel
-    ) -> list[shared_type_defs.ValidationMessage]:
-        unique_pairs = set()
-        for key, value in parsed_value.items():
-            pair = (key, value)
-            if pair in unique_pairs:
-                return create_validation_error(
-                    raw_value,
-                    Title("Labels need to be unique."),
-                )
-            unique_pairs.add(pair)
-        return []
 
     def _to_disk(self, parsed_value: _ParsedValueModel) -> Mapping[str, str]:
         return parsed_value

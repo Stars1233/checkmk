@@ -24,7 +24,8 @@ RUN apt-get install -y \
     lsb-release \
     msitools \
     wget \
-    tree
+    tree  \
+    libaio1
 
 # Despite files needed for builds might already be available in build images
 # copy them again, in case they changed
@@ -57,12 +58,6 @@ COPY \
     install-nodejs.sh \
     /opt/
 RUN /opt/install-nodejs.sh
-
-# timing: real 0m9.666s user 0m5.302s sys 0m1.281s
-COPY \
-    install-musl-tools.sh \
-    /opt/
-RUN /opt/install-musl-tools.sh
 
 # timing: real 0m9.257s user 0m5.424s sys 0m1.103s
 COPY \

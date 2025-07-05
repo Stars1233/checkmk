@@ -3,7 +3,7 @@
 /// file: generic-package-job.groovy
 
 def secret_list(secret_vars) {
-    return secret_vars ? secret_vars.split(',') : [];
+    return secret_vars ? secret_vars.split(' ') : [];
 }
 
 def validate_parameters() {
@@ -28,7 +28,7 @@ def main() {
 
     def output_file = PACKAGE_PATH.split("/")[-1] + ".log"
     dir(checkout_dir) {
-        inside_container(init: true) {
+        inside_container(init: true, privileged: true, set_docker_group_id: true) {
             withCredentials(secret_list(SECRET_VARS).collect { string(credentialsId: it, variable: it) }) {
                 helper.execute_test([
                     name       : PACKAGE_PATH,

@@ -1,0 +1,37 @@
+{
+    "$schema": "https://json-schema.org/draft/2019-09/schema",
+    "type": "object",
+    "title": "Welcome page",
+    "properties": {
+        "urls": {
+            "type": "object",
+            "$ref": "#/$defs/welcome_urls"
+        }
+    },
+    "required": ["urls"],
+    "$defs": {
+        "welcome_urls": {
+            "type": "object",
+            "properties": {
+                "checkmk_ai": { "type": "string" },
+                "checkmk_docs": { "type": "string" },
+                "checkmk_forum": { "type": "string" },
+                "create_contactgoups": { "type": "string" },
+                "setup_backup": { "type": "string" },
+                "scale_monitoring": { "type": "string" },
+                "fine_tune_monitoring": { "type": "string" },
+                "license_site": { "type": "string" }
+            },
+            "required": [
+                "checkmk_ai",
+                "checkmk_docs",
+                "checkmk_forum",
+                "create_contactgoups",
+                "setup_backup",
+                "scale_monitoring",
+                "fine_tune_monitoring",
+                "license_site"
+            ]
+        }
+    }
+}

@@ -14,18 +14,20 @@
 # graph_template:     Template for a graph. Essentially a dict with the key "metrics"
 
 import json
+from typing import override
 
 import cmk.ccc.debug
 import cmk.ccc.plugin_registry
+from cmk.ccc.hostaddress import HostName
 from cmk.ccc.site import SiteId
 
 import cmk.utils
 import cmk.utils.render
-from cmk.utils.hostaddress import HostName
 from cmk.utils.metrics import MetricName
 from cmk.utils.servicename import ServiceName
 
 import cmk.gui.pages
+from cmk.gui.config import Config
 from cmk.gui.graphing import _legacy as graphing_legacy
 from cmk.gui.graphing._from_api import (
     graphs_from_api,
@@ -39,6 +41,7 @@ from cmk.gui.graphing._html_render import (
     host_service_graph_dashlet_cmk,
     host_service_graph_popup_cmk,
 )
+from cmk.gui.htmllib.html import html
 from cmk.gui.http import request
 from cmk.gui.log import logger
 from cmk.gui.pages import PageResult
@@ -162,11 +165,11 @@ def _add_graphing_plugins(
 
         elif isinstance(
             plugin,
-            (perfometers_api.Perfometer, perfometers_api.Bidirectional, perfometers_api.Stacked),
+            perfometers_api.Perfometer | perfometers_api.Bidirectional | perfometers_api.Stacked,
         ):
             perfometers_from_api.register(plugin)
 
-        elif isinstance(plugin, (graphs_api.Graph, graphs_api.Bidirectional)):
+        elif isinstance(plugin, graphs_api.Graph | graphs_api.Bidirectional):
             graphs_from_api.register(plugin)
 
 
@@ -175,24 +178,10 @@ def load_plugins() -> None:
     _add_graphing_plugins(_load_graphing_plugins())
 
 
-# .
-#   .--Hover-Graph---------------------------------------------------------.
-#   |     _   _                           ____                 _           |
-#   |    | | | | _____   _____ _ __      / ___|_ __ __ _ _ __ | |__        |
-#   |    | |_| |/ _ \ \ / / _ \ '__|____| |  _| '__/ _` | '_ \| '_ \       |
-#   |    |  _  | (_) \ V /  __/ | |_____| |_| | | | (_| | |_) | | | |      |
-#   |    |_| |_|\___/ \_/ \___|_|        \____|_|  \__,_| .__/|_| |_|      |
-#   |                                                   |_|                |
-#   '----------------------------------------------------------------------'
-
-
-# This page is called for the popup of the graph icon of hosts/services.
 class PageHostServiceGraphPopup(cmk.gui.pages.Page):
-    @classmethod
-    def ident(cls) -> str:
-        return "host_service_graph_popup"
-
-    def page(self) -> PageResult:
+    @override
+    def page(self, config: Config) -> PageResult:
+        """This page is called for the popup of the graph icon of hosts/services."""
         host_service_graph_popup_cmk(
             SiteId(raw_site_id) if (raw_site_id := request.var("site")) else None,
             request.get_validated_type_input_mandatory(HostName, "host_name"),
@@ -203,29 +192,15 @@ class PageHostServiceGraphPopup(cmk.gui.pages.Page):
         return None  # for mypy
 
 
-# .
-#   .--Graph Dashlet-------------------------------------------------------.
-#   |    ____                 _       ____            _     _      _       |
-#   |   / ___|_ __ __ _ _ __ | |__   |  _ \  __ _ ___| |__ | | ___| |_     |
-#   |  | |  _| '__/ _` | '_ \| '_ \  | | | |/ _` / __| '_ \| |/ _ \ __|    |
-#   |  | |_| | | | (_| | |_) | | | | | |_| | (_| \__ \ | | | |  __/ |_     |
-#   |   \____|_|  \__,_| .__/|_| |_| |____/ \__,_|___/_| |_|_|\___|\__|    |
-#   |                  |_|                                                 |
-#   +----------------------------------------------------------------------+
-#   |  This page handler is called by graphs embedded in a dashboard.      |
-#   '----------------------------------------------------------------------'
-
-
 class PageGraphDashlet(cmk.gui.pages.Page):
-    @classmethod
-    def ident(cls) -> str:
-        return "graph_dashlet"
-
-    def page(self) -> cmk.gui.pages.PageResult:
-        return host_service_graph_dashlet_cmk(
-            parse_raw_graph_specification(json.loads(request.get_str_input_mandatory("spec"))),
-            GraphRenderConfig.model_validate_json(request.get_str_input_mandatory("config")),
-            metrics_from_api,
-            graphs_from_api,
-            graph_display_id=request.get_str_input_mandatory("id"),
+    @override
+    def page(self, config: Config) -> None:
+        html.write_html(
+            host_service_graph_dashlet_cmk(
+                parse_raw_graph_specification(json.loads(request.get_str_input_mandatory("spec"))),
+                GraphRenderConfig.model_validate_json(request.get_str_input_mandatory("config")),
+                metrics_from_api,
+                graphs_from_api,
+                graph_display_id=request.get_str_input_mandatory("id"),
+            )
         )

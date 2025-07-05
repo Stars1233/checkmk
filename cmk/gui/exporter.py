@@ -7,11 +7,12 @@ import json
 import time
 from collections.abc import Callable, Sequence
 from html import unescape
-from typing import NamedTuple
+from typing import NamedTuple, override
 
 from cmk.ccc.plugin_registry import Registry
 
 from cmk.gui.http import ContentDispositionType, request, response
+from cmk.gui.logged_in import user
 from cmk.gui.painter.v0 import Cell, join_row
 from cmk.gui.type_defs import Rows, ViewSpec
 from cmk.gui.utils import escaping
@@ -24,7 +25,8 @@ class Exporter(NamedTuple):
 
 
 class ViewExporterRegistry(Registry[Exporter]):
-    def plugin_name(self, instance):
+    @override
+    def plugin_name(self, instance: Exporter) -> str:
         return instance.name
 
 
@@ -72,7 +74,7 @@ def _export_python(
     for row in rows:
         resp.append("[")
         for cell in row_cells:
-            content = cell.render_for_python_export(join_row(row, cell))
+            content = cell.render_for_python_export(join_row(row, cell), user)
 
             # The aggr_treestate painters are returning a dictionary data structure (see
             # paint_aggregated_tree_state()) in case the output_format is not HTML. Only
@@ -112,7 +114,7 @@ def _get_json_body(
     for row in rows:
         painted_row: list[object] = []
         for cell in row_cells:
-            content = cell.render_for_json_export(join_row(row, cell))
+            content = cell.render_for_json_export(join_row(row, cell), user)
 
             if isinstance(content, str):
                 content = escaping.strip_tags(content.replace("<br>", "\n"))
@@ -238,7 +240,9 @@ def _export_csv(
                 first = False
             else:
                 resp.append(csv_separator)
-            resp.append(f'"{_format_for_csv(cell.render_for_csv_export(join_row(row, cell)))}"')
+            resp.append(
+                f'"{_format_for_csv(cell.render_for_csv_export(join_row(row, cell), user))}"'
+            )
     response.set_data("".join(resp))
 
 

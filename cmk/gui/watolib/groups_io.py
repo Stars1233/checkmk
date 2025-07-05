@@ -93,13 +93,14 @@ def _combine_configs(
 
 def save_group_information(
     all_groups: AllGroupSpecs,
+    pprint_value: bool,
     custom_default_config_dir: str | None = None,
 ) -> None:
-    config_dir = Path(
-        custom_default_config_dir if custom_default_config_dir else paths.default_config_dir
+    config_dir = (
+        Path(custom_default_config_dir) if custom_default_config_dir else paths.default_config_dir
     )
-    GroupAliasConfigFile(config_dir).save_group_aliases(all_groups)
-    GroupsConfigFile(config_dir).save_group_configs(all_groups)
+    GroupAliasConfigFile(config_dir).save_group_aliases(all_groups, pprint_value)
+    GroupsConfigFile(config_dir).save_group_configs(all_groups, pprint_value)
 
     load_group_information.cache_clear()  # type: ignore[attr-defined]
 
@@ -107,7 +108,7 @@ def save_group_information(
 class GroupAliasConfigFile(WatoMultiConfigFile[GroupAliases]):
     def __init__(self, config_dir: Path | None = None) -> None:
         if config_dir is None:
-            config_dir = Path(paths.default_config_dir)
+            config_dir = paths.default_config_dir
         super().__init__(
             config_file_path=config_dir / "conf.d" / "wato" / "groups.mk",
             spec_class=GroupAliases,
@@ -116,21 +117,22 @@ class GroupAliasConfigFile(WatoMultiConfigFile[GroupAliases]):
             ),
         )
 
-    def save_group_aliases(self, all_groups: AllGroupSpecs) -> None:
+    def save_group_aliases(self, all_groups: AllGroupSpecs, pprint_value: bool) -> None:
         self.validate_and_save(
             {
                 f"define_{group_type}groups": {
                     group_id: group_spec["alias"] for group_id, group_spec in groups.items()
                 }
                 for group_type, groups in all_groups.items()
-            }
+            },
+            pprint_value,
         )
 
 
 class GroupsConfigFile(WatoMultiConfigFile[GroupConfigs]):
     def __init__(self, config_dir: Path | None = None) -> None:
         if config_dir is None:
-            config_dir = Path(paths.default_config_dir)
+            config_dir = paths.default_config_dir
         super().__init__(
             config_file_path=config_dir / "multisite.d" / "wato" / "groups.mk",
             spec_class=GroupConfigs,
@@ -143,7 +145,7 @@ class GroupsConfigFile(WatoMultiConfigFile[GroupConfigs]):
     def _group_spec_for_configs_file(groups_spec: dict[str, Any]) -> dict[str, Any]:
         return {key: value for key, value in groups_spec.items() if key != "alias"}
 
-    def save_group_configs(self, all_groups: AllGroupSpecs) -> None:
+    def save_group_configs(self, all_groups: AllGroupSpecs, pprint_value: bool) -> None:
         self.validate_and_save(
             {
                 f"multisite_{group_type}groups": {
@@ -151,7 +153,8 @@ class GroupsConfigFile(WatoMultiConfigFile[GroupConfigs]):
                     for group_id, group_spec in groups.items()
                 }
                 for group_type, groups in all_groups.items()
-            }
+            },
+            pprint_value,
         )
 
 

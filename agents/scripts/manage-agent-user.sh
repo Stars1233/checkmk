@@ -16,10 +16,12 @@ if [ -n "${MK_INSTALLDIR}" ]; then
     HOMEDIR="${MK_INSTALLDIR}/runtime/controller"
     CONTROLLER_BINARY="${MK_INSTALLDIR}/package/bin/cmk-agent-ctl"
     AUTO_REGISTRATION_CONFIG="${MK_INSTALLDIR}/package/config/pre_configured_connections.json"
+    REGISTERED_CONNECTIONS_PATH="${MK_INSTALLDIR}/runtime/controller/registered_connections.json"
 else
     HOMEDIR="/var/lib/cmk-agent"
     CONTROLLER_BINARY="${BIN_DIR:-/usr/bin}/cmk-agent-ctl"
     AUTO_REGISTRATION_CONFIG="${HOMEDIR}/pre_configured_connections.json"
+    REGISTERED_CONNECTIONS_PATH="${HOMEDIR}/registered_connections.json"
 fi
 
 USER_COMMENT="Checkmk agent system user"
@@ -32,24 +34,6 @@ HERE
     exit 1
 }
 
-_allow_legacy_pull() {
-    if [ -x "${CONTROLLER_BINARY}" ]; then
-        "${CONTROLLER_BINARY}" delete-all --enable-insecure-connections
-    elif which cmk-agent-ctl >/dev/null 2>&1; then
-        cmk-agent-ctl delete-all --enable-insecure-connections
-    fi
-}
-
-_issue_legacy_pull_warning() {
-    [ -x "${CONTROLLER_BINARY}" ] && [ ! -e "${AUTO_REGISTRATION_CONFIG}" ] && {
-        cat <<HERE
-
-WARNING: The agent controller is operating in an insecure mode! To secure the connection run \`cmk-agent-ctl register\`.
-
-HERE
-    }
-}
-
 _set_agent_user_permissions() {
     chown -R :"${GROUP_REF}" "${MK_INSTALLDIR}/package/config"
     chown -R :"${GROUP_REF}" "${MK_INSTALLDIR}/package/agent"
@@ -59,6 +43,7 @@ _set_agent_user_permissions() {
 
 _set_agent_controller_user_permissions() {
     # Get more finegrained access for the agent controller user only
+    chown :"${GROUP_REF}" "${MK_INSTALLDIR}/runtime"
     chown -R "${USER_REF}":"${GROUP_REF}" "${MK_INSTALLDIR}/runtime/controller"
     chown :"${GROUP_REF}" "${MK_INSTALLDIR}/package/config"
     agent_controller_config="${MK_INSTALLDIR}/package/config/cmk-agent-ctl.toml"
@@ -91,6 +76,15 @@ _check_user() {
     printf "Note: Using existing agent user %s.\n" "${AGENT_USER}"
 }
 
+_nologin_shell() {
+    # Set nologin as shell if available, otherwise /bin/false
+
+    for s in /sbin/nologin /usr/sbin/nologin /bin/nologin; do
+        [ -x "$s" ] && printf "%s\n" "$s" && return 0
+    done
+    printf "/bin/false\n"
+}
+
 _update_user() {
     # 1. If specified user exists, check if it has the specified uid. Abort if not.
     # 2. Create the specified group with gid and specified agent user name if it doesn't exist.
@@ -115,6 +109,8 @@ _update_user() {
             group_argument="--user-group"
         fi
 
+        usershell="$(_nologin_shell)"
+
         printf "Creating %s user account ...\n" "${AGENT_USER}"
         # shellcheck disable=SC2086
         useradd ${uid_argument} \
@@ -123,18 +119,16 @@ _update_user() {
             --system \
             --home-dir "${HOMEDIR}" \
             --no-create-home \
-            --shell "/bin/false" \
+            --shell "${usershell}" \
             "${AGENT_USER}" || exit 1
-
-        _allow_legacy_pull
-        _issue_legacy_pull_warning
     fi
 }
 
 _handle_user_legacy() {
     # add Checkmk agent system user
     printf "Creating/updating %s user account ...\n" "${AGENT_USER}"
-    usershell="/bin/false"
+
+    usershell="$(_nologin_shell)"
 
     if id "${AGENT_USER}" >/dev/null 2>&1; then
         # check that the existing user is as expected
@@ -155,7 +149,6 @@ _handle_user_legacy() {
             --user-group \
             --shell "${usershell}" \
             "${AGENT_USER}" || exit 1
-        user_is_new="yes"
     fi
 
     # Create home directory manually instead of doing this on user creation,
@@ -163,11 +156,20 @@ _handle_user_legacy() {
     mkdir -p "${HOMEDIR}"
     chown -R "${AGENT_USER}":"${AGENT_USER}" "${HOMEDIR}"
 
-    if [ "${user_is_new}" ]; then
-        _allow_legacy_pull
-        _issue_legacy_pull_warning
-    fi
     unset homedir usershell
+}
+
+_handle_legacy_pull() {
+    [ -e "${REGISTERED_CONNECTIONS_PATH}" ] || {
+        "${CONTROLLER_BINARY}" delete-all --enable-insecure-connections
+        [ -e "${AUTO_REGISTRATION_CONFIG}" ] || {
+            cat <<HERE
+
+WARNING: The agent controller is operating in an insecure mode! To secure the connection run \`cmk-agent-ctl register\`.
+
+HERE
+        }
+    }
 }
 
 main() {
@@ -197,20 +199,19 @@ main() {
         GROUP_REF="${AGENT_USER}"
     fi
 
-    [ "${DEPLOYMENT_MODE}" = "non-root" ] && {
+    if [ "${DEPLOYMENT_MODE}" = "non-root" ]; then
         "${handle_user}"
         _set_agent_user_permissions
-        exit 0
-    }
-
-    "${CONTROLLER_BINARY}" --version >/dev/null 2>&1 && {
+    elif "${CONTROLLER_BINARY}" --version >/dev/null 2>&1; then
         if [ -n "${MK_INSTALLDIR}" ]; then
             "${handle_user}"
             _set_agent_controller_user_permissions
         else
             _handle_user_legacy
         fi
-    }
+    fi
+
+    "${CONTROLLER_BINARY}" --version >/dev/null 2>&1 && _handle_legacy_pull
 }
 
 main "$@"

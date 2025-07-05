@@ -19,10 +19,10 @@ from typing import assert_never, Final, Literal, NamedTuple
 
 from pydantic import BaseModel
 
+from cmk.ccc.hostaddress import HostName
 from cmk.ccc.store import ObjectStore, TextSerializer
 from cmk.ccc.version import __version__, Version
 
-from cmk.utils.hostaddress import HostName
 from cmk.utils.labels import HostLabel, HostLabelValueDict
 from cmk.utils.object_diff import make_diff_text
 from cmk.utils.servicename import Item, ServiceName
@@ -33,7 +33,7 @@ from cmk.automations.results import (
     SetAutochecksInput,
 )
 
-from cmk.checkengine.discovery import CheckPreviewEntry
+from cmk.checkengine.discovery import CheckPreviewEntry, DiscoverySettings
 from cmk.checkengine.plugins import AutocheckEntry, CheckPluginName
 
 import cmk.gui.watolib.changes as _changes
@@ -48,9 +48,13 @@ from cmk.gui.background_job import (
 from cmk.gui.config import active_config
 from cmk.gui.i18n import _
 from cmk.gui.logged_in import user
-from cmk.gui.site_config import get_site_config, site_is_local
 from cmk.gui.watolib.activate_changes import sync_changes_before_remote_automation
-from cmk.gui.watolib.automations import AnnotatedHostName, do_remote_automation
+from cmk.gui.watolib.automations import (
+    AnnotatedHostName,
+    do_remote_automation,
+    LocalAutomationConfig,
+    RemoteAutomationConfig,
+)
 from cmk.gui.watolib.check_mk_automations import (
     local_discovery,
     local_discovery_preview,
@@ -65,8 +69,7 @@ from cmk.gui.watolib.config_domain_name import (
     CORE as CORE_DOMAIN,
 )
 from cmk.gui.watolib.hosts_and_folders import Host
-from cmk.gui.watolib.rulesets import EnabledDisabledServicesEditor
-from cmk.gui.watolib.utils import may_edit_ruleset
+from cmk.gui.watolib.rulesets import EnabledDisabledServicesEditor, may_edit_ruleset
 
 
 # Would rather use an Enum for this, but this information is exported to javascript
@@ -270,7 +273,15 @@ class Discovery:
         self._selected_services = selected_services
         self.user_need_permission: Final = user_need_permission
 
-    def do_discovery(self, discovery_result: DiscoveryResult, target_host_name: HostName) -> None:
+    def do_discovery(
+        self,
+        discovery_result: DiscoveryResult,
+        target_host_name: HostName,
+        *,
+        automation_config: LocalAutomationConfig | RemoteAutomationConfig,
+        pprint_value: bool,
+        debug: bool,
+    ) -> None:
         if (
             transition := self.compute_discovery_transition(discovery_result, target_host_name)
         ) is None:
@@ -278,14 +289,20 @@ class Discovery:
 
         if transition.need_sync:
             self._save_host_service_enable_disable_rules(
-                transition.remove_disabled_rule, transition.add_disabled_rule
+                transition.remove_disabled_rule,
+                transition.add_disabled_rule,
+                automation_config=automation_config,
+                pprint_value=pprint_value,
+                debug=debug,
             )
 
         self._save_services(
             target_host_name,
             transition.old_autochecks,
             transition.new_autochecks,
-            transition.need_sync,
+            need_sync=transition.need_sync,
+            automation_config=automation_config,
+            debug=debug,
         )
 
     def compute_discovery_transition(
@@ -366,10 +383,20 @@ class Discovery:
         )
 
     def _save_host_service_enable_disable_rules(
-        self, remove_disabled_rule: set[str], add_disabled_rule: set[str]
+        self,
+        remove_disabled_rule: set[str],
+        add_disabled_rule: set[str],
+        *,
+        automation_config: LocalAutomationConfig | RemoteAutomationConfig,
+        pprint_value: bool,
+        debug: bool,
     ) -> None:
         EnabledDisabledServicesEditor(self._host).save_host_service_enable_disable_rules(
-            remove_disabled_rule, add_disabled_rule
+            remove_disabled_rule,
+            add_disabled_rule,
+            automation_config=automation_config,
+            pprint_value=pprint_value,
+            debug=debug,
         )
 
     def _verify_permissions(self, table_target: str, entry: CheckPreviewEntry) -> None:
@@ -438,17 +465,17 @@ class Discovery:
         affected_host_name: HostName,
         old_autochecks: SetAutochecksInput,
         autochecks_table: SetAutochecksInput,
+        *,
         need_sync: bool,
+        automation_config: LocalAutomationConfig | RemoteAutomationConfig,
+        debug: bool,
     ) -> None:
         message = _("Saved check configuration of host '%s' with %d services") % (
             affected_host_name,
             len(autochecks_table.target_services),
         )
         self._add_service_change(message, need_sync, old_autochecks, autochecks_table)
-        set_autochecks_v2(
-            self._host.site_id(),
-            autochecks_table,
-        )
+        set_autochecks_v2(automation_config, autochecks_table, debug=debug)
 
     def _add_service_change(
         self,
@@ -460,6 +487,7 @@ class Discovery:
         _changes.add_service_change(
             action_name="set-autochecks",
             text=message,
+            user_id=user.id,
             object_ref=self._host.object_ref(),
             domains=[config_domain_registry[CORE_DOMAIN]],
             domain_settings={CORE_DOMAIN: generate_hosts_to_update_settings([self._host.name()])},
@@ -469,6 +497,7 @@ class Discovery:
                 _make_host_audit_log_object(old_autochecks),
                 _make_host_audit_log_object(autochecks_table),
             ),
+            use_git=active_config.wato_use_git,
         )
 
     def _get_table_target(self, entry: CheckPreviewEntry) -> str:
@@ -557,14 +586,14 @@ class Discovery:
 
 
 @contextmanager
-def _service_discovery_context(host: Host) -> Iterator[None]:
+def _service_discovery_context(host: Host, *, pprint_value: bool) -> Iterator[None]:
     user.need_permission("wato.services")
 
     # no try/finally here.
     yield
 
     if not host.locked():
-        host.clear_discovery_failed()
+        host.clear_discovery_failed(pprint_value=pprint_value)
 
 
 def perform_fix_all(
@@ -572,12 +601,17 @@ def perform_fix_all(
     *,
     host: Host,
     raise_errors: bool,
+    automation_config: LocalAutomationConfig | RemoteAutomationConfig,
+    pprint_value: bool,
+    debug: bool,
 ) -> DiscoveryResult:
     """
     Handle fix all ('Accept All' on UI) discovery action
     """
-    with _service_discovery_context(host):
-        _perform_update_host_labels(discovery_result.labels_by_host)
+    with _service_discovery_context(host, pprint_value=pprint_value):
+        _perform_update_host_labels(
+            discovery_result.labels_by_host, automation_config=automation_config, debug=debug
+        )
         Discovery(
             host,
             DiscoveryAction.FIX_ALL,
@@ -585,8 +619,20 @@ def perform_fix_all(
             update_source=None,
             selected_services=(),  # does not matter in case of "FIX_ALL"
             user_need_permission=user.need_permission,
-        ).do_discovery(discovery_result, host.name())
-        discovery_result = get_check_table(host, DiscoveryAction.FIX_ALL, raise_errors=raise_errors)
+        ).do_discovery(
+            discovery_result,
+            host.name(),
+            automation_config=automation_config,
+            pprint_value=pprint_value,
+            debug=debug,
+        )
+        discovery_result = get_check_table(
+            host,
+            DiscoveryAction.FIX_ALL,
+            automation_config=automation_config,
+            raise_errors=raise_errors,
+            debug=debug,
+        )
     return discovery_result
 
 
@@ -596,11 +642,22 @@ def perform_host_label_discovery(
     *,
     host: Host,
     raise_errors: bool,
+    automation_config: LocalAutomationConfig | RemoteAutomationConfig,
+    pprint_value: bool,
+    debug: bool,
 ) -> DiscoveryResult:
     """Handle update host labels discovery action"""
-    with _service_discovery_context(host):
-        _perform_update_host_labels(discovery_result.labels_by_host)
-        discovery_result = get_check_table(host, action, raise_errors=raise_errors)
+    with _service_discovery_context(host, pprint_value=pprint_value):
+        _perform_update_host_labels(
+            discovery_result.labels_by_host, automation_config=automation_config, debug=debug
+        )
+        discovery_result = get_check_table(
+            host,
+            action,
+            automation_config=automation_config,
+            raise_errors=raise_errors,
+            debug=debug,
+        )
     return discovery_result
 
 
@@ -613,11 +670,14 @@ def perform_service_discovery(
     host: Host,
     selected_services: Container[tuple[str, Item]],
     raise_errors: bool,
+    automation_config: LocalAutomationConfig | RemoteAutomationConfig,
+    pprint_value: bool,
+    debug: bool,
 ) -> DiscoveryResult:
     """
     Handle discovery action for Update Services, Single Update & Bulk Update
     """
-    with _service_discovery_context(host):
+    with _service_discovery_context(host, pprint_value=pprint_value):
         Discovery(
             host,
             action,
@@ -625,8 +685,20 @@ def perform_service_discovery(
             update_source=update_source,
             selected_services=selected_services,
             user_need_permission=user.need_permission,
-        ).do_discovery(discovery_result, host.name())
-        discovery_result = get_check_table(host, action, raise_errors=raise_errors)
+        ).do_discovery(
+            discovery_result,
+            host.name(),
+            automation_config=automation_config,
+            pprint_value=pprint_value,
+            debug=debug,
+        )
+        discovery_result = get_check_table(
+            host,
+            action,
+            automation_config=automation_config,
+            raise_errors=raise_errors,
+            debug=debug,
+        )
     return discovery_result
 
 
@@ -698,16 +770,30 @@ def initial_discovery_result(
     action: DiscoveryAction,
     host: Host,
     previous_discovery_result: DiscoveryResult | None,
+    *,
+    automation_config: LocalAutomationConfig | RemoteAutomationConfig,
     raise_errors: bool,
+    debug: bool,
 ) -> DiscoveryResult:
     return (
-        get_check_table(host, action, raise_errors=raise_errors)
+        get_check_table(
+            host,
+            action,
+            automation_config=automation_config,
+            raise_errors=raise_errors,
+            debug=debug,
+        )
         if previous_discovery_result is None or previous_discovery_result.is_active()
         else previous_discovery_result
     )
 
 
-def _perform_update_host_labels(labels_by_nodes: Mapping[HostName, Sequence[HostLabel]]) -> None:
+def _perform_update_host_labels(
+    labels_by_nodes: Mapping[HostName, Sequence[HostLabel]],
+    *,
+    automation_config: LocalAutomationConfig | RemoteAutomationConfig,
+    debug: bool,
+) -> None:
     for host_name, host_labels in labels_by_nodes.items():
         if (host := Host.host(host_name)) is None:
             raise ValueError(f"no such host: {host_name!r}")
@@ -717,18 +803,16 @@ def _perform_update_host_labels(labels_by_nodes: Mapping[HostName, Sequence[Host
             len(host_labels),
         )
         _changes.add_service_change(
-            "update-host-labels",
-            message,
-            host.object_ref(),
-            [config_domain_registry[CORE_DOMAIN]],
-            {CORE_DOMAIN: generate_hosts_to_update_settings([host.name()])},
-            host.site_id(),
+            action_name="update-host-labels",
+            text=message,
+            user_id=user.id,
+            object_ref=host.object_ref(),
+            domains=[config_domain_registry[CORE_DOMAIN]],
+            domain_settings={CORE_DOMAIN: generate_hosts_to_update_settings([host.name()])},
+            site_id=host.site_id(),
+            use_git=active_config.wato_use_git,
         )
-        update_host_labels(
-            host.site_id(),
-            host.name(),
-            host_labels,
-        )
+        update_host_labels(automation_config, host.name(), host_labels, debug=debug)
 
 
 def _apply_state_change(
@@ -986,7 +1070,14 @@ def checkbox_service(checkbox_id_value: str) -> tuple[str, Item]:
     return check_name, item_str or None
 
 
-def get_check_table(host: Host, action: DiscoveryAction, *, raise_errors: bool) -> DiscoveryResult:
+def get_check_table(
+    host: Host,
+    action: DiscoveryAction,
+    *,
+    automation_config: LocalAutomationConfig | RemoteAutomationConfig,
+    raise_errors: bool,
+    debug: bool,
+) -> DiscoveryResult:
     """Gathers the check table using a background job
 
     Cares about handling local / remote sites using an automation call. In both cases
@@ -995,7 +1086,7 @@ def get_check_table(host: Host, action: DiscoveryAction, *, raise_errors: bool) 
 
     Starting from central site:
 
-    _get_check_table()
+    get_check_table()
           |
           v
     automation service-discovery-job-discover
@@ -1007,36 +1098,49 @@ def get_check_table(host: Host, action: DiscoveryAction, *, raise_errors: bool) 
     AutomationServiceDiscoveryJob().execute()
           |
           v
-    _get_check_table()
+    get_check_table()
     """
     if action == DiscoveryAction.TABULA_RASA:
         _changes.add_service_change(
-            "refresh-autochecks",
-            _("Refreshed check configuration of host '%s'") % host.name(),
-            host.object_ref(),
-            [config_domain_registry[CORE_DOMAIN]],
-            {CORE_DOMAIN: generate_hosts_to_update_settings([host.name()])},
-            host.site_id(),
+            action_name="refresh-autochecks",
+            text=_("Refreshed check configuration of host '%s'") % host.name(),
+            user_id=user.id,
+            object_ref=host.object_ref(),
+            domains=[config_domain_registry[CORE_DOMAIN]],
+            domain_settings={CORE_DOMAIN: generate_hosts_to_update_settings([host.name()])},
+            site_id=host.site_id(),
+            use_git=active_config.wato_use_git,
         )
 
-    if site_is_local(active_config, host.site_id()):
+    if isinstance(automation_config, LocalAutomationConfig):
         return execute_discovery_job(
             host.name(),
             action,
             raise_errors=raise_errors,
+            debug=debug,
         )
 
-    sync_changes_before_remote_automation(host.site_id())
+    sync_changes_before_remote_automation(host.site_id(), debug)
 
     return DiscoveryResult.deserialize(
         str(
             do_remote_automation(
-                get_site_config(active_config, host.site_id()),
+                automation_config,
                 "service-discovery-job",
                 [
                     ("host_name", host.name()),
-                    ("options", json.dumps({"ignore_errors": not raise_errors, "action": action})),
+                    (
+                        "options",
+                        json.dumps(
+                            {
+                                "ignore_errors": not raise_errors,
+                                "action": action,
+                                "debug": debug,
+                            }
+                        ),
+                    ),
                 ],
+                debug=debug,
             )
         )
     )
@@ -1046,6 +1150,7 @@ class ServiceDiscoveryJobArgs(BaseModel, frozen=True):
     host_name: AnnotatedHostName
     action: DiscoveryAction
     raise_errors: bool
+    debug: bool
 
 
 def discovery_job_entry_point(
@@ -1054,7 +1159,7 @@ def discovery_job_entry_point(
 ) -> None:
     job = ServiceDiscoveryBackgroundJob(args.host_name)
     with job_interface.gui_context():
-        job.discover(args.action, raise_errors=args.raise_errors)
+        job.discover(args.action, raise_errors=args.raise_errors, debug=args.debug)
 
 
 def execute_discovery_job(
@@ -1062,6 +1167,7 @@ def execute_discovery_job(
     action: DiscoveryAction,
     *,
     raise_errors: bool,
+    debug: bool,
 ) -> DiscoveryResult:
     """Either execute the discovery job to scan the host or return the discovery result
     based on the currently cached data"""
@@ -1079,6 +1185,7 @@ def execute_discovery_job(
                         host_name=host_name,
                         action=action,
                         raise_errors=raise_errors,
+                        debug=debug,
                     ),
                 ),
                 InitialStatusArgs(
@@ -1095,7 +1202,7 @@ def execute_discovery_job(
     if job.is_active() and action == DiscoveryAction.STOP:
         job.stop()
 
-    return job.get_result()
+    return job.get_result(debug=debug)
 
 
 class ServiceDiscoveryBackgroundJob(BackgroundJob):
@@ -1148,24 +1255,24 @@ class ServiceDiscoveryBackgroundJob(BackgroundJob):
         finally:
             self._preview_store.path.unlink(missing_ok=True)
 
-    def discover(self, action: DiscoveryAction, *, raise_errors: bool) -> None:
+    def discover(self, action: DiscoveryAction, *, raise_errors: bool, debug: bool) -> None:
         """Target function of the background job"""
         sys.stdout.write("Starting job...\n")
-        self._pre_discovery_preview = self._get_discovery_preview()
+        self._pre_discovery_preview = self._get_discovery_preview(debug=debug)
 
         if action == DiscoveryAction.REFRESH:
             self._jobstatus_store.update({"title": _("Refresh")})
-            self._perform_service_scan(raise_errors=raise_errors)
+            self._perform_service_scan(raise_errors=raise_errors, debug=debug)
 
         elif action == DiscoveryAction.TABULA_RASA:
             self._jobstatus_store.update({"title": _("Tabula rasa")})
-            self._perform_automatic_refresh()
+            self._perform_automatic_refresh(debug=debug)
 
         else:
             raise NotImplementedError()
         sys.stdout.write("Completed.\n")
 
-    def _perform_service_scan(self, *, raise_errors: bool) -> None:
+    def _perform_service_scan(self, *, raise_errors: bool, debug: bool) -> None:
         """The service-discovery-preview automation refreshes the Checkmk internal cache and makes
         the new information available to the next service-discovery-preview call made by get_result().
         """
@@ -1173,26 +1280,34 @@ class ServiceDiscoveryBackgroundJob(BackgroundJob):
             self.host_name,
             prevent_fetching=False,
             raise_errors=raise_errors,
+            debug=debug,
         )
         self._store_last_preview(result)
         sys.stdout.write(result.output)
 
-    def _perform_automatic_refresh(self) -> None:
+    def _perform_automatic_refresh(self, *, debug: bool) -> None:
         # TODO: In distributed sites this must not add a change on the remote site. We need to build
         # the way back to the central site and show the information there.
         local_discovery(
-            "refresh",
+            DiscoverySettings(
+                update_host_labels=True,
+                add_new_services=True,
+                remove_vanished_services=False,
+                update_changed_service_labels=True,
+                update_changed_service_parameters=True,
+            ),
             [self.host_name],
             scan=True,
             raise_errors=False,
             non_blocking_http=True,
+            debug=debug,
         )
         # count_added, _count_removed, _count_kept, _count_new = counts[api_request.host.name()]
         # message = _("Refreshed check configuration of host '%s' with %d services") % \
         #            (api_request.host.name(), count_added)
         # _changes.add_service_change(api_request.host, "refresh-autochecks", message)
 
-    def get_result(self) -> DiscoveryResult:
+    def get_result(self, *, debug: bool) -> DiscoveryResult:
         """Executed from the outer world to report about the job state"""
         job_status = self.get_status()
         job_status.is_active = self.is_active()
@@ -1205,7 +1320,7 @@ class ServiceDiscoveryBackgroundJob(BackgroundJob):
         elif (last_result := self._load_last_preview()) is not None:
             check_table_created, result = last_result
         else:
-            check_table_created, result = self._get_discovery_preview()
+            check_table_created, result = self._get_discovery_preview(debug=debug)
 
         return DiscoveryResult(
             job_status=dict(job_status),
@@ -1220,10 +1335,15 @@ class ServiceDiscoveryBackgroundJob(BackgroundJob):
             sources=result.source_results,
         )
 
-    def _get_discovery_preview(self) -> tuple[int, ServiceDiscoveryPreviewResult]:
+    def _get_discovery_preview(self, *, debug: bool) -> tuple[int, ServiceDiscoveryPreviewResult]:
         return (
             int(time.time()),
-            local_discovery_preview(self.host_name, prevent_fetching=False, raise_errors=False),
+            local_discovery_preview(
+                self.host_name,
+                prevent_fetching=False,
+                raise_errors=False,
+                debug=debug,
+            ),
         )
 
     @staticmethod

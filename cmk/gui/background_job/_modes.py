@@ -11,6 +11,7 @@ from typing import override
 from cmk.gui import gui_background_job
 from cmk.gui.background_job import BackgroundJob, BackgroundStatusSnapshot, job_registry
 from cmk.gui.breadcrumb import Breadcrumb
+from cmk.gui.config import Config
 from cmk.gui.htmllib.html import html
 from cmk.gui.http import request
 from cmk.gui.i18n import _
@@ -22,7 +23,7 @@ from cmk.gui.page_menu import (
     PageMenuEntry,
     PageMenuTopic,
 )
-from cmk.gui.pages import AjaxPage, PageRegistry, PageResult
+from cmk.gui.pages import AjaxPage, PageEndpoint, PageRegistry, PageResult
 from cmk.gui.type_defs import ActionResult, Icon, PermissionName
 from cmk.gui.utils.output_funnel import output_funnel
 from cmk.gui.utils.urls import makeuri_contextless
@@ -36,7 +37,9 @@ def register(
     mode_registry: ModeRegistry,
     main_module_registry: MainModuleRegistry,
 ) -> None:
-    page_registry.register_page("ajax_background_job_details")(ModeAjaxBackgroundJobDetails)
+    page_registry.register(
+        PageEndpoint("ajax_background_job_details", ModeAjaxBackgroundJobDetails)
+    )
     mode_registry.register(ModeBackgroundJobsOverview)
     mode_registry.register(ModeBackgroundJobDetails)
     main_module_registry.register(MainModuleBackgroundJobs)
@@ -190,12 +193,12 @@ class ModeAjaxBackgroundJobDetails(AjaxPage):
     """AJAX handler for supporting the background job state update"""
 
     @override
-    def handle_page(self) -> None:
+    def handle_page(self, config: Config) -> None:
         self.action()
-        super().handle_page()
+        super().handle_page(config)
 
     @override
-    def page(self) -> PageResult:
+    def page(self, config: Config) -> PageResult:
         with output_funnel.plugged():
             api_request = request.get_request()
             job_snapshot = self._show_details_page(api_request["job_id"])

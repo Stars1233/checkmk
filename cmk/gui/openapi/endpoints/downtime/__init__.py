@@ -215,7 +215,7 @@ def create_host_related_downtime(params: Mapping[str, Any]) -> Response:
 
 def _with_defaulted_timezone(
     date: dt.datetime,
-    _get_local_timezone: Callable[[], dt.tzinfo | None] = lambda: dt.datetime.now(dt.timezone.utc)
+    _get_local_timezone: Callable[[], dt.tzinfo | None] = lambda: dt.datetime.now(dt.UTC)
     .astimezone()
     .tzinfo,
 ) -> dt.datetime:
@@ -621,10 +621,10 @@ def _downtime_properties(info: ResultRow) -> dict[str, Any]:
     return downtime
 
 
-def register(endpoint_registry: EndpointRegistry) -> None:
-    endpoint_registry.register(create_host_related_downtime)
-    endpoint_registry.register(create_service_related_downtime)
-    endpoint_registry.register(show_downtimes)
-    endpoint_registry.register(show_downtime)
-    endpoint_registry.register(delete_downtime)
-    endpoint_registry.register(modify_host_downtime)
+def register(endpoint_registry: EndpointRegistry, *, ignore_duplicates: bool) -> None:
+    endpoint_registry.register(create_host_related_downtime, ignore_duplicates=ignore_duplicates)
+    endpoint_registry.register(create_service_related_downtime, ignore_duplicates=ignore_duplicates)
+    endpoint_registry.register(show_downtimes, ignore_duplicates=ignore_duplicates)
+    endpoint_registry.register(show_downtime, ignore_duplicates=ignore_duplicates)
+    endpoint_registry.register(delete_downtime, ignore_duplicates=ignore_duplicates)
+    endpoint_registry.register(modify_host_downtime, ignore_duplicates=ignore_duplicates)

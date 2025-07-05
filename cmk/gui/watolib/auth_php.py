@@ -48,7 +48,7 @@ from cmk.gui.type_defs import Users
 from cmk.gui.utils.roles import get_role_permissions
 from cmk.gui.watolib.groups_io import load_contact_group_information
 from cmk.gui.watolib.paths import wato_var_dir
-from cmk.gui.watolib.utils import format_php
+from cmk.gui.watolib.php_formatter import format_php
 
 _CalleeHooks = ClearEvent | Literal["page_hook"]
 
@@ -177,7 +177,7 @@ function permitted_maps($username) {{
 ?>
 """
 
-    store.makedirs(_auth_php().parent)
+    _auth_php().parent.mkdir(mode=0o770, exist_ok=True, parents=True)
     store.save_text_to_file(_auth_php(), content)
 
 

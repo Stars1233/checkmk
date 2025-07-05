@@ -24,9 +24,7 @@ $package_name = Split-Path -Path (Get-Location) -Leaf
 
 $exe_name = "$package_name.exe"
 $work_dir = "$pwd"
-#set target=x86_64-pc-windows-mscvc # 64 bit not used now
 $cargo_target = "i686-pc-windows-msvc"
-$exe_dir = "target/$cargo_target/release"
 
 $packBuild = $false
 $packClippy = $false
@@ -139,8 +137,8 @@ function Invoke-Cargo($cmd) {
     Write-Host "$cmd $package_name" -ForegroundColor White
     & cargo $cmd
 
-    if ($lastexitcode -ne 0) {
-        Write-Error "Failed to $cmd $package_name with code $lastexitcode" -ErrorAction Stop
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error "Failed to $cmd $package_name with code $LASTEXITCODE" -ErrorAction Stop
     }
 }
 
@@ -148,8 +146,8 @@ function Invoke-Cargo($cmd) {
     Write-Host "$cmd $package_name" -ForegroundColor White
     & cargo $cmd
 
-    if ($lastexitcode -ne 0) {
-        Write-Error "Failed to $cmd $package_name with code $lastexitcode" -ErrorAction Stop
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error "Failed to $cmd $package_name with code $LASTEXITCODE" -ErrorAction Stop
     }
 }
 
@@ -176,24 +174,25 @@ function Update-Dirs() {
     $arte_dir = "$root_dir/artefacts"
     If (!(Test-Path -PathType container $arte_dir)) {
         Remove-Item $arte_dir -ErrorAction SilentlyContinue     # we may have find strange files from bad scripts
-        Write-Host "Creating arte dir: '$arte_dir'" -ForegroundColor White
+        Write-Host "Creating output dir: '$arte_dir'" -ForegroundColor White
         New-Item -ItemType Directory -Path $arte_dir -ErrorAction Stop > nul
     }
     $global:arte_dir = "$arte_dir"
-    Write-Host "Using arte dir: '$global:arte_dir'" -ForegroundColor White
+    Write-Host "Using output dir: '$global:arte_dir'" -ForegroundColor White
 }
 
 $result = 1
 try {
     $mainStartTime = Get-Date
 
-    & cargo --version > nul
-    if ($lastexitcode -ne 0) {
-        Write-Error "Cargo not found, please install it and/or add to PATH" -ErrorAction Stop
+    & rustup --version > nul
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error "rustup not found, please install it and/or add to PATH" -ErrorAction Stop
     }
     &rustup update
+    &rustup install
     &rustup target add $cargo_target
-    & rustc -V
+    & rustc --target $cargo_target -V
     & cargo -V
 
     # Disable assert()s in C/C++ parts (e.g. wepoll-ffi), they map to _assert()/_wassert(),
@@ -210,18 +209,18 @@ try {
     }
     if ($packBuild) {
         $cwd = Get-Location
-        $target_dir = Join-Path -Path "$cwd" -ChildPath "target/$cargo_target"
+        $target_dir = Join-Path (cargo metadata --no-deps | ConvertFrom-json).target_directory "$cargo_target"
         Write-Host "Killing processes in $target_dir" -ForegroundColor White
         Get-Process | Where-Object { $_.path -and ($_.path -like "$target_dir\*") } | Stop-Process -Force
         &cargo build --release --target $cargo_target
-        if ($lastexitcode -ne 0) {
-            Write-Error "Failed to build $package_name with code $lastexitcode" -ErrorAction Stop
+        if ($LASTEXITCODE -ne 0) {
+            Write-Error "Failed to build $package_name with code $LASTEXITCODE" -ErrorAction Stop
         }
     }
     if ($packClippy) {
         &cargo clippy --release --target $cargo_target --tests -- --deny warnings
-        if ($lastexitcode -ne 0) {
-            Write-Error "Failed to clippy $package_name with code $lastexitcode" -ErrorAction Stop
+        if ($LASTEXITCODE -ne 0) {
+            Write-Error "Failed to clippy $package_name with code $LASTEXITCODE" -ErrorAction Stop
         }
     }
 
@@ -232,7 +231,7 @@ try {
     if ($packCheckFormat) {
         Write-Host "test format $package_name" -ForegroundColor White
         cargo fmt -- --check
-        if ($lastexitcode -ne 0) {
+        if ($LASTEXITCODE -ne 0) {
             Write-Error "Failed to test format $package_name" -ErrorAction Stop
         }
     }
@@ -241,11 +240,12 @@ try {
             Write-Error "Testing must be executed as Administrator." -ErrorAction Stop
         }
         cargo test --release --target $cargo_target -- --test-threads=4
-        if ($lastexitcode -ne 0) {
+        if ($LASTEXITCODE -ne 0) {
             Write-Error "Failed to test $package_name" -ErrorAction Stop
         }
     }
     if ($packBuild -and $packTest -and $packClippy) {
+        $exe_dir = Join-Path (cargo metadata --no-deps | ConvertFrom-json).target_directory "$cargo_target" "release"
         Write-Host "Uploading artifacts: [ $exe_dir/$exe_name -> $arte_dir/$exe_name ] ..." -Foreground White
         Copy-Item $exe_dir/$exe_name $arte_dir/$exe_name -Force -ErrorAction Stop
     }

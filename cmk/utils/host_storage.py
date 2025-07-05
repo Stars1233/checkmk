@@ -14,8 +14,8 @@ from pathlib import Path
 from typing import Any, Generic, TypedDict, TypeVar
 
 from cmk.ccc import store
+from cmk.ccc.hostaddress import HostName
 
-from cmk.utils.hostaddress import HostName
 from cmk.utils.labels import Labels
 from cmk.utils.rulesets.tuple_rulesets import ALL_HOSTS, ALL_SERVICES
 from cmk.utils.tags import TagGroupID, TagID
@@ -244,7 +244,7 @@ class StandardHostsStorage(ABCHostsStorage[str]):
         store.save_text_to_file(file_path, host_storage_fileheader() + out.getvalue())
 
     def _read(self, file_path: Path) -> str:
-        return store.load_text_from_file(str(file_path))
+        return store.load_text_from_file(file_path)
 
 
 class PickleHostsStorage(ABCHostsStorage[HostsData]):
@@ -271,10 +271,10 @@ class RawHostsStorage(ABCHostsStorage[HostsData]):
     def _write(
         self, file_path: Path, data: HostsStorageData, value_formatter: Callable[[Any], str]
     ) -> None:
-        store.save_text_to_file(str(file_path), value_formatter(data))
+        store.save_text_to_file(file_path, value_formatter(data))
 
     def _read(self, file_path: Path) -> HostsData:
-        return store.load_object_from_file(str(file_path), default={})
+        return store.load_object_from_file(file_path, default={})
 
 
 @cache

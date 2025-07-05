@@ -43,7 +43,6 @@ $font-color-orange: $orange-1;
 // -----------------------------------------------------------------------------
 // Form elements (input, textarea, button, etc.)
 // -----------------------------------------------------------------------------
-$button-background-hover: color.adjust($grey-6, $lightness: 10%);
 $default-button-border-color: $ux-theme-5;
 $default-submit-button-border-color: color.adjust($success, $lightness: -25%);
 
@@ -186,7 +185,7 @@ $tactical-overview-td-bg-color: $ux-theme-6;
 $server-time-div-bg-color: $ux-theme-6;
 $snapin-heading-border-color: rgba($white, 0.2);
 $simplebar-scrollbar-color: $ux-theme-6;
-$popup-border: 4px solid $success;
+$popup-border: $popup-border-width solid $success;
 $popup-inner-border: 1px solid $ux-theme-3;
 $filter-add-button-hover-brightness: brightness(100);
 $floatfilter-legend-border: 1px solid rgba($white, 0.2);
@@ -194,10 +193,18 @@ $log-output-color: $ux-theme-0;
 $dashlet-editor-controls-color: rgb(78, 93, 105);
 $dark-image-invert: invert(100%);
 $ntop-protocol-painter-padding-top: 4px;
+// =============================
+// The main dashboard shows the hosts and services stats dashlets right next to the total host and
+// service problems graphs. Therefore, we should keep the colors in sync.
+// metrics counterpart: cmk_hosts_down, cmk_services_critical
 $hexagon-critical-color: $danger;
+// metrics counterpart: cmk_hosts_unreachable, cmk_services_unknown
 $hexagon-unknown-color: rgb(255, 136, 0);
+// metrics counterpart: cmk_hosts_in_downtime, cmk_services_in_downtime
 $hexagon-downtime-color: rgb(60, 194, 255);
+// metrics counterpart: cmk_services_on_down_hosts
 $hexagon-host-down-color: rgb(16, 99, 176);
+// =============================
 $hexagon-empty-color: $white;
 $hexagon-empty-fill-opacity: 0.03;
 $hexagon-empty-stroke-color: $white;
@@ -210,3 +217,5 @@ $scatterplot-hilite-color: rgb(70, 130, 180);
 $gauge-span-color: $ux-theme-5;
 $gauge-single-value-color: $font-color;
 $inactive-opacity: 0.6;
+$svg-color-green-filter: invert(59%) sepia(94%) saturate(420%) hue-rotate(104deg) brightness(95%)
+  contrast(87%);

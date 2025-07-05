@@ -6,16 +6,8 @@
 from cmk.gui.i18n import _
 from cmk.gui.permissions import PermissionSection
 
-
-class PermissionSectionViews(PermissionSection):
-    @property
-    def name(self) -> str:
-        return "view"
-
-    @property
-    def title(self) -> str:
-        return _("Views")
-
-    @property
-    def do_sort(self) -> bool:
-        return True
+PERMISSION_SECTION_VIEWS = PermissionSection(
+    name="view",
+    title=_("Views"),
+    do_sort=True,
+)

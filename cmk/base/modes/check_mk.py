@@ -18,19 +18,19 @@ from typing import Final, Literal, NamedTuple, TypedDict, TypeVar
 
 import livestatus
 
+import cmk.ccc.cleanup
 import cmk.ccc.debug
 import cmk.ccc.version as cmk_version
-from cmk.ccc import store
+from cmk.ccc import store, tty
+from cmk.ccc.cpu_tracking import CPUTracker
 from cmk.ccc.exceptions import MKBailOut, MKGeneralException, MKTimeout, OnError
+from cmk.ccc.hostaddress import HostAddress, HostName, Hosts
 
-import cmk.utils.cleanup
 import cmk.utils.password_store
 import cmk.utils.paths
-from cmk.utils import config_warnings, ip_lookup, log, tty
+from cmk.utils import config_warnings, ip_lookup, log
 from cmk.utils.auto_queue import AutoQueue
 from cmk.utils.check_utils import maincheckify
-from cmk.utils.config_path import LATEST_CONFIG
-from cmk.utils.cpu_tracking import CPUTracker
 from cmk.utils.diagnostics import (
     DiagnosticsModesParameters,
     OPT_CHECKMK_CONFIG_FILES,
@@ -41,18 +41,19 @@ from cmk.utils.diagnostics import (
     OPT_PERFORMANCE_GRAPHS,
 )
 from cmk.utils.everythingtype import EVERYTHING
-from cmk.utils.hostaddress import HostAddress, HostName, Hosts
+from cmk.utils.ip_lookup import ConfiguredIPLookup
 from cmk.utils.log import console, section
 from cmk.utils.paths import configuration_lockfile
 from cmk.utils.rulesets.tuple_rulesets import hosttags_match_taglist
 from cmk.utils.sectionname import SectionMap, SectionName
+from cmk.utils.servicename import ServiceName
 from cmk.utils.structured_data import (
     ImmutableTree,
+    InventoryPaths,
+    InventoryStore,
     make_meta,
     MutableTree,
     RawIntervalFromConfig,
-    TreeOrArchiveStore,
-    TreeStore,
     UpdateResult,
 )
 from cmk.utils.tags import TagID
@@ -128,9 +129,7 @@ from cmk.base.checkers import (
 )
 from cmk.base.config import (
     ConfigCache,
-    ConfiguredIPLookup,
     handle_ip_lookup_failure,
-    lookup_mgmt_board_ip_address,
 )
 from cmk.base.configlib.checkengine import DiscoveryConfig
 from cmk.base.core_factory import create_core, get_licensing_handler_type
@@ -158,7 +157,7 @@ def load_config(plugins: AgentBasedPlugins) -> config.LoadingResult:
 
 
 def load_checks() -> AgentBasedPlugins:
-    plugins = config.load_all_plugins(cmk.utils.paths.checks_dir)
+    plugins = config.load_all_pluginX(cmk.utils.paths.checks_dir)
     if sys.stderr.isatty():
         for error_msg in plugins.errors:
             console.error(error_msg, file=sys.stderr)
@@ -459,7 +458,7 @@ def _list_all_hosts_with_tags(
 
     hosts = []
     for h in set(hostnames):
-        if hosttags_match_taglist(config_cache.tag_list(h), tags):
+        if hosttags_match_taglist(config_cache.host_tags.tag_list(h), tags):
             hosts.append(h)
     return hosts
 
@@ -613,27 +612,39 @@ def mode_dump_agent(options: Mapping[str, object], hostname: HostName) -> None:
         raise MKBailOut("Unknown SNMP backend") from exc
 
     plugins = load_checks()
-    config_cache = load_config(plugins).config_cache
+    loading_result = load_config(plugins)
+    hosts_config = config.make_hosts_config(loading_result.loaded_config)
+
+    if hostname in hosts_config.clusters:
+        raise MKBailOut("Can not be used with cluster hosts")
+
+    config_cache = loading_result.config_cache
     service_name_config = config_cache.make_passive_service_name_config()
+
+    ip_lookup_config = config_cache.ip_lookup_config()
+    ip_family = ip_lookup_config.default_address_family(hostname)
+    ip_address_of_bare = ip_lookup.make_lookup_ip_address(ip_lookup_config)
+    ip_address_of = ip_lookup.ConfiguredIPLookup(
+        ip_address_of_bare,
+        allow_empty=(),
+        error_handler=config.handle_ip_lookup_failure,
+    )
+    ip_address_of_mgmt = ip_lookup.make_lookup_mgmt_board_ip_address(ip_lookup_config)
     try:
         config_cache.ruleset_matcher.ruleset_optimizer.set_all_processed_hosts({hostname})
 
-        hosts_config = config.make_hosts_config()
-        if hostname in hosts_config.clusters:
-            raise MKBailOut("Can not be used with cluster hosts")
-
-        ip_stack_config = ConfigCache.ip_stack_config(hostname)
+        ip_stack_config = ip_lookup_config.ip_stack_config(hostname)
         ipaddress = (
             None
             if ip_stack_config is ip_lookup.IPStackConfig.NO_IP
-            else config.lookup_ip_address(config_cache, hostname)
+            else ip_address_of(hostname, ip_family)
         )
         check_interval = config_cache.check_mk_check_interval(hostname)
-        stored_walk_path = Path(cmk.utils.paths.snmpwalks_dir)
-        walk_cache_path = Path(cmk.utils.paths.var_dir) / "snmp_cache"
-        section_cache_path = Path(cmk.utils.paths.var_dir)
-        file_cache_path = Path(cmk.utils.paths.data_source_cache_dir)
-        tcp_cache_path = Path(cmk.utils.paths.tcp_cache_dir)
+        stored_walk_path = cmk.utils.paths.snmpwalks_dir
+        walk_cache_path = cmk.utils.paths.var_dir / "snmp_cache"
+        section_cache_path = cmk.utils.paths.var_dir
+        file_cache_path = cmk.utils.paths.data_source_cache_dir
+        tcp_cache_path = cmk.utils.paths.tcp_cache_dir
         tls_config = TLSConfig(
             cas_dir=Path(cmk.utils.paths.agent_cas_dir),
             ca_store=Path(cmk.utils.paths.agent_cert_store),
@@ -642,7 +653,7 @@ def mode_dump_agent(options: Mapping[str, object], hostname: HostName) -> None:
         snmp_scan_config = SNMPScanConfig(
             on_error=OnError.RAISE,
             missing_sys_description=config_cache.missing_sys_description(hostname),
-            oid_cache_dir=Path(cmk.utils.paths.snmp_scan_cache_dir),
+            oid_cache_dir=cmk.utils.paths.snmp_scan_cache_dir,
         )
 
         output = []
@@ -652,10 +663,12 @@ def mode_dump_agent(options: Mapping[str, object], hostname: HostName) -> None:
         for source in sources.make_sources(
             plugins,
             hostname,
+            ip_family,
             ipaddress,
             ip_stack_config,
             fetcher_factory=config_cache.fetcher_factory(
-                config_cache.make_service_configurer(plugins.check_plugins, service_name_config)
+                config_cache.make_service_configurer(plugins.check_plugins, service_name_config),
+                ip_address_of,
             ),
             snmp_fetcher_config=SNMPFetcherConfig(
                 scan_config=snmp_scan_config,
@@ -678,16 +691,19 @@ def mode_dump_agent(options: Mapping[str, object], hostname: HostName) -> None:
             tls_config=tls_config,
             computed_datasources=config_cache.computed_datasources(hostname),
             datasource_programs=config_cache.datasource_programs(hostname),
-            tag_list=config_cache.tag_list(hostname),
-            management_ip=lookup_mgmt_board_ip_address(config_cache, hostname),
+            tag_list=config_cache.host_tags.tag_list(hostname),
+            management_ip=ip_address_of_mgmt(hostname, ip_family),
             management_protocol=config_cache.management_protocol(hostname),
             special_agent_command_lines=config_cache.special_agent_command_lines(
                 hostname,
+                ip_family,
                 ipaddress,
                 passwords=cmk.utils.password_store.load(pending_passwords_file),
                 password_store_file=pending_passwords_file,
                 ip_address_of=ConfiguredIPLookup(
-                    config_cache, error_handler=handle_ip_lookup_failure
+                    ip_address_of_bare,
+                    allow_empty=hosts_config.clusters,
+                    error_handler=handle_ip_lookup_failure,
                 ),
             ),
             agent_connection_mode=config_cache.agent_connection_mode(hostname),
@@ -778,6 +794,15 @@ def mode_dump_hosts(hostlist: Iterable[HostName]) -> None:
     plugins = load_checks()
     config_cache = load_config(plugins).config_cache
     hosts_config = config_cache.hosts_config
+    ip_lookup_config = config_cache.ip_lookup_config()
+
+    ip_address_of = ip_lookup.ConfiguredIPLookup(
+        ip_lookup.make_lookup_ip_address(ip_lookup_config),
+        allow_empty=config_cache.hosts_config.clusters,
+        error_handler=config.handle_ip_lookup_failure,
+    )
+    ip_address_of_mgmt = ip_lookup.make_lookup_mgmt_board_ip_address(ip_lookup_config)
+
     all_hosts = {
         hn
         for hn in itertools.chain(hosts_config.hosts, hosts_config.clusters)
@@ -797,6 +822,10 @@ def mode_dump_hosts(hostlist: Iterable[HostName]) -> None:
             service_name_config,
             plugins,
             hostname,
+            ip_lookup_config.ip_stack_config(hostname),
+            ip_lookup_config.default_address_family(hostname),
+            ip_address_of=ip_address_of,
+            ip_address_of_mgmt=ip_address_of_mgmt,
             simulation_mode=config.simulation_mode,
         )
 
@@ -897,15 +926,12 @@ def mode_update_dns_cache() -> None:
     config_cache = config.load(discovery_rulesets=()).config_cache
     hosts_config = config_cache.hosts_config
     ip_lookup.update_dns_cache(
-        ip_lookup_configs=(
-            config_cache.ip_lookup_config(hn)
+        hosts=(
+            hn
             for hn in set(hosts_config.hosts).union(hosts_config.clusters)
             if config_cache.is_active(hn) and config_cache.is_online(hn)
         ),
-        configured_ipv6_addresses=config.ipaddresses,
-        configured_ipv4_addresses=config.ipv6addresses,
-        simulation_mode=config.simulation_mode,
-        override_dns=(HostAddress(config.fake_dns) if config.fake_dns is not None else None),
+        ip_lookup_config=config_cache.ip_lookup_config(),
     )
 
 
@@ -959,7 +985,7 @@ def mode_snmptranslate(walk_filename: str) -> None:
     if not walk_filename:
         raise MKGeneralException("Please provide the name of a SNMP walk file")
 
-    walk_path = Path(cmk.utils.paths.snmpwalks_dir) / walk_filename
+    walk_path = cmk.utils.paths.snmpwalks_dir / walk_filename
     if not walk_path.exists():
         raise MKGeneralException("The walk '%s' does not exist" % walk_path)
 
@@ -1036,29 +1062,28 @@ _SNMPWalkOptions = dict[str, list[OID]]
 
 
 def _do_snmpwalk(options: _SNMPWalkOptions, *, backend: SNMPBackend) -> None:
-    if not os.path.exists(cmk.utils.paths.snmpwalks_dir):
-        os.makedirs(cmk.utils.paths.snmpwalks_dir)
+    cmk.utils.paths.snmpwalks_dir.mkdir(parents=True, exist_ok=True)
 
     # TODO: What about SNMP management boards?
     try:
         _do_snmpwalk_on(
             options,
-            cmk.utils.paths.snmpwalks_dir + "/" + backend.hostname,
+            cmk.utils.paths.snmpwalks_dir / backend.hostname,
             backend=backend,
         )
     except Exception as e:
         console.error(f"Error walking {backend.hostname}: {e}", file=sys.stderr)
         if cmk.ccc.debug.enabled():
             raise
-    cmk.utils.cleanup.cleanup_globals()
+    cmk.ccc.cleanup.cleanup_globals()
 
 
-def _do_snmpwalk_on(options: _SNMPWalkOptions, filename: str, *, backend: SNMPBackend) -> None:
+def _do_snmpwalk_on(options: _SNMPWalkOptions, filename: Path, *, backend: SNMPBackend) -> None:
     console.verbose(f"{backend.hostname}:")
 
     oids = oids_to_walk(options)
 
-    with Path(filename).open("w", encoding="utf-8") as file:
+    with filename.open("w", encoding="utf-8") as file:
         for rows in _execute_walks_for_dump(oids, backend=backend):
             for oid, value in rows:
                 file.write(f"{oid} {value}\n")
@@ -1097,23 +1122,25 @@ def mode_snmpwalk(options: dict, hostnames: list[str]) -> None:
         raise MKBailOut("Please specify host names to walk on.")
 
     config_cache = config.load(discovery_rulesets=()).config_cache
-    stored_walk_path = Path(cmk.utils.paths.snmpwalks_dir)
+    ip_lookup_config = config_cache.ip_lookup_config()
+    ip_address_of = ip_lookup.make_lookup_ip_address(ip_lookup_config)
 
     for hostname in (HostName(hn) for hn in hostnames):
-        if ConfigCache.ip_stack_config(hostname) is ip_lookup.IPStackConfig.NO_IP:
+        if ip_lookup_config.ip_stack_config(hostname) is ip_lookup.IPStackConfig.NO_IP:
             raise MKGeneralException(f"Host is configured as No-IP host: {hostname}")
 
-        ipaddress = config.lookup_ip_address(config_cache, hostname)
+        ip_family = ip_lookup_config.default_address_family(hostname)
+        ipaddress = ip_address_of(hostname, ip_family)
         if not ipaddress:
             raise MKGeneralException("Failed to gather IP address of %s" % hostname)
 
         snmp_config = config_cache.make_snmp_config(
-            hostname, ipaddress, SourceType.HOST, backend_override=snmp_backend_override
+            hostname, ip_family, ipaddress, SourceType.HOST, backend_override=snmp_backend_override
         )
         _do_snmpwalk(
             options,
             backend=snmp_factory.make_backend(
-                snmp_config, log.logger, stored_walk_path=stored_walk_path
+                snmp_config, log.logger, stored_walk_path=cmk.utils.paths.snmpwalks_dir
             ),
         )
 
@@ -1178,6 +1205,8 @@ def mode_snmpget(options: Mapping[str, object], args: Sequence[str]) -> None:
         raise MKBailOut("Unknown SNMP backend") from exc
 
     config_cache = config.load(discovery_rulesets=()).config_cache
+    ip_lookup_config = config_cache.ip_lookup_config()
+    ip_address_of = ip_lookup.make_lookup_ip_address(ip_lookup_config)
     oid, *hostnames = args
 
     if not hostnames:
@@ -1191,22 +1220,24 @@ def mode_snmpget(options: Mapping[str, object], args: Sequence[str]) -> None:
         )
 
     assert hostnames
-    stored_walk_path = Path(cmk.utils.paths.snmpwalks_dir)
     for hostname in (HostName(hn) for hn in hostnames):
-        if ConfigCache.ip_stack_config(hostname) is ip_lookup.IPStackConfig.NO_IP:
+        if ip_lookup_config.ip_stack_config(hostname) is ip_lookup.IPStackConfig.NO_IP:
             raise MKGeneralException(f"Host is configured as No-IP host: {hostname}")
-        ipaddress = config.lookup_ip_address(config_cache, hostname)
+
+        ip_family = ip_lookup_config.default_address_family(hostname)
+        ipaddress = ip_address_of(hostname, ip_family)
         if not ipaddress:
             raise MKGeneralException("Failed to gather IP address of %s" % hostname)
 
         snmp_config = config_cache.make_snmp_config(
             hostname,
+            ip_family,
             ipaddress,
             SourceType.HOST,
             backend_override=snmp_backend_override,
         )
         backend = snmp_factory.make_backend(
-            snmp_config, log.logger, stored_walk_path=stored_walk_path
+            snmp_config, log.logger, stored_walk_path=cmk.utils.paths.snmpwalks_dir
         )
         value = get_single_oid(oid, single_oid_cache={}, backend=backend, log=log.logger.debug)
         sys.stdout.write(f"{backend.hostname} ({backend.address}): {value!r}\n")
@@ -1264,7 +1295,7 @@ def mode_flush(hosts: list[HostName]) -> None:
 
         # counters
         try:
-            os.remove(cmk.utils.paths.counters_dir + "/" + host)
+            (cmk.utils.paths.counters_dir / host).unlink()
             print_(tty.bold + tty.blue + " counters")
             flushed = True
         except OSError:
@@ -1277,7 +1308,7 @@ def mode_flush(hosts: list[HostName]) -> None:
             for f in os.listdir(cache_dir):
                 if f == host or f.startswith(host + "."):
                     try:
-                        os.remove(cache_dir + "/" + f)
+                        (cache_dir / f).unlink()
                         d += 1
                         flushed = True
                     except OSError:
@@ -1293,13 +1324,13 @@ def mode_flush(hosts: list[HostName]) -> None:
             print_(tty.bold + tty.magenta + " piggyback(1)")
 
         # logfiles
-        log_dir = cmk.utils.paths.logwatch_dir + "/" + host
-        if os.path.exists(log_dir):
+        log_dir = cmk.utils.paths.logwatch_dir / host
+        if log_dir.exists():
             d = 0
-            for f in os.listdir(log_dir):
+            for f in os.listdir(str(log_dir)):
                 if f not in [".", ".."]:
                     try:
-                        os.remove(log_dir + "/" + f)
+                        (log_dir / f).unlink()
                         d += 1
                         flushed = True
                     except OSError:
@@ -1318,9 +1349,9 @@ def mode_flush(hosts: list[HostName]) -> None:
             print_(tty.bold + tty.cyan + " autochecks(%d)" % count)
 
         # inventory
-        path = cmk.utils.paths.var_dir + "/inventory/" + host
-        if os.path.exists(path):
-            os.remove(path)
+        path = cmk.utils.paths.var_dir / "inventory" / host
+        if path.exists():
+            path.unlink()
             print_(tty.bold + tty.yellow + " inventory")
 
         if not flushed:
@@ -1363,7 +1394,9 @@ def mode_dump_nagios_config(args: Sequence[HostName]) -> None:
     from cmk.base.core_nagios import create_config
 
     plugins = load_checks()
+    loading_result = load_config(plugins)
     config_cache = load_config(plugins).config_cache
+    ip_lookup_config = config_cache.ip_lookup_config()
 
     hostnames = args if args else None
 
@@ -1377,8 +1410,8 @@ def mode_dump_nagios_config(args: Sequence[HostName]) -> None:
             "service_notification_periods is not longer supported. Please use extra_service_conf['notification_period'] instead."
         )
 
+    hosts_config = config_cache.hosts_config
     if hostnames is None:
-        hosts_config = config_cache.hosts_config
         hostnames = sorted(
             {
                 hn
@@ -1391,7 +1424,7 @@ def mode_dump_nagios_config(args: Sequence[HostName]) -> None:
 
     create_config(
         sys.stdout,
-        next(VersionedConfigPath.current()),
+        Path(VersionedConfigPath.next()),
         config_cache,
         config_cache.make_passive_service_name_config(),
         plugins.check_plugins,
@@ -1400,8 +1433,16 @@ def mode_dump_nagios_config(args: Sequence[HostName]) -> None:
         passwords=cmk.utils.password_store.load(
             cmk.utils.password_store.pending_password_store_path()
         ),
-        ip_address_of=config.ConfiguredIPLookup(
-            config_cache, error_handler=config.handle_ip_lookup_failure
+        get_ip_stack_config=ip_lookup_config.ip_stack_config,
+        default_address_family=ip_lookup_config.default_address_family,
+        ip_address_of=ip_lookup.ConfiguredIPLookup(
+            ip_lookup.make_lookup_ip_address(ip_lookup_config),
+            allow_empty=hosts_config.clusters,
+            error_handler=config.handle_ip_lookup_failure,
+        ),
+        service_depends_on=config.ServiceDependsOn(
+            tag_list=config_cache.host_tags.tag_list,
+            service_dependencies=loading_result.loaded_config.service_dependencies,
         ),
     )
 
@@ -1434,6 +1475,27 @@ modes.register(
 #   '----------------------------------------------------------------------'
 
 
+def _make_configured_bake_on_restart(
+    loading_result: config.LoadingResult,
+    hosts: Sequence[HostAddress],
+) -> Callable[[], None]:
+    # TODO: consider passing the edition here, instead of "detecting" it (and thus
+    # silently failing if the bakery is missing unexpectedly)
+    try:
+        from cmk.base.configlib.cee.bakery import (  # type: ignore[import-untyped, unused-ignore, import-not-found]
+            make_configured_bake_on_restart_callback,
+        )
+    except ImportError:
+        return lambda: None
+
+    return make_configured_bake_on_restart_callback(
+        loading_result,
+        hosts,
+        agents_dir=cmk.utils.paths.agents_dir,
+        local_agents_dir=cmk.utils.paths.local_agents_dir,
+    )
+
+
 def mode_update() -> None:
     from cmk.base.core_config import do_create_config
 
@@ -1441,25 +1503,40 @@ def mode_update() -> None:
     loading_result = load_config(plugins)
 
     hosts_config = loading_result.config_cache.hosts_config
-    ip_address_of = config.ConfiguredIPLookup(
-        loading_result.config_cache, error_handler=ip_lookup.CollectFailedHosts()
+    ip_lookup_config = loading_result.config_cache.ip_lookup_config()
+    ip_address_of = ip_lookup.ConfiguredIPLookup(
+        ip_lookup.make_lookup_ip_address(ip_lookup_config),
+        allow_empty=hosts_config.clusters,
+        error_handler=ip_lookup.CollectFailedHosts(),
     )
+
+    bake_on_restart = _make_configured_bake_on_restart(loading_result, hosts_config.hosts)
+
     try:
         with cmk.base.core.activation_lock(mode=config.restart_locking):
             do_create_config(
                 core=create_core(config.monitoring_core),
+                hosts_config=hosts_config,
                 config_cache=loading_result.config_cache,
                 service_name_config=loading_result.config_cache.make_passive_service_name_config(),
                 plugins=plugins,
                 discovery_rules=loading_result.loaded_config.discovery_rules,
+                get_ip_stack_config=ip_lookup_config.ip_stack_config,
+                default_address_family=ip_lookup_config.default_address_family,
                 ip_address_of=ip_address_of,
-                all_hosts=hosts_config.hosts,
+                ip_address_of_mgmt=ip_lookup.make_lookup_mgmt_board_ip_address(ip_lookup_config),
+                hosts_to_update=None,
+                service_depends_on=config.ServiceDependsOn(
+                    tag_list=loading_result.config_cache.host_tags.tag_list,
+                    service_dependencies=loading_result.loaded_config.service_dependencies,
+                ),
                 duplicates=sorted(
                     hosts_config.duplicates(
                         lambda hn: loading_result.config_cache.is_active(hn)
                         and loading_result.config_cache.is_online(hn)
                     )
                 ),
+                bake_on_restart=bake_on_restart,
             )
     except Exception as e:
         console.error(f"Configuration Error: {e}", file=sys.stderr)
@@ -1503,18 +1580,31 @@ def mode_restart(args: Sequence[HostName]) -> None:
     plugins = load_checks()
     loading_result = load_config(plugins)
     hosts_config = loading_result.config_cache.hosts_config
-    ip_address_of = config.ConfiguredIPLookup(
-        loading_result.config_cache, error_handler=ip_lookup.CollectFailedHosts()
+    ip_lookup_config = loading_result.config_cache.ip_lookup_config()
+
+    ip_address_of = ip_lookup.ConfiguredIPLookup(
+        ip_lookup.make_lookup_ip_address(ip_lookup_config),
+        allow_empty=hosts_config.clusters,
+        error_handler=ip_lookup.CollectFailedHosts(),
     )
+    ip_address_of_mgmt = ip_lookup.make_lookup_mgmt_board_ip_address(ip_lookup_config)
+
     cmk.base.core.do_restart(
         loading_result.config_cache,
+        hosts_config,
         loading_result.config_cache.make_passive_service_name_config(),
+        ip_lookup_config.ip_stack_config,
+        ip_lookup_config.default_address_family,
         ip_address_of,
+        ip_address_of_mgmt,
         create_core(config.monitoring_core),
         plugins,
         hosts_to_update=set(args) if args else None,
         locking_mode=config.restart_locking,
-        all_hosts=hosts_config.hosts,
+        service_depends_on=config.ServiceDependsOn(
+            tag_list=loading_result.config_cache.host_tags.tag_list,
+            service_dependencies=loading_result.loaded_config.service_dependencies,
+        ),
         discovery_rules=loading_result.loaded_config.discovery_rules,
         duplicates=sorted(
             hosts_config.duplicates(
@@ -1522,6 +1612,7 @@ def mode_restart(args: Sequence[HostName]) -> None:
                 and loading_result.config_cache.is_online(hn)
             )
         ),
+        bake_on_restart=_make_configured_bake_on_restart(loading_result, hosts_config.hosts),
     )
     for warning in ip_address_of.error_handler.format_errors():
         console.warning(tty.format_warning(f"\n{warning}"))
@@ -1559,18 +1650,31 @@ def mode_reload(args: Sequence[HostName]) -> None:
     plugins = load_checks()
     loading_result = load_config(plugins)
     hosts_config = loading_result.config_cache.hosts_config
-    ip_address_of = config.ConfiguredIPLookup(
-        loading_result.config_cache, error_handler=ip_lookup.CollectFailedHosts()
+    ip_lookup_config = loading_result.config_cache.ip_lookup_config()
+
+    ip_address_of = ip_lookup.ConfiguredIPLookup(
+        ip_lookup.make_lookup_ip_address(ip_lookup_config),
+        allow_empty=hosts_config.clusters,
+        error_handler=ip_lookup.CollectFailedHosts(),
     )
+    ip_address_of_mgmt = ip_lookup.make_lookup_mgmt_board_ip_address(ip_lookup_config)
+
     cmk.base.core.do_reload(
         loading_result.config_cache,
+        hosts_config,
         loading_result.config_cache.make_passive_service_name_config(),
+        ip_lookup_config.ip_stack_config,
+        ip_lookup_config.default_address_family,
         ip_address_of,
+        ip_address_of_mgmt,
         create_core(config.monitoring_core),
         plugins,
         hosts_to_update=set(args) if args else None,
         locking_mode=config.restart_locking,
-        all_hosts=hosts_config.hosts,
+        service_depends_on=config.ServiceDependsOn(
+            tag_list=loading_result.config_cache.host_tags.tag_list,
+            service_dependencies=loading_result.loaded_config.service_dependencies,
+        ),
         discovery_rules=loading_result.loaded_config.discovery_rules,
         duplicates=sorted(
             hosts_config.duplicates(
@@ -1578,6 +1682,7 @@ def mode_reload(args: Sequence[HostName]) -> None:
                 and loading_result.config_cache.is_online(hn)
             ),
         ),
+        bake_on_restart=_make_configured_bake_on_restart(loading_result, hosts_config.hosts),
     )
     for warning in ip_address_of.error_handler.format_errors():
         console.warning(tty.format_warning(f"\n{warning}"))
@@ -1863,19 +1968,28 @@ def mode_check_discovery(options: Mapping[str, object], hostname: HostName) -> i
         loading_result.config_cache.label_manager.labels_of_host,
         loading_result.loaded_config.discovery_rules,
     )
+    ip_lookup_config = config_cache.ip_lookup_config()
+    ip_address_of = ip_lookup.ConfiguredIPLookup(
+        ip_lookup.make_lookup_ip_address(ip_lookup_config),
+        allow_empty=config_cache.hosts_config.clusters,
+        error_handler=config.handle_ip_lookup_failure,
+    )
     check_interval = config_cache.check_mk_check_interval(hostname)
     discovery_file_cache_max_age = 1.5 * check_interval if file_cache_options.use_outdated else 0
     fetcher = CMKFetcher(
         config_cache,
         config_cache.fetcher_factory(
-            config_cache.make_service_configurer(plugins.check_plugins, service_name_config)
+            config_cache.make_service_configurer(plugins.check_plugins, service_name_config),
+            ip_address_of,
         ),
         plugins,
+        default_address_family=ip_lookup_config.default_address_family,
         file_cache_options=file_cache_options,
         force_snmp_cache_refresh=False,
-        ip_address_of=config.ConfiguredIPLookup(
-            config_cache, error_handler=config.handle_ip_lookup_failure
-        ),
+        get_ip_stack_config=ip_lookup_config.ip_stack_config,
+        ip_address_of=ip_address_of,
+        ip_address_of_mandatory=ip_lookup.make_lookup_ip_address(ip_lookup_config),
+        ip_address_of_mgmt=ip_lookup.make_lookup_mgmt_board_ip_address(ip_lookup_config),
         mode=FetchMode.DISCOVERY,
         on_error=OnError.RAISE,
         selected_sections=NO_SELECTION,
@@ -1886,7 +2000,7 @@ def mode_check_discovery(options: Mapping[str, object], hostname: HostName) -> i
             inventory=1.5 * check_interval,
         ),
         snmp_backend_override=snmp_backend_override,
-        password_store_file=cmk.utils.password_store.core_password_store_path(LATEST_CONFIG),
+        password_store_file=cmk.utils.password_store.core_password_store_path(),
     )
     parser = CMKParser(
         config_cache.parser_factory(),
@@ -2151,8 +2265,14 @@ def mode_discover(options: _DiscoveryOptions, args: list[str]) -> None:
         loading_result.config_cache.label_manager.labels_of_host,
         loading_result.loaded_config.discovery_rules,
     )
-    hosts_config = config.make_hosts_config()
+    hosts_config = config.make_hosts_config(loading_result.loaded_config)
     service_name_config = config_cache.make_passive_service_name_config()
+    ip_lookup_config = config_cache.ip_lookup_config()
+    ip_address_of = ip_lookup.ConfiguredIPLookup(
+        ip_lookup.make_lookup_ip_address(ip_lookup_config),
+        allow_empty=config_cache.hosts_config.clusters,
+        error_handler=config.handle_ip_lookup_failure,
+    )
 
     hostnames = modes.parse_hostname_list(config_cache, hosts_config, args)
     if hostnames:
@@ -2187,14 +2307,17 @@ def mode_discover(options: _DiscoveryOptions, args: list[str]) -> None:
     fetcher = CMKFetcher(
         config_cache,
         config_cache.fetcher_factory(
-            config_cache.make_service_configurer(plugins.check_plugins, service_name_config)
+            config_cache.make_service_configurer(plugins.check_plugins, service_name_config),
+            ip_address_of,
         ),
         plugins,
+        default_address_family=ip_lookup_config.default_address_family,
         file_cache_options=file_cache_options,
         force_snmp_cache_refresh=False,
-        ip_address_of=config.ConfiguredIPLookup(
-            config_cache, error_handler=config.handle_ip_lookup_failure
-        ),
+        get_ip_stack_config=ip_lookup_config.ip_stack_config,
+        ip_address_of=ip_address_of,
+        ip_address_of_mandatory=ip_lookup.make_lookup_ip_address(ip_lookup_config),
+        ip_address_of_mgmt=ip_lookup.make_lookup_mgmt_board_ip_address(ip_lookup_config),
         mode=(
             FetchMode.DISCOVERY if selected_sections is NO_SELECTION else FetchMode.FORCE_SECTIONS
         ),
@@ -2229,7 +2352,7 @@ def mode_discover(options: _DiscoveryOptions, args: list[str]) -> None:
 
         commandline_discovery(
             hostname,
-            ruleset_matcher=config_cache.ruleset_matcher,
+            clear_ruleset_matcher_caches=(config_cache.ruleset_matcher.clear_caches),
             parser=parser,
             fetcher=fetcher,
             section_plugins=SectionPluginMapper(
@@ -2324,12 +2447,15 @@ _CheckingOptions = TypedDict(
 
 def mode_check(options: _CheckingOptions, args: list[str]) -> ServiceState:
     plugins = load_checks()
-    config_cache = load_config(plugins).config_cache
-    hosts_config = config.make_hosts_config()
+    loading_result = load_config(plugins)
     return run_checking(
         plugins,
-        config_cache,
-        hosts_config,
+        loading_result.config_cache,
+        config.make_hosts_config(loading_result.loaded_config),
+        config.ServiceDependsOn(
+            tag_list=loading_result.config_cache.host_tags.tag_list,
+            service_dependencies=loading_result.loaded_config.service_dependencies,
+        ),
         options,
         args,
         password_store_file=cmk.utils.password_store.pending_password_store_path(),
@@ -2341,6 +2467,7 @@ def run_checking(
     plugins: AgentBasedPlugins,
     config_cache: ConfigCache,
     hosts_config: Hosts,
+    service_depends_on: Callable[[HostAddress, ServiceName], Sequence[ServiceName]],
     options: _CheckingOptions,
     args: list[str],
     *,
@@ -2358,6 +2485,12 @@ def run_checking(
     if len(args) == 2:
         ipaddress = HostAddress(args[1])
 
+    ip_lookup_config = config_cache.ip_lookup_config()
+    ip_address_of = ip_lookup.ConfiguredIPLookup(
+        ip_lookup.make_lookup_ip_address(ip_lookup_config),
+        allow_empty=config_cache.hosts_config.clusters,
+        error_handler=config.handle_ip_lookup_failure,
+    )
     config_cache.ruleset_matcher.ruleset_optimizer.set_all_processed_hosts({hostname})
     selected_sections, run_plugin_names = _extract_plugin_selection(
         options,
@@ -2373,13 +2506,15 @@ def run_checking(
     logger = logging.getLogger("cmk.base.checking")
     fetcher = CMKFetcher(
         config_cache,
-        config_cache.fetcher_factory(service_configurer),
+        config_cache.fetcher_factory(service_configurer, ip_address_of),
         plugins,
+        default_address_family=ip_lookup_config.default_address_family,
         file_cache_options=file_cache_options,
         force_snmp_cache_refresh=False,
-        ip_address_of=config.ConfiguredIPLookup(
-            config_cache, error_handler=config.handle_ip_lookup_failure
-        ),
+        get_ip_stack_config=ip_lookup_config.ip_stack_config,
+        ip_address_of=ip_address_of,
+        ip_address_of_mandatory=ip_lookup.make_lookup_ip_address(ip_lookup_config),
+        ip_address_of_mgmt=ip_lookup.make_lookup_mgmt_board_ip_address(ip_lookup_config),
         mode=(
             FetchMode.CHECKING if selected_sections is NO_SELECTION else FetchMode.FORCE_SECTIONS
         ),
@@ -2416,7 +2551,7 @@ def run_checking(
         error_handler,
         set_value_store_manager(
             ValueStoreManager(
-                hostname, AllValueStoresStore(Path(cmk.utils.paths.counters_dir, hostname))
+                hostname, AllValueStoresStore(cmk.utils.paths.counters_dir / hostname)
             ),
             store_changes=not dry_run,
         ) as value_store_manager,
@@ -2452,7 +2587,11 @@ def run_checking(
                 inventory_parameters=config_cache.inventory_parameters,
                 params=config_cache.hwsw_inventory_parameters(hostname),
                 services=config_cache.configured_services(
-                    hostname, plugins.check_plugins, service_configurer, service_name_config
+                    hostname,
+                    plugins.check_plugins,
+                    service_configurer,
+                    service_name_config,
+                    service_depends_on,
                 ),
                 run_plugin_names=run_plugin_names,
                 get_check_period=lambda service_name,
@@ -2565,9 +2704,16 @@ def mode_inventory(options: _InventoryOptions, args: list[str]) -> None:
         raise MKBailOut("Unknown SNMP backend") from exc
 
     plugins = load_checks()
-    config_cache = load_config(plugins).config_cache
-    hosts_config = config.make_hosts_config()
+    loading_result = load_config(plugins)
+    config_cache = loading_result.config_cache
+    hosts_config = config.make_hosts_config(loading_result.loaded_config)
     service_name_config = config_cache.make_passive_service_name_config()
+    ip_lookup_config = config_cache.ip_lookup_config()
+    ip_address_of = ip_lookup.ConfiguredIPLookup(
+        ip_lookup.make_lookup_ip_address(ip_lookup_config),
+        allow_empty=config_cache.hosts_config.clusters,
+        error_handler=config.handle_ip_lookup_failure,
+    )
 
     if args:
         hostnames = modes.parse_hostname_list(config_cache, hosts_config, args, with_clusters=True)
@@ -2596,14 +2742,17 @@ def mode_inventory(options: _InventoryOptions, args: list[str]) -> None:
     fetcher = CMKFetcher(
         config_cache,
         config_cache.fetcher_factory(
-            config_cache.make_service_configurer(plugins.check_plugins, service_name_config)
+            config_cache.make_service_configurer(plugins.check_plugins, service_name_config),
+            ip_address_of,
         ),
         plugins,
+        default_address_family=ip_lookup_config.default_address_family,
         file_cache_options=file_cache_options,
         force_snmp_cache_refresh=False,
-        ip_address_of=config.ConfiguredIPLookup(
-            config_cache, error_handler=config.handle_ip_lookup_failure
-        ),
+        get_ip_stack_config=ip_lookup_config.ip_stack_config,
+        ip_address_of=ip_address_of,
+        ip_address_of_mandatory=ip_lookup.make_lookup_ip_address(ip_lookup_config),
+        ip_address_of_mgmt=ip_lookup.make_lookup_mgmt_board_ip_address(ip_lookup_config),
         mode=(
             FetchMode.INVENTORY if selected_sections is NO_SELECTION else FetchMode.FORCE_SECTIONS
         ),
@@ -2620,13 +2769,10 @@ def mode_inventory(options: _InventoryOptions, args: list[str]) -> None:
         logger=logging.getLogger("cmk.base.inventory"),
     )
 
-    store.makedirs(cmk.utils.paths.inventory_output_dir)
-    store.makedirs(cmk.utils.paths.inventory_archive_dir)
-
     section_plugins = SectionPluginMapper({**plugins.agent_sections, **plugins.snmp_sections})
     inventory_plugins = plugins.inventory_plugins
 
-    tree_store = TreeStore(Path(cmk.utils.paths.inventory_output_dir))
+    inv_store = InventoryStore(cmk.utils.paths.omd_root)
 
     for hostname in hostnames:
 
@@ -2654,7 +2800,7 @@ def mode_inventory(options: _InventoryOptions, args: list[str]) -> None:
         section.section_begin(hostname)
         section.section_step("Inventorizing")
         try:
-            previous_tree = tree_store.load(host_name=hostname)
+            previous_tree = inv_store.load_inventory_tree(host_name=hostname)
             if hostname in hosts_config.clusters:
                 check_results = inventory.inventorize_cluster(
                     config_cache.nodes(hostname),
@@ -2688,7 +2834,7 @@ def mode_inventory(options: _InventoryOptions, args: list[str]) -> None:
                 raise
             section.section_error("%s" % e)
         finally:
-            cmk.utils.cleanup.cleanup_globals()
+            cmk.ccc.cleanup.cleanup_globals()
 
 
 modes.register(
@@ -2735,11 +2881,8 @@ def execute_active_check_inventory(
     parameters: HWSWInventoryParameters,
     raw_intervals_from_config: Sequence[RawIntervalFromConfig],
 ) -> Sequence[ActiveCheckResult]:
-    tree_or_archive_store = TreeOrArchiveStore(
-        Path(cmk.utils.paths.inventory_output_dir),
-        Path(cmk.utils.paths.inventory_archive_dir),
-    )
-    previous_tree = tree_or_archive_store.load_previous(host_name=host_name)
+    inv_store = InventoryStore(cmk.utils.paths.omd_root)
+    previous_tree = inv_store.load_previous_inventory_tree(host_name=host_name)
 
     if host_name in hosts_config.clusters:
         result = inventory.inventorize_cluster(
@@ -2769,10 +2912,11 @@ def execute_active_check_inventory(
             previous_tree=previous_tree,
         )
 
+    inv_paths = InventoryPaths(cmk.utils.paths.omd_root)
     if result.no_data_or_files:
-        AutoQueue(cmk.utils.paths.autoinventory_dir).add(host_name)
+        AutoQueue(inv_paths.auto_dir).add(host_name)
     else:
-        (AutoQueue(cmk.utils.paths.autoinventory_dir).path / str(host_name)).unlink(missing_ok=True)
+        (AutoQueue(inv_paths.auto_dir).path / str(host_name)).unlink(missing_ok=True)
 
     if not (result.processing_failed or result.no_data_or_files):
         save_tree_actions = _get_save_tree_actions(
@@ -2783,10 +2927,10 @@ def execute_active_check_inventory(
         # The order of archive or save is important:
         if save_tree_actions.do_archive:
             console.verbose("Archive current inventory tree.")
-            tree_or_archive_store.archive(host_name=host_name)
+            inv_store.archive_inventory_tree(host_name=host_name)
         if save_tree_actions.do_save:
             console.verbose("Save new inventory tree.")
-            tree_or_archive_store.save(
+            inv_store.save_inventory_tree(
                 host_name=host_name,
                 tree=result.inventory_tree,
                 meta=make_meta(do_archive=save_tree_actions.do_archive),
@@ -2834,7 +2978,7 @@ def mode_inventorize_marked_hosts(options: Mapping[str, object]) -> None:
     except ValueError as exc:
         raise MKBailOut("Unknown SNMP backend") from exc
 
-    if not (queue := AutoQueue(cmk.utils.paths.autoinventory_dir)):
+    if not (queue := AutoQueue(InventoryPaths(cmk.utils.paths.omd_root).auto_dir)):
         console.verbose("Autoinventory: No hosts marked by inventory check")
         return
 
@@ -2844,6 +2988,12 @@ def mode_inventorize_marked_hosts(options: Mapping[str, object]) -> None:
     service_name_config = (
         config_cache.make_passive_service_name_config()
     )  # not obvious to me why/if we *really* need this
+    ip_lookup_config = config_cache.ip_lookup_config()
+    ip_address_of = ip_lookup.ConfiguredIPLookup(
+        ip_lookup.make_lookup_ip_address(ip_lookup_config),
+        allow_empty=config_cache.hosts_config.clusters,
+        error_handler=config.handle_ip_lookup_failure,
+    )
 
     parser = CMKParser(
         config_cache.parser_factory(),
@@ -2854,20 +3004,23 @@ def mode_inventorize_marked_hosts(options: Mapping[str, object]) -> None:
     fetcher = CMKFetcher(
         config_cache,
         config_cache.fetcher_factory(
-            config_cache.make_service_configurer(plugins.check_plugins, service_name_config)
+            config_cache.make_service_configurer(plugins.check_plugins, service_name_config),
+            ip_address_of,
         ),
         plugins,
+        default_address_family=ip_lookup_config.default_address_family,
         file_cache_options=file_cache_options,
         force_snmp_cache_refresh=False,
-        ip_address_of=config.ConfiguredIPLookup(
-            config_cache, error_handler=config.handle_ip_lookup_failure
-        ),
+        get_ip_stack_config=ip_lookup_config.ip_stack_config,
+        ip_address_of=ip_address_of,
+        ip_address_of_mandatory=ip_lookup.make_lookup_ip_address(ip_lookup_config),
+        ip_address_of_mgmt=ip_lookup.make_lookup_mgmt_board_ip_address(ip_lookup_config),
         mode=FetchMode.INVENTORY,
         on_error=OnError.RAISE,
         selected_sections=NO_SELECTION,
         simulation_mode=config.simulation_mode,
         snmp_backend_override=snmp_backend_override,
-        password_store_file=cmk.utils.password_store.core_password_store_path(LATEST_CONFIG),
+        password_store_file=cmk.utils.password_store.core_password_store_path(),
     )
 
     def summarizer(host_name: HostName) -> CMKSummarizer:

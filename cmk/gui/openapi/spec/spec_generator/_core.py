@@ -393,10 +393,10 @@ documented we may change it without incrementing the API version.
 
 from typing import Any, get_args, TypedDict
 
-import apispec
 import apispec_oneofschema
 import openapi_spec_validator
 from apispec import APISpec
+from apispec import utils as apispec_utils
 from apispec.ext.marshmallow import MarshmallowPlugin
 
 from cmk.ccc import store
@@ -406,24 +406,32 @@ from cmk.ccc.site import omd_site, SiteId
 from cmk.utils.paths import omd_root
 
 from cmk.gui import main_modules
-from cmk.gui.openapi import endpoint_registry
+from cmk.gui.openapi.framework.api_config import APIVersion
+from cmk.gui.openapi.framework.registry import (
+    EndpointDefinition,
+)
 from cmk.gui.openapi.restful_objects import Endpoint
 from cmk.gui.openapi.restful_objects.documentation import table_definitions
 from cmk.gui.openapi.restful_objects.parameters import ACCEPT_HEADER
 from cmk.gui.openapi.restful_objects.params import marshmallow_to_openapi
 from cmk.gui.openapi.restful_objects.type_defs import EndpointTarget, OperationObject
+from cmk.gui.openapi.restful_objects.versioned_endpoint_map import (
+    discover_endpoints,
+)
 from cmk.gui.openapi.spec.plugin_marshmallow import CheckmkMarshmallowPlugin
-from cmk.gui.openapi.spec.spec_generator._operations import _add_cookie_auth, _operation_dicts
+from cmk.gui.openapi.spec.plugin_pydantic import CheckmkPydanticPlugin
+from cmk.gui.openapi.spec.spec_generator._doc_marshmallow import marshmallow_doc_endpoints
+from cmk.gui.openapi.spec.spec_generator._doc_pydantic import pydantic_endpoint_to_doc_endpoint
+from cmk.gui.openapi.spec.spec_generator._type_defs import DocEndpoint
 from cmk.gui.openapi.spec.utils import spec_path
 from cmk.gui.session import SuperUserContext
 from cmk.gui.utils import get_failed_plugins
 from cmk.gui.utils.script_helpers import gui_context
 
 Ident = tuple[str, str]
-__version__ = "1.0"
 
 
-def main() -> int:
+def main(version: APIVersion) -> int:
     main_modules.load_plugins()
     if errors := get_failed_plugins():
         raise Exception(f"The following errors occurred during plug-in loading: {errors}")
@@ -432,49 +440,21 @@ def main() -> int:
         for target in get_args(EndpointTarget):
             store.save_object_to_file(
                 spec_path(target),
-                _generate_spec(_make_spec(), target, omd_site()),
-                pretty=False,
+                _generate_spec(version, _make_spec(version), target, omd_site()),
+                pprint_value=False,
             )
     return 0
 
 
 def _generate_spec(
-    spec: APISpec, target: EndpointTarget, site: SiteId, validate: bool = True
+    version: APIVersion, spec: APISpec, target: EndpointTarget, site: SiteId, validate: bool = True
 ) -> dict[str, Any]:
-    endpoint: Endpoint
-
-    methods = ["get", "put", "post", "delete"]
-
-    undocumented_tag_groups = ["Undocumented Endpoint"]
+    undocumented_tag_groups = set("Undocumented Endpoint")
 
     if cmk_version.edition(omd_root) == cmk_version.Edition.CSE:
-        undocumented_tag_groups.append("Checkmk Internal")
+        undocumented_tag_groups.add("Checkmk Internal")
 
-    def module_name(func: Any) -> str:
-        return f"{func.__module__}.{func.__name__}"
-
-    def sort_key(e: Endpoint) -> tuple[str | int, ...]:
-        return e.sort, module_name(e.func), methods.index(e.method), e.path
-
-    seen_paths: dict[Ident, OperationObject] = {}
-    ident: Ident
-    for endpoint in sorted(endpoint_registry, key=sort_key):
-        if target in endpoint.blacklist_in or endpoint.tag_group in undocumented_tag_groups:
-            continue
-
-        for path, operation_dict in _operation_dicts(spec, endpoint):
-            ident = endpoint.method, path
-            if ident in seen_paths:
-                raise ValueError(
-                    f"{ident} has already been defined.\n\n"
-                    f"This one: {operation_dict}\n\n"
-                    f"The previous one: {seen_paths[ident]}\n\n"
-                )
-            seen_paths[ident] = operation_dict
-            spec.path(path=path, operations={str(k): v for k, v in operation_dict.items()})
-
-    del seen_paths
-
+    populate_spec(version, spec, target, undocumented_tag_groups, str(omd_site()))
     generated_spec = spec.to_dict()
     _add_cookie_auth(generated_spec, site)
     if not validate:
@@ -483,6 +463,83 @@ def _generate_spec(
     # TODO: Need to investigate later what is going on here after cleaning up a bit further
     openapi_spec_validator.validate(generated_spec)  # type: ignore[arg-type]
     return generated_spec
+
+
+def populate_spec(
+    api_version: APIVersion,
+    spec: APISpec,
+    target: EndpointTarget,
+    undocumented_tag_groups: set[str],
+    site_name: str,
+) -> APISpec:
+    methods = ["get", "put", "post", "delete"]
+
+    def sort_key(e: DocEndpoint) -> tuple[str | int, ...]:
+        return e.doc_sort_index, e.family_name, methods.index(e.method), e.path, e.effective_path
+
+    seen_paths: dict[Ident, OperationObject] = {}
+    ident: Ident
+    doc_endpoints = []
+
+    marshmallow_endpoints, versioned_endpoints = get_endpoints_for_version(api_version)
+
+    marshmallow_endpoint: Endpoint
+    for marshmallow_endpoint in marshmallow_endpoints:
+        if (
+            target in marshmallow_endpoint.blacklist_in
+            or marshmallow_endpoint.tag_group in undocumented_tag_groups
+        ):
+            continue
+        doc_endpoints.extend(
+            [
+                doc_endpoint
+                for doc_endpoint in marshmallow_doc_endpoints(spec, marshmallow_endpoint, site_name)
+            ]
+        )
+
+    for versioned_endpoint in versioned_endpoints:
+        if (
+            target in versioned_endpoint.doc.exclude_in_targets
+            or versioned_endpoint.doc.group in undocumented_tag_groups
+        ):
+            continue
+        doc_endpoints.append(
+            pydantic_endpoint_to_doc_endpoint(spec, versioned_endpoint.spec_endpoint(), site_name)
+        )
+
+    for doc_endpoint in sorted(doc_endpoints, key=sort_key):
+        ident = doc_endpoint.method, doc_endpoint.path
+        if ident in seen_paths:
+            raise ValueError(
+                f"{ident} has already been defined.\n\n"
+                f"This one: {doc_endpoint.operation_object}\n\n"
+                f"The previous one: {seen_paths[ident]}\n\n"
+            )
+        seen_paths[ident] = doc_endpoint.operation_object
+        spec.path(
+            path=doc_endpoint.effective_path,
+            operations={str(k): v for k, v in doc_endpoint.operation_object.items()},
+        )
+
+    del seen_paths
+    return spec
+
+
+def get_endpoints_for_version(
+    api_version: APIVersion,
+) -> tuple[list[Endpoint], list[EndpointDefinition]]:
+    legacy_endpoints: list[Endpoint] = []
+    versioned_endpoints: list[EndpointDefinition] = []
+
+    all_endpoints = discover_endpoints(api_version)
+
+    for endpoint in all_endpoints.values():
+        if isinstance(endpoint, Endpoint):
+            legacy_endpoints.append(endpoint)
+        else:
+            versioned_endpoints.append(endpoint)
+
+    return legacy_endpoints, versioned_endpoints
 
 
 _SECURITY_SCHEMES = {
@@ -504,14 +561,15 @@ _SECURITY_SCHEMES = {
 }
 
 
-def _make_spec() -> apispec.APISpec:
-    spec = apispec.APISpec(
+def _make_spec(version: APIVersion) -> APISpec:
+    spec = APISpec(
         "Checkmk REST-API",
-        __version__,
+        f"{version.numeric_value}.0",
         "3.1.1",
         plugins=[
+            CheckmkPydanticPlugin(),
             MarshmallowPlugin(),
-            apispec_oneofschema.MarshmallowPlugin(),  # type: ignore[attr-defined]
+            apispec_oneofschema.MarshmallowPlugin(),
             CheckmkMarshmallowPlugin(),
         ],
         **_redoc_spec(),
@@ -567,7 +625,7 @@ ReDocSpec = TypedDict(
 def _redoc_spec() -> ReDocSpec:
     return {
         "info": {
-            "description": apispec.utils.dedent(__doc__)
+            "description": apispec_utils.dedent(__doc__)
             .strip()
             .replace("$TABLE_DEFINITIONS", "\n".join(table_definitions())),
             "license": {
@@ -600,3 +658,50 @@ def _redoc_spec() -> ReDocSpec:
         ],
         "security": [{sec_scheme_name: []} for sec_scheme_name in _SECURITY_SCHEMES],
     }
+
+
+def _add_cookie_auth(check_dict: dict[str, Any], site: SiteId) -> None:
+    """Add the cookie authentication schema to the spec.
+
+    We do this here, because every site has a different cookie name and such can't be predicted
+    before this code here actually runs.
+    """
+    schema_name = "cookieAuth"
+    _add_once(check_dict["security"], {schema_name: []})
+    check_dict["components"]["securitySchemes"][schema_name] = {
+        "in": "cookie",
+        "name": f"auth_{site}",
+        "type": "apiKey",
+        "description": "Any user of Checkmk, who has already logged in, and thus got a cookie "
+        "assigned, can use the REST API. Some actions may or may not succeed due "
+        "to group and permission restrictions. This authentication method has the"
+        "least precedence.",
+    }
+
+
+def _add_once(coll: list[dict[str, Any]], to_add: dict[str, Any]) -> None:
+    """Add an entry to a collection, only once.
+
+    Examples:
+
+        >>> l = []
+        >>> _add_once(l, {'foo': []})
+        >>> l
+        [{'foo': []}]
+
+        >>> _add_once(l, {'foo': []})
+        >>> l
+        [{'foo': []}]
+
+    Args:
+        coll:
+        to_add:
+
+    Returns:
+
+    """
+    if to_add in coll:
+        return None
+
+    coll.append(to_add)
+    return None

@@ -6,21 +6,29 @@
 
 from __future__ import annotations
 
+import contextlib
+import dataclasses
 import http.client
 import json
 import logging
-from collections.abc import Sequence
-from typing import Any
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from typing import Any, NoReturn, Self
 from urllib import parse
 
+import pydantic
 from marshmallow import fields as ma_fields
 from marshmallow import Schema, ValidationError
 from werkzeug.datastructures import MIMEAccept, MultiDict
 from werkzeug.http import parse_options_header
 
+from cmk.gui import hooks
 from cmk.gui import http as cmk_http
 from cmk.gui.exceptions import MKAuthException
 from cmk.gui.http import HTTPMethod, Request
+from cmk.gui.openapi.permission_tracking import (
+    enable_permission_tracking,
+    is_permission_tracking_enabled,
+)
 from cmk.gui.openapi.restful_objects.content_decoder import decode
 from cmk.gui.openapi.restful_objects.params import path_parameters
 from cmk.gui.openapi.restful_objects.type_defs import StatusCodeInt
@@ -52,7 +60,7 @@ class ContentTypeValidator:
     @staticmethod
     def validate(
         has_schema: bool,
-        content_type: str,
+        content_type: str | None,
         accepted_types: Sequence[str],
         method: HTTPMethod,
     ) -> None:
@@ -162,13 +170,17 @@ class PathParamsValidator:
             schema = path_schema()
             schema_params = set(schema.declared_fields.keys())
 
+        PathParamsValidator.verify_path_params_presence(path, schema_params)
+
+    @staticmethod
+    def verify_path_params_presence(path: str, specified_path_params: set[str]) -> None:
         path_params = set(path_parameters(path))
-        missing_in_schema = path_params - schema_params
-        missing_in_path = schema_params - path_params
+        missing_in_schema = path_params - specified_path_params
+        missing_in_path = specified_path_params - path_params
 
         if missing_in_schema:
             raise PathParamsValidator._missing_schema_parameters_exception(
-                missing_in_schema, path, schema_params
+                missing_in_schema, path, specified_path_params
             )
 
         if missing_in_path:
@@ -293,6 +305,27 @@ class RequestDataValidator:
         except MKAuthException as exc:
             raise RequestDataValidator._auth_exception(exc.args[0])
 
+    @staticmethod
+    def _format_pydantic_location(location: Iterable[str | int]) -> str:
+        return ".".join(str(loc) for loc in location)
+
+    @staticmethod
+    def raise_formatted_pydantic_error(
+        validation_error: pydantic.ValidationError,
+    ) -> NoReturn:
+        """Convert a Pydantic validation error to a RestAPIRequestDataValidationException."""
+        # the context may contain the actual exception, which is usually not serializable
+        # the msg contains the exception details, which is hopefully enough to understand the issue
+        errors = {
+            RequestDataValidator._format_pydantic_location(error["loc"]): error
+            for error in validation_error.errors(include_context=False)
+        }
+        raise RestAPIRequestDataValidationException(
+            title=http.client.responses[400],
+            detail=f"These fields have problems: {_format_fields(errors)}",
+            fields=FIELDS(errors),
+        ) from validation_error
+
 
 class HeaderValidator:
     """Utility class for validating HTTP headers in API endpoints."""
@@ -319,8 +352,11 @@ class HeaderValidator:
         )
 
     @staticmethod
-    def validate_accept_header(content_type: str, accept_mimetypes: MIMEAccept) -> None:
+    def validate_accept_header(content_type: str | None, accept_mimetypes: MIMEAccept) -> None:
         """Validate the Accept header in the request."""
+        if not content_type:
+            return  # ignore the accept header, if this endpoint does not return any data
+
         if not accept_mimetypes:
             raise RestAPIHeaderValidationException(
                 title="Not Acceptable",
@@ -340,7 +376,7 @@ class ResponseValidator:
     @staticmethod
     def validate_permissions(
         endpoint: str,
-        params: dict,
+        params: Mapping[str, object],
         permissions_required: permissions.BasePerm | None,
         used_permissions: set[str],
         is_testing: bool = False,
@@ -394,7 +430,7 @@ class ResponseValidator:
             )
 
         if response.status_code == 204:
-            response.content_type = ""
+            del response.content_type
 
         if response.status_code not in expected_status_codes:
             raise RestAPIResponseException(
@@ -466,6 +502,70 @@ class ResponseValidator:
             )
 
 
+@dataclasses.dataclass(slots=True)
+class PermissionValidator:
+    _on_permission_checked: Callable[[str], None]
+    """Callback function for when a permission is checked"""
+    used_permissions: set[str] = dataclasses.field(default_factory=set)
+    """All used permissions during the endpoint execution"""
+
+    @classmethod
+    def create(
+        cls,
+        required_permissions: permissions.BasePerm | None,
+        endpoint_repr: str,
+        is_testing: bool,
+    ) -> Self:
+        """Create a permission checker
+
+        Args:
+            required_permissions:
+                The endpoint's declared required permissions
+
+            endpoint_repr:
+                A string representation of the endpoint.
+
+            is_testing:
+                Whether the endpoint is executed in a testing context.
+        """
+        used_permissions = set()
+
+        def on_permission_checked(pname: str) -> None:
+            """Collect all checked permissions during execution"""
+            if not is_permission_tracking_enabled():
+                return
+
+            used_permissions.add(pname)
+
+            if required_permissions is None or pname not in required_permissions:
+                _logger.error(
+                    "Permission mismatch: Endpoint %r Use of undeclared permission %s",
+                    endpoint_repr,
+                    pname,
+                )
+
+                if is_testing:
+                    raise RestAPIPermissionException(
+                        title=f"Required permissions ({pname}) not declared for this endpoint.",
+                        detail=f"Endpoint: {endpoint_repr}\n"
+                        f"Permission: {pname}\n"
+                        f"Used permission: {pname}\n"
+                        f"Declared: {required_permissions}\n",
+                    )
+
+        return cls(_on_permission_checked=on_permission_checked, used_permissions=used_permissions)
+
+    @contextlib.contextmanager
+    def track_permissions(self) -> Iterator[None]:
+        """Track permissions for the duration of the context."""
+        hooks.register_builtin("permission-checked", self._on_permission_checked)
+        try:
+            with enable_permission_tracking():
+                yield
+        finally:
+            hooks.unregister("permission-checked", self._on_permission_checked)
+
+
 def _filter_profile_headers(arg_dict: ArgDict) -> ArgDict:
     """Filter the _profile variable from the query string
 
@@ -513,7 +613,5 @@ def _from_multi_dict(multi_dict: MultiDict, list_fields: tuple[str, ...]) -> Arg
     return ret
 
 
-def _format_fields(_messages: list | dict) -> str:
-    if isinstance(_messages, list):
-        return ", ".join(_messages)
-    return ", ".join(_messages.keys())
+def _format_fields(_messages: Iterable[str]) -> str:
+    return ", ".join(_messages)

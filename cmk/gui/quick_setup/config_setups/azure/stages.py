@@ -5,9 +5,13 @@
 
 from collections.abc import Mapping, Sequence
 
+from livestatus import SiteConfiguration
+
+from cmk.ccc.site import SiteId
+
 from cmk.utils.rulesets.definition import RuleGroup
 
-from cmk.gui.form_specs.private.dictionary_extended import DictionaryExtended
+from cmk.gui.form_specs.private.two_column_dictionary import TwoColumnDictionary
 from cmk.gui.i18n import _
 from cmk.gui.quick_setup.v0_unstable.predefined import (
     collect_params_from_form_data,
@@ -46,8 +50,7 @@ from cmk.gui.quick_setup.v0_unstable.widgets import (
 
 from cmk.plugins.azure.rulesets import azure  # pylint: disable=cmk-module-layer-violation
 from cmk.rulesets.v1 import Title
-from cmk.rulesets.v1.form_specs import DefaultValue, DictElement, Dictionary
-from cmk.shared_typing.vue_formspec_components import DictionaryLayout
+from cmk.rulesets.v1.form_specs import DictElement, Dictionary
 
 NEXT_BUTTON_ARIA_LABEL = _("Go to the next stage")
 PREV_BUTTON_ARIA_LABEL = _("Go to the previous stage")
@@ -126,12 +129,10 @@ def configure_authentication() -> QuickSetupStage:
             ),
             FormSpecWrapper(
                 id=FormSpecId("credentials"),
-                form_spec=DictionaryExtended(
+                form_spec=TwoColumnDictionary(
                     elements=_add_first_level_keys_to_config_dict(
                         azure.configuration_authentication()
                     ),
-                    layout=DictionaryLayout.two_columns,
-                    prefill=DefaultValue({"subscription": ""}),
                 ),
             ),
         ],
@@ -140,6 +141,9 @@ def configure_authentication() -> QuickSetupStage:
                 id=ActionId("action"),
                 custom_validators=[
                     qs_validators.validate_unique_id,
+                    qs_validators.validate_non_quick_setup_password(
+                        parameter_form=azure.formspec()
+                    ),
                     qs_validators.validate_test_connection_custom_collect_params(
                         rulespec_name=RuleGroup.SpecialAgents("azure"),
                         parameter_form=azure.formspec(),
@@ -186,9 +190,8 @@ def _configure() -> Sequence[Widget]:
     return [
         FormSpecWrapper(
             id=FormSpecId("configure_services_to_monitor"),
-            form_spec=DictionaryExtended(
+            form_spec=TwoColumnDictionary(
                 elements=azure.configuration_services(),
-                layout=DictionaryLayout.two_columns,
             ),
         ),
         Collapsible(
@@ -196,11 +199,10 @@ def _configure() -> Sequence[Widget]:
             items=[
                 FormSpecWrapper(
                     id=FormSpecId("configure_advanced"),
-                    form_spec=DictionaryExtended(
+                    form_spec=TwoColumnDictionary(
                         elements=_add_first_level_keys_to_config_dict(
                             azure.configuration_advanced()
                         ),
-                        layout=DictionaryLayout.two_columns,
                     ),
                 ),
             ],
@@ -232,6 +234,8 @@ def recap_found_services(
     _stage_index: StageIndex,
     parsed_data: ParsedFormData,
     progress_logger: ProgressLogger,
+    site_configs: Mapping[SiteId, SiteConfiguration],
+    debug: bool,
 ) -> Sequence[Widget]:
     service_discovery_result = utils.get_service_discovery_preview(
         rulespec_name=RuleGroup.SpecialAgents("azure"),
@@ -239,6 +243,8 @@ def recap_found_services(
         parameter_form=azure.formspec(),
         collect_params=azure_collect_params,
         progress_logger=progress_logger,
+        site_configs=site_configs,
+        debug=debug,
     )
     azure_service_interest = ServiceInterest(r"(?i).*azure.*", "services")
     filtered_groups_of_services, _other_services = utils.group_services_by_interest(
@@ -279,7 +285,7 @@ def review_and_run_preview_service_discovery() -> QuickSetupStage:
                 id=ActionId("skip_configuration_test"),
                 custom_validators=[],
                 recap=[
-                    lambda __, ___, ____, _____: [
+                    lambda *args, **kwargs: [
                         Text(text=_("Skipped the configuration test.")),
                         Text(
                             text=_(

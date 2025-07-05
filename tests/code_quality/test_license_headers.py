@@ -37,7 +37,7 @@ ENTERPRISE_HEADER_ALERT_HANDLERS = re.compile(
 
 OMD_HEADER = re.compile(rf"#!/omd/versions/###OMD_VERSION###/bin/python3\n{GPL}")
 
-GPL_HEADER = re.compile(rf"#!/usr/bin/env python3\n{GPL}")
+GPL_HEADER = re.compile(rf"#!/usr/bin/env (python3|-S python3 -P)\n{GPL}")
 
 GPL_HEADER_CODING = re.compile(
     rf"""#\!/usr/bin/env python3
@@ -61,7 +61,6 @@ ignored_files = [
     "notifications/ilert",
     "notifications/signl4",
     "omd/packages/Python/pip",
-    "omd/packages/maintenance/merge-crontabs",
     "tests/integration_redfish/mockup-server/redfishMockupServer.py",
     "tests/integration_redfish/mockup-server/rfSsdpServer.py",
 ]
@@ -101,7 +100,7 @@ def get_file_header(path: str, length: int = 30) -> str:
 
 
 def check_for_license_header_violation(rel_path, abs_path):
-    if rel_path.startswith("non-free/cmk-update-agent/"):
+    if rel_path.startswith("non-free/packages/cmk-update-agent/"):
         if not ENTERPRISE_HEADER_CODING.match(get_file_header(abs_path, length=5)):
             yield "enterprise header with coding not matching", rel_path
     elif rel_path.startswith("omd/packages/enterprise/alert_handlers/"):

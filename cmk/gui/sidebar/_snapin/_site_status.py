@@ -7,7 +7,8 @@ import json
 
 from cmk.ccc.site import SiteId
 
-from cmk.gui import site_config, sites, user_sites
+from cmk.gui import sites, user_sites
+from cmk.gui.config import Config
 from cmk.gui.htmllib.html import html
 from cmk.gui.http import request, response
 from cmk.gui.i18n import _
@@ -17,38 +18,37 @@ from cmk.gui.utils.csrf_token import check_csrf_token
 from cmk.gui.utils.html import HTML
 from cmk.gui.utils.urls import makeuri_contextless
 
-from ...config import active_config
-from ._base import SidebarSnapin
+from ._base import PageHandlers, SidebarSnapin
 from ._helpers import begin_footnote_links, end_footnote_links, link, render_link
 
 
 class SiteStatus(SidebarSnapin):
     @staticmethod
-    def type_name():
+    def type_name() -> str:
         return "sitestatus"
 
     @classmethod
-    def refresh_regularly(cls):
+    def refresh_regularly(cls) -> bool:
         return True
 
     @classmethod
-    def title(cls):
+    def title(cls) -> str:
         return _("Site status")
 
     @classmethod
-    def description(cls):
+    def description(cls) -> str:
         return _(
             "Connection state of each site and button for enabling "
             "and disabling the site connection"
         )
 
-    def show(self) -> None:
+    def show(self, config: Config) -> None:
         html.open_table(cellspacing="0", class_="sitestate")
 
         sites.update_site_states_from_dead_sites()
 
         for sitename, _sitealias in user_sites.sorted_sites():
-            site = site_config.get_site_config(active_config, sitename)
+            site = config.sites[sitename]
 
             state = sites.states().get(sitename, sites.SiteStatus({})).get("state")
 
@@ -118,13 +118,13 @@ class SiteStatus(SidebarSnapin):
     def allowed_roles(cls) -> list[RoleName]:
         return ["user", "admin"]
 
-    def page_handlers(self):
+    def page_handlers(self) -> PageHandlers:
         return {
             "switch_site": self._ajax_switch_site,
             "set_all_sites": self._ajax_set_all_sites,
         }
 
-    def _ajax_switch_site(self):
+    def _ajax_switch_site(self, config: Config) -> None:
         check_csrf_token()
         response.set_content_type("application/json")
         # _site_switch=sitename1:on,sitename2:off,...
@@ -136,7 +136,7 @@ class SiteStatus(SidebarSnapin):
             for info in switch_var.split(","):
                 sitename_str, onoff = info.split(":")
                 sitename = SiteId(sitename_str)
-                if sitename not in site_config.sitenames():
+                if sitename not in config.sites:
                     continue
 
                 if onoff == "on":
@@ -146,7 +146,7 @@ class SiteStatus(SidebarSnapin):
 
             user.save_site_config()
 
-    def _ajax_set_all_sites(self):
+    def _ajax_set_all_sites(self, config: Config) -> None:
         sites.update_site_states_from_dead_sites()
         new_state = request.var("_new_state")
 

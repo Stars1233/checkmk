@@ -4,7 +4,6 @@
 # conditions defined in the file COPYING, which is part of this source code package.
 
 import enum
-import re
 from collections.abc import Mapping, Sequence
 from contextlib import suppress
 from dataclasses import dataclass
@@ -17,6 +16,7 @@ from cmk.update_config.https.conflict_options import (
     CantConstructURL,
     CantDisableSNIWithHTTPS,
     CantHaveRegexAndString,
+    CantIgnoreCertificateValidation,
     CantPostData,
     Config,
     ConflictType,
@@ -25,6 +25,7 @@ from cmk.update_config.https.conflict_options import (
     OnlyStatusCodesAllowed,
     SSLIncompatible,
     V1ChecksRedirectResponse,
+    V2ChecksCertificates,
 )
 from cmk.update_config.https.v1_scheme import V1Cert, V1Host, V1Url, V1Value
 
@@ -89,8 +90,8 @@ class MigratableUrl(V1Url):
 def _migrate_expect_response(response: list[str]) -> list[int]:
     result = []
     for item in response:
-        if (status := re.search(r"\d{3}", item)) is not None:
-            result.append(int(status.group()))
+        with suppress(ValueError):
+            result.append(int(item))
     return result
 
 
@@ -117,7 +118,7 @@ class MigratableValue(V1Value):
         if isinstance(self.host.address, tuple):
             hostname = self.host.virthost or self.host.address[1]
         else:
-            hostname = self.host.virthost or "$HOSTADDRESS$"
+            hostname = self.host.virthost or "$HOSTNAME$"
         return _build_url(scheme, hostname, self.host.port, path)
 
 
@@ -237,16 +238,21 @@ def detect_conflicts(config: Config, rule_value: Mapping[str, object]) -> Confli
                 type_=ConflictType.only_status_codes_allowed,
                 mode_fields=["expect_response"],
             )
-        if (
-            config.cant_disable_sni_with_https is CantDisableSNIWithHTTPS.skip
-            and value.uses_https()
-            and value.disable_sni
-        ):
-            return Conflict(
-                type_=ConflictType.cant_disable_sni_with_https,
-                mode_fields=["ssl"],
-                disable_sni=True,
-            )
+        if value.uses_https():
+            if config.v2_checks_certificates is V2ChecksCertificates.skip:
+                return Conflict(
+                    type_=ConflictType.v2_checks_certificates,
+                    mode_fields=["ssl"],
+                )
+            if (
+                config.cant_disable_sni_with_https is CantDisableSNIWithHTTPS.skip
+                and value.disable_sni
+            ):
+                return Conflict(
+                    type_=ConflictType.cant_disable_sni_with_https,
+                    mode_fields=["ssl"],
+                    disable_sni=True,
+                )
         if (
             config.v1_checks_redirect_response is V1ChecksRedirectResponse.skip
             and migrated_expect_response
@@ -256,14 +262,17 @@ def detect_conflicts(config: Config, rule_value: Mapping[str, object]) -> Confli
                 type_=ConflictType.v1_checks_redirect_response,
                 mode_fields=["onredirect", "expect_response"],
             )
-    elif (
-        config.cant_disable_sni_with_https is CantDisableSNIWithHTTPS.skip
-        and value.disable_sni  # Cert mode is always https
-    ):
-        return Conflict(
-            type_=ConflictType.cant_disable_sni_with_https,
-            disable_sni=True,
-        )
+    else:
+        # Cert mode is always https
+        if config.cant_ignore_certificate_validation is CantIgnoreCertificateValidation.skip:
+            return Conflict(
+                type_=ConflictType.cant_ignore_certificate_validation,
+            )
+        if config.cant_disable_sni_with_https is CantDisableSNIWithHTTPS.skip and value.disable_sni:
+            return Conflict(
+                type_=ConflictType.cant_disable_sni_with_https,
+                disable_sni=True,
+            )
 
     migratable_value = MigratableValue.model_validate(value.model_dump())
     if config.cant_construct_url is CantConstructURL.skip:

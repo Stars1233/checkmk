@@ -4,6 +4,7 @@
 # conditions defined in the file COPYING, which is part of this source code package.
 
 from cmk.gui import site_config, sites, user_sites
+from cmk.gui.config import Config
 from cmk.gui.htmllib.generator import HTMLWriter
 from cmk.gui.htmllib.html import html
 from cmk.gui.i18n import _
@@ -15,11 +16,11 @@ from ._helpers import snapin_site_choice
 
 class Performance(SidebarSnapin):
     @staticmethod
-    def type_name():
+    def type_name() -> str:
         return "performance"
 
     @classmethod
-    def title(cls):
+    def title(cls) -> str:
         return _("Server performance")
 
     @classmethod
@@ -27,14 +28,14 @@ class Performance(SidebarSnapin):
         return True
 
     @classmethod
-    def description(cls):
+    def description(cls) -> str:
         return _("Live monitor of the overall performance of all monitoring servers")
 
     @classmethod
-    def refresh_regularly(cls):
+    def refresh_regularly(cls) -> bool:
         return True
 
-    def show(self):
+    def show(self, config: Config) -> None:
         only_sites = snapin_site_choice("performance", user_sites.get_configured_site_choices())
 
         def write_line(left, right, show_more):
@@ -93,7 +94,7 @@ class Performance(SidebarSnapin):
         html.close_table()
 
     @classmethod
-    def refresh_on_restart(cls):
+    def refresh_on_restart(cls) -> bool:
         return True
 
     @classmethod
